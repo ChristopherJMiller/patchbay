@@ -399,6 +399,12 @@ Findings from building this suite.
   connects to the node's loopback: whoever may port-forward to the PBX pod
   reaches AMI. Its password, held only by the agent (and resolved in
   Asterisk's manager.conf), is the barrier, as for any process on the node.
+  The agent logs in by MD5 challenge-response, so the password never
+  crosses the connection: a host-network process that binds 127.0.0.1:5038
+  while Asterisk is down (at every PBX pod start the agent dials before
+  Asterisk runs) gets only the digest of its own challenge
+  (`TestLoginNeverSendsTheSecret`; `make asterisk-check` logs in to the real
+  Asterisk this way, and `TestModulesNarrowed`'s fakephone does too).
 - **Asterisk image (`andrius/asterisk` 22.11.0 trixie).**
   - The image's entrypoint runs as root, `chown -R`s the config and data
     directories, then drops privileges with `-U asterisk -p`. The chart

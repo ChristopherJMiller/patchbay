@@ -3,6 +3,8 @@ package ami
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"net"
 	"strings"
@@ -14,21 +16,35 @@ import (
 	"github.com/go-logr/logr/funcr"
 )
 
-// fakeAMI is an AMI server on a loopback port: it greets, answers Login
-// (one password) and CoreSettings itself, and hands every other action to
-// reply. It records each request's exact bytes, with the ActionID's value
-// written as <id> so goldens do not depend on the counter.
+// fakeAMI is an AMI server on a loopback port: it greets, answers
+// Challenge, Login (one password, by MD5 challenge-response as Asterisk's
+// manager.c checks it, or a plaintext Secret) and CoreSettings itself, and
+// hands every other action to reply. It records each request's exact
+// bytes, with the ActionID's value written as <id> so goldens do not depend
+// on the counter.
 type fakeAMI struct {
 	t  *testing.T
 	ln net.Listener
 
-	mu       sync.Mutex
-	password string
-	banner   string
-	reply    func(c *fakeConn, r fakeRequest)
-	requests []string
-	conns    []*fakeConn
-	logins   []string // "user/password" of each Login
+	mu        sync.Mutex
+	password  string
+	banner    string
+	challenge string // what Challenge answers; "" refuses it
+	reply     func(c *fakeConn, r fakeRequest)
+	requests  []string
+	conns     []*fakeConn
+	logins    []string // per Login, "user/<the password it matched>" or "user/<refused>"
+}
+
+// fakeChallenge is the fake's challenge unless a test sets another, so the
+// Login golden's Key is fixed.
+const fakeChallenge = "1234567890"
+
+// md5Key is the Key that answers a challenge, as Asterisk's manager.c
+// computes it: the MD5 of the challenge then the secret, in lowercase hex.
+func md5Key(challenge, secret string) string {
+	sum := md5.Sum([]byte(challenge + secret))
+	return hex.EncodeToString(sum[:])
 }
 
 // fakeRequest is one action as the fake read it.
@@ -65,7 +81,7 @@ func newFakeAMI(t *testing.T, password string) *fakeAMI {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeAMI{t: t, ln: ln, password: password, banner: "Asterisk Call Manager/9.0.0"}
+	f := &fakeAMI{t: t, ln: ln, password: password, banner: "Asterisk Call Manager/9.0.0", challenge: fakeChallenge}
 	go f.accept()
 	t.Cleanup(func() {
 		_ = ln.Close()
@@ -136,6 +152,7 @@ func (f *fakeAMI) serve(c *fakeConn, banner string) {
 	defer func() { _ = c.nc.Close() }()
 	c.raw(banner + "\r\n")
 	br := bufio.NewReader(c.nc)
+	issued := "" // this connection's challenge, once asked for
 	for {
 		var raw strings.Builder
 		var fields message
@@ -156,14 +173,31 @@ func (f *fakeAMI) serve(c *fakeConn, banner string) {
 		r.raw = strings.Replace(raw.String(), "ActionID: "+r.id+"\r\n", "ActionID: <id>\r\n", 1)
 		f.mu.Lock()
 		f.requests = append(f.requests, r.raw)
-		password, reply := f.password, f.reply
-		if r.action == "Login" {
-			f.logins = append(f.logins, fields.get("Username")+"/"+fields.get("Secret"))
-		}
+		password, reply, challenge := f.password, f.reply, f.challenge
 		f.mu.Unlock()
 		switch r.action {
+		case "Challenge":
+			if challenge == "" || !strings.EqualFold(fields.get("AuthType"), "MD5") {
+				c.send("Response: Error", "ActionID: "+r.id, "Message: Must specify AuthType")
+				continue
+			}
+			issued = challenge
+			c.send("Response: Success", "ActionID: "+r.id, "Challenge: "+issued)
 		case "Login":
-			if fields.get("Secret") == password {
+			var ok bool
+			if strings.EqualFold(fields.get("AuthType"), "MD5") {
+				ok = issued != "" && fields.get("Key") == md5Key(issued, password)
+			} else {
+				ok = fields.get("Secret") == password
+			}
+			who := fields.get("Username") + "/<refused>"
+			if ok {
+				who = fields.get("Username") + "/" + password
+			}
+			f.mu.Lock()
+			f.logins = append(f.logins, who)
+			f.mu.Unlock()
+			if ok {
 				c.send("Response: Success", "ActionID: "+r.id, "Message: Authentication accepted")
 			} else {
 				c.send("Response: Error", "ActionID: "+r.id, "Message: Authentication failed")

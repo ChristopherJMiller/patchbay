@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"math"
 	"net"
 	"os"
@@ -14,9 +16,11 @@ import (
 	"time"
 )
 
-// fakeAMI answers one connection like Asterisk's manager: a banner, Login
-// (with password "pw"), ModuleLoad (Error for app_system.so), Logoff, and an
-// event without an ActionID before every response.
+// fakeAMI answers one connection like Asterisk's manager: a banner,
+// Challenge (AuthType MD5), Login by MD5 challenge-response only (password
+// "pw"; a plaintext Secret is refused, so the test proves none is sent),
+// ModuleLoad (Error for app_system.so), Logoff, and an event without an
+// ActionID before every response.
 func fakeAMI(t *testing.T) string {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -48,10 +52,17 @@ func fakeAMI(t *testing.T) string {
 				k, v, _ := strings.Cut(line, ": ")
 				req[k] = v
 			}
-			resp, msg := "Success", ""
+			resp, msg, extra := "Success", "", ""
 			switch req["Action"] {
+			case "Challenge":
+				if req["AuthType"] != "MD5" {
+					resp, msg = "Error", "Must specify AuthType"
+				} else {
+					extra = "Challenge: 424242\r\n"
+				}
 			case "Login":
-				if req["Secret"] != "pw" || req["Events"] != "off" {
+				sum := md5.Sum([]byte("424242pw"))
+				if req["AuthType"] != "MD5" || req["Key"] != hex.EncodeToString(sum[:]) || req["Secret"] != "" || req["Events"] != "off" {
 					resp, msg = "Error", "Authentication failed"
 				}
 			case "ModuleLoad":
@@ -60,7 +71,7 @@ func fakeAMI(t *testing.T) string {
 				}
 			}
 			_, _ = w.WriteString("Event: FullyBooted\r\nStatus: Fully Booted\r\n\r\n")
-			_, _ = w.WriteString("Response: " + resp + "\r\nActionID: " + req["ActionID"] + "\r\nMessage: " + msg + "\r\n\r\n")
+			_, _ = w.WriteString("Response: " + resp + "\r\nActionID: " + req["ActionID"] + "\r\n" + extra + "Message: " + msg + "\r\n\r\n")
 			_ = w.Flush()
 		}
 	}()

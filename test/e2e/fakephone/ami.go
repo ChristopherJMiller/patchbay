@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/md5" //nolint:gosec // AMI's challenge-response is MD5
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +41,21 @@ func dialAMI(ctx context.Context, addr, user, secret string) (*amiClient, string
 		_ = conn.Close()
 		return nil, "", fmt.Errorf("ami: reading the banner: %w", err)
 	}
-	res, err := c.do("Login", [][2]string{{"Username", user}, {"Secret", secret}, {"Events", "off"}})
+	// MD5 challenge-response, as the agent logs in (internal/agent/ami):
+	// the secret never crosses the connection.
+	ch, err := c.do("Challenge", [][2]string{{"AuthType", "MD5"}})
+	if err != nil {
+		_ = conn.Close()
+		return nil, "", err
+	}
+	if ch["Response"] != "Success" || ch["Challenge"] == "" {
+		_ = conn.Close()
+		return nil, "", fmt.Errorf("ami: the MD5 login challenge was refused: %s", ch["Message"])
+	}
+	sum := md5.Sum([]byte(ch["Challenge"] + secret)) //nolint:gosec // AMI's challenge-response is MD5
+	res, err := c.do("Login", [][2]string{
+		{"AuthType", "MD5"}, {"Username", user}, {"Key", hex.EncodeToString(sum[:])}, {"Events", "off"},
+	})
 	if err != nil {
 		_ = conn.Close()
 		return nil, "", err

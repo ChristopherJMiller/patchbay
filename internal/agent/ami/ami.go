@@ -20,7 +20,10 @@
 //     `\`;
 //   - a call honours its context's deadline, and a reply that does not
 //     come is an error, never a hang;
-//   - the account's password is never logged, and never part of an error.
+//   - the account's password is never logged, never part of an error, and
+//     never sent: the login is AMI's MD5 challenge-response, so whatever
+//     answers on the port (a host-network process that bound it while
+//     Asterisk was down) learns only the digest of its own challenge.
 package ami
 
 import (

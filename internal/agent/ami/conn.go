@@ -3,6 +3,8 @@ package ami
 import (
 	"bufio"
 	"context"
+	"crypto/md5" //nolint:gosec // AMI's challenge-response is MD5 (challengeKey)
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -232,9 +234,22 @@ func (c *Conn) waitForChange(ctx context.Context, gen uint64, done <-chan struct
 	}
 }
 
-// connect dials, reads the banner, logs in and asks for the version. The
-// password goes into the Login action only: never into an error or a log.
+// connect dials, reads the banner, logs in and asks for the version.
+//
+// The login is AMI's MD5 challenge-response (Challenge, then Login with
+// AuthType MD5 and the Key md5(challenge + password)), so the password
+// itself never crosses the connection. AMI listens on 127.0.0.1 of the
+// node's host network, which every host-network process there shares: one
+// that binds the port while Asterisk is down (at every PBX pod start, the
+// agent dials before Asterisk runs) and answers with the banner gets only
+// the digest of its own challenge, useless against the real Asterisk's. A
+// server that refuses the challenge gets no login; there is no plaintext
+// fallback. The password goes into no error and no log.
 func (c *Conn) connect(ctx context.Context, username, password string) (*session, string, error) {
+	if strings.ContainsAny(password, "\r\n") {
+		// manager.conf could not hold it either.
+		return nil, "", fmt.Errorf("ami: login as %q: %w", username, ErrUnsafeValue)
+	}
 	ctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 	nc, err := c.cfg.Dial(ctx, "tcp", c.cfg.Addr)
@@ -256,7 +271,21 @@ func (c *Conn) connect(ctx context.Context, username, password string) (*session
 	_ = nc.SetReadDeadline(time.Time{})
 	s := newSession(nc, br, c.cfg.Log)
 
-	login := action{name: "Login", fields: []field{{"Username", username}, {"Secret", password}, {"Events", "off"}}}
+	msgs, err := s.do(ctx, c.nextID(), action{name: "Challenge", fields: []field{{"AuthType", "MD5"}}}, nil)
+	challenge := ""
+	if err == nil {
+		challenge = msgs[0].get("Challenge")
+	}
+	if challenge == "" {
+		s.close(errors.New("ami: no login challenge"))
+		if err == nil {
+			err = errors.New("the answer holds no challenge")
+		}
+		return nil, "", fmt.Errorf("ami: %s refused the MD5 login challenge, so no login was sent: %w", c.cfg.Addr, err)
+	}
+	login := action{name: "Login", fields: []field{
+		{"AuthType", "MD5"}, {"Username", username}, {"Key", challengeKey(challenge, password)}, {"Events", "off"},
+	}}
 	if _, err := s.do(ctx, c.nextID(), login, nil); err != nil {
 		s.close(errors.New("ami: login failed"))
 		var re *responseError
@@ -278,6 +307,15 @@ func (c *Conn) connect(ctx context.Context, username, password string) (*session
 }
 
 func (c *Conn) nextID() string { return strconv.FormatUint(c.ids.Add(1), 10) }
+
+// challengeKey answers an MD5 login challenge as Asterisk's manager.c
+// checks it: the MD5 of the challenge then the password, in lowercase hex.
+// MD5 is AMI's choice; what it covers is a 190-bit generated secret, which
+// no digest of it gives back.
+func challengeKey(challenge, password string) string {
+	sum := md5.Sum([]byte(challenge + password)) //nolint:gosec // AMI's challenge-response is MD5
+	return hex.EncodeToString(sum[:])
+}
 
 // call runs one action on the session that is up.
 func (c *Conn) call(ctx context.Context, a action, list *listSpec) ([]message, error) {

@@ -28,12 +28,45 @@ func TestLoginAndVersion(t *testing.T) {
 	if st.Version != "22.11.0" || st.Error != "" || st.Since.IsZero() {
 		t.Errorf("State = %+v, want up, version 22.11.0, no error", st)
 	}
+	// The Key is md5("1234567890" + secret) in lowercase hex.
 	want := []string{
-		"Action: Login\r\nActionID: <id>\r\nUsername: patchbay-agent\r\nSecret: " + secret + "\r\nEvents: off\r\n\r\n",
+		"Action: Challenge\r\nActionID: <id>\r\nAuthType: MD5\r\n\r\n",
+		"Action: Login\r\nActionID: <id>\r\nAuthType: MD5\r\nUsername: patchbay-agent\r\n" +
+			"Key: 0958c751f71d354be28a9830274e3c1b\r\nEvents: off\r\n\r\n",
 		"Action: CoreSettings\r\nActionID: <id>\r\n\r\n",
 	}
 	if got := f.allRequests(); !slices.Equal(got, want) {
 		t.Errorf("requests = %q, want %q", got, want)
+	}
+}
+
+// TestLoginNeverSendsTheSecret: whatever answers on AMI's port (Asterisk,
+// or a host-network process that bound 127.0.0.1:5038 while Asterisk was
+// down) gets only the MD5 of its own challenge and the secret, never the
+// secret itself; a server that refuses the challenge gets no login at all,
+// never a plaintext fallback.
+func TestLoginNeverSendsTheSecret(t *testing.T) {
+	for name, challenge := range map[string]string{"challenge answered": "squatter-nonce", "challenge refused": ""} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeAMI(t, secret)
+			f.mu.Lock()
+			f.challenge = challenge
+			f.mu.Unlock()
+			c := startConn(t, f, secret, logr.Discard())
+			if challenge != "" {
+				waitUp(t, c)
+			} else {
+				waitFor(t, "a refused challenge", func() bool { return strings.Contains(c.State().Error, "challenge") })
+				if logins := f.loginRequests(); len(logins) != 0 {
+					t.Errorf("a Login was sent after the challenge was refused: %q", logins)
+				}
+			}
+			for _, r := range f.allRequests() {
+				if strings.Contains(r, secret) || strings.Contains(strings.ToLower(r), "\nsecret:") {
+					t.Errorf("a request carries the secret: %q", r)
+				}
+			}
+		})
 	}
 }
 
@@ -156,7 +189,8 @@ func TestGoldenRequests(t *testing.T) {
 			"Variable: Content=action=restart\r\nVariable: Content=RegisterCallId={a84b4c76e66710@192.168.20.5}\r\n" +
 			"Variable: Content=HeadsetVersionStamp={0-0000000000}\r\n\r\n",
 	}
-	if got := f.allRequests()[2:]; !slices.Equal(got, want) {
+	// After Challenge, Login and CoreSettings.
+	if got := f.allRequests()[3:]; !slices.Equal(got, want) {
 		t.Errorf("requests:\n got %q\nwant %q", got, want)
 	}
 }
