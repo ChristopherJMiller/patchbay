@@ -41,7 +41,7 @@ var (
 )
 
 // Client is what the agent needs from AMI. The actions it uses, and the
-// class each needs, are compile.AMIClasses' list: ModuleLoad,
+// class each needs, are compile.AMIClasses' list: Reload,
 // PJSIPShowEndpoints, PJSIPShowContacts, PJSIPNotify, CoreShowChannels,
 // ShowDialPlan (and CoreSettings for the version).
 type Client interface {
@@ -56,9 +56,11 @@ type Client interface {
 	// AsteriskVersion) and the startup order. It never blocks.
 	State() State
 
-	// Reload reloads one module: ModuleLoad with LoadType reload, e.g.
-	// "res_pjsip.so", "pbx_config.so" (the dialplan), "manager". It fails
-	// if Asterisk answers with an error.
+	// Reload reloads one module with the Reload action, e.g. "res_pjsip.so",
+	// "pbx_config.so" (the dialplan), "manager". (Not ModuleLoad with
+	// LoadType reload: on Asterisk 22.11 that answers "Module not found."
+	// for the built-ins manager, logger and indications.) It fails if
+	// Asterisk answers with an error.
 	Reload(ctx context.Context, module string) error
 
 	// Endpoints lists every PJSIP endpoint's name (PJSIPShowEndpoints'

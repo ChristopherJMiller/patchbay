@@ -56,10 +56,10 @@ const AsteriskModuleDir = "/usr/lib/asterisk/modules"
 // never all, command or originate (see the package documentation's
 // manager.conf rules). What each action the agent uses needs, as Asterisk
 // 22.11's `manager show command` reports it (checked 2026-10-15):
-// ModuleLoad (reloads), PJSIPShowEndpoints, PJSIPShowContacts and
-// PJSIPNotify need system; CoreShowChannels system or reporting;
-// ShowDialPlan config or reporting. Command needs command and Originate
-// originate, which this account lacks.
+// Reload (apply's reloads; ModuleLoad cannot reload the built-ins),
+// PJSIPShowEndpoints, PJSIPShowContacts and PJSIPNotify need system;
+// CoreShowChannels system or reporting; ShowDialPlan config or reporting.
+// Command needs command and Originate originate, which this account lacks.
 //
 // That is not containment. system also grants ModuleLoad of any module in
 // astmoddir and DialplanExtensionAdd (both "system,all", checked
