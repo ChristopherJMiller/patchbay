@@ -172,6 +172,11 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **The softphone's provisioning URL shows the compiled token**
   (`pbx-secrets`' value, only while its version is `pbx-config`'s), not the
   device Secret's: a rotated token is shown once the agent can serve it.
+  And only while the softphone is `Issued` (§8.4) and its device Secret
+  still holds that token: the URL is a live grant of the SIP password, so
+  a Provisioned, Registered or Offline softphone shows none (anyone who can
+  read Softphones but not Secrets would otherwise have it), nor does a
+  token a reissue is replacing.
 - **No status before the first poll** (a restarted controller never flips
   every phone to Unknown for one poll) and none for a device that is not in
   the compiled index, or while `pbx-config` does not exist.

@@ -419,7 +419,9 @@ func agentRestarts(ctx context.Context, t *testing.T) int32 {
 // spend is on the persistent volume); the served fetch, with the
 // softphone's version, is back in the restarted agent's observations; and
 // the controller, which was scaled to 0 meanwhile, sees it and replaces
-// the spent token (Provisioned, lastAction rotateToken, a new URL).
+// the spent token (Provisioned, lastAction rotateToken) and publishes no
+// URL (design §8.4: only an Issued softphone shows one). A laptop with no
+// URL (a reused cluster's, already provisioned) is reissued first.
 //
 // The controller is down so the agent restarts while the token is still
 // granted: once a rotated version has settled, the agent rightly forgets
@@ -429,6 +431,15 @@ func agentRestarts(ctx context.Context, t *testing.T) int32 {
 func TestProvisioningOneTime(t *testing.T) {
 	f := features.New("one-time provisioning").
 		Assess("200, 404, agent restart, 404, served fetch remembered, token rotated", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			var cur v1alpha1.Softphone
+			if err := h.kube.Get(ctx, client.ObjectKey{Namespace: namespace, Name: laptopName}, &cur); err != nil {
+				t.Fatal(err)
+			}
+			if cur.Status.ProvisioningURL == "" {
+				if _, err := h.patchbay(ctx, "softphone", "qr", laptopName, "--reissue"); err != nil {
+					t.Fatalf("patchbay softphone qr --reissue: %v", err)
+				}
+			}
 			laptop := h.track(ctx, t, "Softphone", laptopName)
 			before := laptop.wait(ctx, t, "a provisioning URL the agent serves", 2*time.Minute, func(d deviceView) (bool, string) {
 				return d.ProvisioningURL != "" && d.cond(v1alpha1.ConditionConfigCurrent).Reason != v1alpha1.ReasonApplyPending, ""
@@ -474,9 +485,9 @@ func TestProvisioningOneTime(t *testing.T) {
 				t.Error("the observations carry the token")
 			}
 			h.scaleController(ctx, t, 1)
-			laptop.wait(ctx, t, "Provisioned, its spent token rotated", time.Minute, func(d deviceView) (bool, string) {
-				return d.LastAction != nil && d.LastAction.Kind == v1alpha1.ActionRotateToken &&
-					d.ProvisioningURL != "" && d.ProvisioningURL != before.ProvisioningURL, ""
+			laptop.wait(ctx, t, "Provisioned, its spent token rotated, no URL", time.Minute, func(d deviceView) (bool, string) {
+				return d.State == string(drivers.StateProvisioned) && d.LastAction != nil && d.LastAction.Kind == v1alpha1.ActionRotateToken &&
+					(before.LastAction == nil || !d.LastAction.At.Equal(&before.LastAction.At)) && d.ProvisioningURL == "", ""
 			})
 			return ctx
 		}).

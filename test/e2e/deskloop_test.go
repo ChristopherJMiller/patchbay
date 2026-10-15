@@ -148,12 +148,16 @@ func TestDeskLoop(t *testing.T) {
 			sc := laptopScript
 			sc.Server, sc.ProvisioningURL = h.nodeIP, url
 			laptopPod = h.startPhone(ctx, t, outer, laptopName, sc)
-			laptop.wait(ctx, t, "its spent token replaced (rotateToken, a new URL)", stateTimeout, func(d deviceView) (bool, string) {
+			// Spent: the token is rotated (a lastAction newer than the
+			// reissue's), and no URL is published until the next reissue
+			// (design §8.4: only Issued shows one).
+			laptop.wait(ctx, t, "its spent token replaced (rotateToken), no URL published", stateTimeout, func(d deviceView) (bool, string) {
 				return d.LastAction != nil && d.LastAction.Kind == v1alpha1.ActionRotateToken &&
-					d.ProvisioningURL != "" && d.ProvisioningURL != url, ""
+					(issued.LastAction == nil || !d.LastAction.At.Equal(&issued.LastAction.At)) && d.ProvisioningURL == "", ""
 			})
-			laptop.wait(ctx, t, "Registered", stateTimeout, func(d deviceView) (bool, string) {
-				return d.State == string(drivers.StateRegistered) && d.is(v1alpha1.ConditionReady, metav1.ConditionTrue, softphone.ReasonRegistered), ""
+			laptop.wait(ctx, t, "Registered, no URL published", stateTimeout, func(d deviceView) (bool, string) {
+				return d.State == string(drivers.StateRegistered) && d.is(v1alpha1.ConditionReady, metav1.ConditionTrue, softphone.ReasonRegistered) &&
+					d.ProvisioningURL == "", ""
 			})
 			if seen := laptop.seen(); !containsInOrder(seen, string(drivers.StateIssued), string(drivers.StateProvisioned), string(drivers.StateRegistered)) {
 				t.Errorf("laptop went through %v, want Issued, Provisioned, Registered", seen)

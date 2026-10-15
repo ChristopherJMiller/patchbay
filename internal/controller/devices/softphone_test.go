@@ -101,14 +101,15 @@ func TestSoftphoneIssuedURL(t *testing.T) {
 
 // TestSoftphoneRotatesToken: a served fetch of the provisioning document
 // spends the token: the controller writes a new one (32 alphanumerics) into
-// the Secret, remembers the rotation, and shows the new URL once it is
-// compiled. Neither token reaches a log or an Event.
+// the Secret and remembers the rotation; a Provisioned softphone shows no
+// URL, before or after the new token is compiled. Neither token reaches a
+// log or an Event.
 func TestSoftphoneRotatesToken(t *testing.T) {
 	f := newFixture(t)
 	issuedLaptop(t, f)
 	old := f.laptopToken()
 	ring := agentapi.DeviceObservations{Device: laptopID,
-		Fetches: []agentapi.Fetch{provisioningFetch(laptopID, f.version(laptopID), t0.Add(20*time.Second))}}
+		Fetches: []agentapi.Fetch{provisioningFetch(f.version(laptopID), t0.Add(20*time.Second))}}
 	f.at(30*time.Second + 400*time.Millisecond)
 	f.see(ring)
 	f.reconcileSoftphone("laptop")
@@ -122,8 +123,9 @@ func TestSoftphoneRotatesToken(t *testing.T) {
 	if la := st.LastAction; la == nil || la.Kind != v1alpha1.ActionRotateToken || !la.At.Equal(&at) || la.Attempts != 1 {
 		t.Errorf("lastAction %+v; want rotateToken at %v", la, at)
 	}
-	if st.State != string(drivers.StateProvisioned) || st.ProvisioningURL != f.url(old) {
-		t.Errorf("state %s; want Provisioned, still showing the compiled (spent) URL until recompiled", st.State)
+	if st.State != string(drivers.StateProvisioned) || st.ProvisioningURL != "" {
+		t.Errorf("state %s, URL set %v; want Provisioned, no URL (design §8.4: only Issued shows one)",
+			st.State, st.ProvisioningURL != "")
 	}
 	events := f.rec.take()
 	wantEvents(t, events,
@@ -135,13 +137,82 @@ func TestSoftphoneRotatesToken(t *testing.T) {
 	f.at(35 * time.Second)
 	f.see(ring)
 	f.reconcileSoftphone("laptop")
-	if got := f.softphone("laptop").Status.ProvisioningURL; got != f.url(fresh) {
-		t.Error("once compiled, the URL is not the new token's")
+	if got := f.softphone("laptop").Status.ProvisioningURL; got != "" {
+		t.Error("compiled, Provisioned: the new token's URL is published; it stays unpublished until a reissue")
 	}
 	if f.laptopToken() != fresh {
 		t.Error("the token was rotated again for the same fetch")
 	}
 	noLeak(t, f, append(events, f.rec.take()...), old, fresh)
+}
+
+// TestSoftphoneURLOnlyWhileIssued: status.provisioningURL is a live,
+// credential-bearing grant, so it is published only while the softphone
+// is Issued (design §8.4) and only for the token the device Secret still
+// holds: never in Provisioned, Registered or Offline (a reader of
+// Softphones who cannot read Secrets must not get the SIP password), and
+// never for a token a reissue is replacing, even before the bundle
+// reconciler has compiled the new one (`qr --reissue` would print it).
+func TestSoftphoneURLOnlyWhileIssued(t *testing.T) {
+	f := newFixture(t)
+	issuedLaptop(t, f)
+	spend := agentapi.DeviceObservations{Device: laptopID,
+		Fetches:      []agentapi.Fetch{provisioningFetch(f.version(laptopID), t0.Add(20*time.Second))},
+		Registration: contact("150", laptopIP, t0.Add(time.Hour))}
+	f.at(30 * time.Second)
+	f.see(spend)
+	f.reconcileSoftphone("laptop") // spent: rotated, Provisioned
+	f.compile()
+	f.at(40 * time.Second)
+	f.see(spend)
+	f.reconcileSoftphone("laptop")
+	st := f.softphone("laptop").Status
+	if st.State != string(drivers.StateRegistered) || st.ProvisioningURL != "" {
+		t.Fatalf("state %s, URL set %v; want Registered with no URL", st.State, st.ProvisioningURL != "")
+	}
+	asleep := spend
+	asleep.Registration = nil
+	f.at(10 * time.Minute)
+	f.see(asleep)
+	f.reconcileSoftphone("laptop")
+	if st := f.softphone("laptop").Status; st.State != string(drivers.StateOffline) || st.ProvisioningURL != "" {
+		t.Errorf("state %s, URL set %v; want Offline with no URL", st.State, st.ProvisioningURL != "")
+	}
+	compiled := f.laptopToken()
+
+	// A reissue: the reconcile that rotates shows no URL (the compiled
+	// token is being replaced), nor does one before the bundle reconciler
+	// has compiled the new token: the device Secret no longer holds the
+	// compiled one.
+	edit(f, f.softphone("laptop"), func(s *v1alpha1.Softphone) {
+		s.Annotations = map[string]string{annReissue: "2026-10-15T12:15:00Z"}
+	})
+	f.at(15 * time.Minute)
+	f.see(asleep)
+	f.reconcileSoftphone("laptop")
+	st = f.softphone("laptop").Status
+	if st.State != string(drivers.StateIssued) || st.HandledRequest != "2026-10-15T12:15:00Z" || st.ProvisioningURL != "" {
+		t.Errorf("rotating: state %s, handled %q, URL set %v; want Issued, handled, no URL",
+			st.State, st.HandledRequest, st.ProvisioningURL != "")
+	}
+	fresh := f.laptopToken()
+	if fresh == compiled {
+		t.Fatal("the reissue did not rotate the token")
+	}
+	f.at(15*time.Minute + 5*time.Second)
+	f.see(asleep)
+	f.reconcileSoftphone("laptop")
+	if got := f.softphone("laptop").Status.ProvisioningURL; got != "" {
+		t.Errorf("Issued, the reissued token not compiled yet: a URL is published (the replaced token's: %v)", got == f.url(compiled))
+	}
+	f.compile()
+	f.at(15*time.Minute + 10*time.Second)
+	f.see(asleep)
+	f.reconcileSoftphone("laptop")
+	if st := f.softphone("laptop").Status; st.State != string(drivers.StateIssued) || st.ProvisioningURL != f.url(fresh) {
+		t.Errorf("compiled: state %s, URL is the new token's %v; want Issued with it", st.State, st.ProvisioningURL == f.url(fresh))
+	}
+	noLeak(t, f, f.rec.take(), compiled, fresh)
 }
 
 // TestSoftphoneRotateFails: a missing Secret, or one that cannot be
@@ -168,7 +239,7 @@ func TestSoftphoneRotateFails(t *testing.T) {
 			f.rec.take()
 			tc.break_(f)
 			ring := agentapi.DeviceObservations{Device: laptopID,
-				Fetches: []agentapi.Fetch{provisioningFetch(laptopID, f.version(laptopID), t0.Add(20*time.Second))}}
+				Fetches: []agentapi.Fetch{provisioningFetch(f.version(laptopID), t0.Add(20*time.Second))}}
 			f.at(30 * time.Second)
 			f.see(ring)
 			res := f.reconcileSoftphone("laptop")
@@ -192,7 +263,7 @@ func TestSoftphoneReissue(t *testing.T) {
 	f := newFixture(t)
 	issuedLaptop(t, f)
 	ring := agentapi.DeviceObservations{Device: laptopID,
-		Fetches:      []agentapi.Fetch{provisioningFetch(laptopID, f.version(laptopID), t0.Add(20*time.Second))},
+		Fetches:      []agentapi.Fetch{provisioningFetch(f.version(laptopID), t0.Add(20*time.Second))},
 		Registration: contact("150", laptopIP, t0.Add(time.Hour))}
 	f.at(30 * time.Second)
 	f.see(ring)

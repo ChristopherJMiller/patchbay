@@ -616,10 +616,10 @@ func configFetch(version string, at time.Time) agentapi.Fetch {
 	return f
 }
 
-// provisioningFetch is a served fetch of a softphone's provisioning
-// document at its version.
-func provisioningFetch(id, version string, at time.Time) agentapi.Fetch {
-	return agentapi.Fetch{File: softphone.ProvisioningFile(id), Transport: agentapi.TransportHTTPDevice,
+// provisioningFetch is a served fetch of laptop's provisioning document
+// at its version.
+func provisioningFetch(version string, at time.Time) agentapi.Fetch {
+	return agentapi.Fetch{File: softphone.ProvisioningFile(laptopID), Transport: agentapi.TransportHTTPDevice,
 		Result: agentapi.FetchServed, At: at, Source: laptopIP, Version: version}
 }
 

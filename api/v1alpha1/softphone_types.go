@@ -56,9 +56,11 @@ type SoftphoneStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// ProvisioningURL is the one-time Linphone remote-provisioning URL. The
-	// token in it is spent on first use; `patchbay softphone qr --reissue`
-	// asks for a new one. It is served on the LAN only.
+	// ProvisioningURL is the one-time Linphone remote-provisioning URL,
+	// set only while the softphone is Issued (its token not fetched yet):
+	// the URL serves its settings, SIP password included, once. The token
+	// in it is spent on first use; `patchbay softphone qr --reissue` asks
+	// for a new one. It is served on the LAN only.
 	// +optional
 	ProvisioningURL string `json:"provisioningURL,omitempty"`
 
