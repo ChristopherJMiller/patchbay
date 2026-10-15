@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -67,6 +68,12 @@ type Options struct {
 	Registerer prometheus.Registerer
 }
 
+// skipNameValidation turns off controller-runtime's process-wide check that
+// each controller name is used once. Only tests set it (export_test.go):
+// a test process builds several managers and runs Setup in each (go test
+// -count=N); the binary builds one.
+var skipNameValidation bool
+
 // NewScheme returns a scheme holding the built-in Kubernetes types and the
 // patchbay v1alpha1 API.
 func NewScheme() (*runtime.Scheme, error) {
@@ -108,6 +115,7 @@ func NewManager(cfg *rest.Config, opts Options) (ctrl.Manager, error) {
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{opts.Namespace: {}},
 		},
+		Controller: config.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return nil, err
