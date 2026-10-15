@@ -18,8 +18,13 @@ const (
 	maxAnswerBody       = 64 << 10
 )
 
-// agentRequest sends one request to the control API with the token.
+// agentRequest sends one request to the control API with the token. A
+// body is sent with size as its Content-Length (an empty one as no body,
+// not as chunked).
 func agentRequest(ctx context.Context, conn *AgentConn, method, path string, body io.Reader, size int64) (*http.Response, error) {
+	if body != nil && size == 0 {
+		body = http.NoBody
+	}
 	req, err := http.NewRequestWithContext(ctx, method, conn.BaseURL+path, body)
 	if err != nil {
 		return nil, err

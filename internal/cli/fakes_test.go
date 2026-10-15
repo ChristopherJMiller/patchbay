@@ -211,6 +211,9 @@ func testRegistry(t *testing.T) *drivers.Registry {
 // in any output.
 const testAgentToken = "not-a-secret-agent-token-for-cli-tests"
 
+// dropConnection, as a fakeAgent answer, hangs up instead of answering.
+const dropConnection = -1
+
 // fakeAgent is the agent's control API: GET /v1/observations, and PUT
 // /v1/firmware/<load>/<name> checked against the test registry's manifest
 // as the real agent checks it (404, 412, 422, 200, 201). It checks the
@@ -267,6 +270,9 @@ func (a *fakeAgent) upload(w http.ResponseWriter, r *http.Request) {
 	sum := sha256Hex(body)
 	resp := agentapi.FirmwareUploadResponse{Load: load, Name: name, SHA256: sum, Size: int64(len(body))}
 	if code, ok := a.answer[key]; ok {
+		if code == dropConnection {
+			panic(http.ErrAbortHandler)
+		}
 		resp.Error = fmt.Sprintf("injected %d", code)
 		writeJSON(w, code, resp)
 		return
