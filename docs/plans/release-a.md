@@ -15,14 +15,15 @@ Release A is built in three workflows, each implement → review → fix:
 | **W2: agent + chart** | apply/verify/rollback, TFTP/HTTP serving, device HTTP, AMI, observations, actions, scraper, firmware store and upload, sound prompts, chart | the PBX pod |
 | **W3: controller + CLI + e2e loop** | reconcilers, Secrets, Compile → ConfigMap, polling, Decide orchestration, actions, conditions/events/metrics, conflicts, requests; CLI; e2e loop and rollback | the controller, `cmd/patchbay`, `test/e2e` |
 
-W1 is specified at task level (files, signatures, tests). W2 and W3 are
-specified at component level, with the interfaces between them exact.
+W1 and W2 are specified at task level (files, signatures, tests; W2 in
+§5.2, written once its contracts had landed). W3 is specified at
+component level, with the interfaces between the workflows exact.
 
 Contents: [1 Global constraints](#1-global-constraints) ·
 [2 Decisions made now](#2-decisions-made-now) ·
 [3 Contracts landed](#3-contracts-landed-commit-f346cf7) ·
 [4 W1 tasks](#4-w1-the-pure-core-task-level) ·
-[5 W2](#5-w2-agent-and-chart-component-level) ·
+[5 W2](#5-w2-agent-and-chart-component-level) ([5.2 task level](#52-w2-task-level)) ·
 [6 W3](#6-w3-controller-cli-and-e2e-loop-component-level) ·
 [7 Agent ↔ controller interfaces](#7-agent--controller-interfaces) ·
 [8 Bench switches](#8-bench-test-switches-86) ·
@@ -1330,7 +1331,7 @@ and the compiled `[patchbay-acl]` denies everything else; and fakephone
 needs `--auth-user` (the device ID) separate from `--user` (the number)
 from this point, because the compiled endpoints identify by auth username.
 
-### 5.1 Open decisions in W2, with recommendations
+### 5.1 Open decisions in W2, with recommendations (resolved in §5.2.1)
 
 | Decision | Options | Recommendation |
 |---|---|---|
@@ -1338,6 +1339,807 @@ from this point, because the compiled endpoints identify by auth username.
 | **Agent access to secrets** | watch every Secret in the namespace, or one projected Secret | **One projected Secret** `<fullname>-pbx-secrets`, written by the controller, key `<secret name>_<key>` (Secret names never contain `_`, so the first `_` splits). The agent's Role names exactly two objects. The controller writes it before the ConfigMap, so the agent never sees a bundle whose secrets are not there yet. Record in CLAUDE.md deviations (§5 says "its Secrets"). |
 | **Retrying a failed version** | every poll, or on change | On `pbx-secrets` change, or after 5 min. |
 | **Scrape cadence without "Ready"** | the controller tells the agent, or the agent approximates | The agent approximates (no live contact → 60 s, else 5 min); it decides nothing about state. |
+
+### 5.2 W2 task level
+
+W2 runs as **four stages**: **core**, **files** and **web** in parallel, in
+one working tree, each in its own packages; then the **integrator** wires
+them into `cmd/patchbay`, the chart, the sounds and e2e. The seams between
+them landed first as contracts (commits `990a18a`, `2cd290f`): types,
+interfaces and their rules, each pinned by a test. **The contract code is
+authoritative;** this section says what to build on it.
+
+#### 5.2.1 Decisions (§5.1 resolved, and new ones)
+
+| Decision | Resolution | Why |
+|---|---|---|
+| **Port 69 privilege** (§5.1) | **Confirmed (a) with (b) inside, changed in two places.** `patchbay fileserver`, a third container (same image), serves TFTP :69 and HTTP :6970. It starts as uid 0 with only `NET_BIND_SERVICE`, `SETUID`, `SETGID` (container `runAsUser: 0`, `runAsNonRoot: false`, `allowPrivilegeEscalation: false`, read-only root), binds both ports, then `setgroups([])`, `setresgid`, `setresuid` to **65533:65533** (`layout.FileserverUID/GID`), checks `/proc/self/status` (all four uids and gids, no groups, `CapInh/CapPrm/CapEff/CapAmb` zero, `NoNewPrivs: 1`) and exits non-zero if anything differs, all before it opens any file. It binds **the PBX address** (`<pbx.address>:69`, `:6970`), not 0.0.0.0. | *Changed:* the plan dropped to 65532, the agent's uid. The file server must mount the whole live volume (a subPath pins one version and misses the swap), so with the agent's uid it could read every resolved file the agent wrote: the AMI password, every SIP password, the softphone documents. A uid of its own with no groups, plus per-tree modes (`layout.TreeModes`: only `tftp/` is world-readable), keeps it to the files it serves anyway. *Changed:* binding the PBX address: `top` also carries the control-plane VIP, and TFTP replies come from a new socket per transfer, so the source address must not be left to routing (the same lesson as RTP, docs/e2e.md). |
+| **Agent access to secrets** (§5.1) | **Confirmed.** One projected Secret `<fullname>-pbx-secrets`, key `SecretRef.ProjectedKey()` (`<name>_<key>`, landed in `compile`), holding exactly `Bundle.SecretRefs()` (landed). The agent's Role: `get,list,watch` on `configmaps` `[<fullname>-pbx-config]` and `secrets` `[<fullname>-pbx-secrets]`; informers use a `metadata.name` field selector, which RBAC needs for list/watch with `resourceNames`. Recorded in CLAUDE.md. | As §5.1. Both sides call one function for the key, so they cannot drift. |
+| **Retrying a failed version** (§5.1) | **Confirmed, made exact:** intake keys an attempt by (bundle version, `pbx-secrets` resourceVersion). A failed pair is retried when either changes, or 5 min after it failed; an applied pair is never re-applied (an informer resync is a no-op). | A failure caused by a missing secret heals when the Secret changes; anything else waits 5 min instead of reloading Asterisk every poll. |
+| **Scrape cadence** (§5.1) | **Confirmed:** `sensor.ScrapeTarget.Live` (a live contact) → every 5 min, else every 60 s; an address change scrapes at once. | The agent senses; it does not compute Ready. |
+| **Narrow module directory** (W1 carry-over) | **Changed from the plan.** A separate `astmoddir` does not narrow anything: `module load ../usr/lib/asterisk/modules/app_system.so` loads through it (checked 2026-10-15 on the pinned `andrius/asterisk:22.11.0_debian-trixie`, and that the shadow below blocks it). Instead an init container (the Asterisk image, uid 1000) copies exactly `compile.Modules()` from `/usr/lib/asterisk/modules` into an emptyDir mounted at `layout.ModulesStagingDir`, and the Asterisk container mounts that emptyDir **read-only over** `compile.AsteriskModuleDir` (`/usr/lib/asterisk/modules`), hiding the image's directory. `astmoddir` is unchanged. The chart lists the modules; a Go test keeps the list equal to `compile.Modules()`. | The image's other module copies: none (checked with `find`). The init container never mounts the live config, so it never sees the AMI password. |
+| **Spent provisioning tokens** (W1 carry-over) | Device HTTP persists each spend **before** it sends the document: `layout.StateDir/layout.SpentTokensFile` (written whole: temp, fsync, rename), holding per spend the token's SHA-256 and the served `sensor.FetchEvent`. At start it reloads the file and re-records every spend's event, so the controller still sees the served fetch (and rotates the token) after an agent restart. A record is pruned once the live bundle no longer grants a token with that digest. `StateDir` is a 0700 directory device HTTP creates on the firmware PVC. | Spend-then-serve makes a crash between the two at worst lose a document, never reuse a token. Re-recording keeps the drivers unchanged: the softphone fold already rotates on a served fetch after the last rotation, and an old fetch before it is ignored. |
+| **Which version a fetch served** | Every server resolves `layout.Current` once per request and reads only under that version's directory, reporting it as `FetchEvent.BundleVersion` with the `BundlePath`. Observations take the device's `Version` from that bundle version's index (`v<version>/bundle.json`, written by apply), or from the event when device HTTP set it. | A swap during a transfer cannot make a phone look current on a file it did not get. Indexes on disk survive agent restarts. |
+| **File modes** | Per tree (`layout` package doc): version dir 0755, `bundle.json` 0640, `tftp/` 0755/0644, `asterisk/` and `http/` 0750/0640, `provisioning/` 0700/0600; group `--fs-group` (the pod's fsGroup, 1000) set explicitly with `Lchown`, modes set explicitly with `Chmod`, never left to the umask or setgid inheritance. Firmware: dirs 0755, files 0644, uploads under `.incoming/` 0700. | Asterisk reads `asterisk/` through its group; the file server reads only what is world-readable. |
+| **AMI injection** | The client refuses CR/LF anywhere, and in PJSIPNotify variables `,` `"` `\` (Asterisk splits and unquotes `Variable:`), with `ami.ErrUnsafeValue`; the actions also refuse a Call-ID holding `{` or `}`. | A Call-ID is chosen by the device. |
+| **First apply, and AMI down** | A version is written and swapped whether or not AMI is up; with AMI down it is *unverified*: `/readyz` passes, and apply reloads and verifies it once AMI connects. A verify failure then rolls back if there is something to roll back to; for the very first version there is not, so it stays live with `LastApplyError` set. An agent restart adopts the live version (no rewrite, no reload) and verifies it. | Asterisk may be down (crash, restart) when a fix arrives; refusing to swap would keep a bad config. |
+| **`/metrics`** | On the control port, without a token, like the probes (`api.PathMetrics`). | No secrets in it; a second node port is not worth it. |
+| **The firmware PVC** | Mounted whole at `layout.PersistentDir`: read-write in the agent, read-only in the file server (an emptyDir without persistence). The agent creates `FirmwareDir` (0755, on the first upload) and `StateDir` (0700, device HTTP at start) inside it; a missing store directory is an empty store. Not as subPaths. | The kubelet creates a missing subPath directory itself, root-owned, with a mode that need not admit the file server (another uid, no groups); the agent cannot fix a root-owned directory. |
+
+#### 5.2.2 W1 carry-over → owner
+
+| Item | Closed by |
+|---|---|
+| Narrow module dir; AMI secret only in the agent (and Asterisk) | Decision above; `compile.Modules()`/`AsteriskModuleDir` (landed); chart and e2e `TestModulesNarrowed` (integrator) |
+| Probes run `asterisk -rx` without `-C` | Integrator: every probe passes `-C /var/lib/patchbay/config/current/asterisk/asterisk.conf` |
+| `WebScrape.Error`/`At` semantics; adopt nothing from a failed scrape | `api.WebScrape` and `sensor.ScrapeRecorder` docs (landed); web: `TestScrapeFailureAdoptsNothing` |
+| A served provisioning fetch carries its version | `sensor.FetchEvent.Version`, `provision.Grant.Version` (landed); web sets it, core keeps it; both test it |
+| Spent tokens survive a restart | Decision above; web: `TestSpendSurvivesRestart`; integrator: e2e after an agent restart |
+| e2e images built with `-tags e2e` | Integrator: Dockerfile `ARG GO_TAGS`, `make e2e-images` passes `GO_TAGS=e2e` |
+| Endpoint contact ACL refusal is 401, only the global ACL is 403 | Integrator: e2e assertions and docs/e2e.md say so |
+| docs/e2e.md describes the staticConfig era | Integrator rewrites it |
+
+#### 5.2.3 Package map and ownership
+
+```text
+internal/agent/              control API; Options seams landed          integrator wires
+internal/agent/api/          controller wire contract (landed)          nobody
+internal/agent/sensor/       contract (landed)                          nobody
+internal/agent/provision/    contract (landed)                          nobody
+internal/agent/layout/       contract (landed)                          nobody
+internal/agent/ami/          ami.go landed; the client                  core
+internal/agent/intake/       W2.1                                       core
+internal/agent/apply/        W2.2                                       core
+internal/agent/actions/      W2.5 actions                               core
+internal/agent/observe/      W2.6, and the fetch socket's listener      core
+internal/agent/metrics/      W2.11                                      core
+internal/agent/firmware/     store.go landed; W2.8                      files
+internal/agent/fileserver/   W2.3, and the fetch socket's client        files
+internal/agent/devicehttp/   W2.4                                       web
+internal/agent/scrape/       W2.7                                       web
+internal/agent/sounds/       W2.9                                       integrator
+cmd/patchbay/, charts/, test/e2e/, Makefile, Dockerfile, hack/,
+flake.nix, .dockerignore, .gitignore, docs/, CLAUDE.md                  integrator
+```
+
+**Rules for the parallel stages** (core, files, web):
+
+1. Write only your own packages. Never edit a landed contract file
+   (`internal/agent/{api,sensor,provision,layout}/*`, `internal/agent/server.go`,
+   `internal/agent/ami/ami.go`, `internal/agent/firmware/store.go`) or
+   anything under `compile`, `drivers`, `cmd`, `charts`, `test`, `docs`,
+   the Makefile or CLAUDE.md. If a contract is wrong, work around it inside
+   your package and report the deviation; the integrator reconciles.
+2. Import your own stage's packages, contract packages and pre-existing
+   ones (`compile`, `drivers`, `drivers/builtin`, `agent/api`,
+   `agent/sensor`, `agent/provision`, `agent/layout`, `version`); never
+   another stage's package (nor `internal/agent` itself). Interfaces you
+   consume are declared in contracts or in your own package; the
+   integrator's `cmd/patchbay` adds the compile-time assertions that the
+   other stages' types satisfy them.
+3. No new modules. `pin/tftp/v3`, `client-go`, `logr` are required
+   already. Only core touches `go.mod`: importing
+   `github.com/prometheus/client_golang` makes it direct, so core moves that
+   one line from the `// indirect` block to the direct block by hand (no
+   `go mod tidy` while others are mid-edit; go.sum is unchanged).
+4. Verify your own packages only; `make fmt` reformats everyone's files.
+   Per stage (with `<pkgs>` your package paths):
+   `nix develop -c golangci-lint fmt <pkgs>`, `nix develop -c go vet <pkgs>`,
+   `nix develop -c golangci-lint run <pkgs>`,
+   `nix develop -c go test -race -count=1 <pkgs>` and the same with
+   `-tags e2e`. At the end run `nix develop -c make vet lint test-unit` once
+   and report (never fix) a failure that lies in another stage's package.
+5. TDD, small commits, `git add` your own paths only. No cluster: only the
+   integrator runs e2e. Tests use `t.TempDir()`, loopback listeners on
+   port 0, and fakes; nothing binds a privileged port.
+
+#### 5.2.4 Contracts landed (read the code; summary)
+
+```go
+// compile (990a18a)
+func (r SecretRef) ProjectedKey() (string, error)          // "<name>_<key>"
+func SecretRefFromProjectedKey(key string) (SecretRef, error)
+func (b Bundle) SecretRefs() ([]SecretRef, error)          // placeholders + tokens + AMI, sorted, unique
+func (b Bundle) Index() Index
+func Modules() []string                                    // modules.conf's list, in order
+const AsteriskModuleDir = "/usr/lib/asterisk/modules"
+
+// agent/layout
+const PersistentDir = "/var/lib/patchbay/persistent" // the firmware PVC, whole
+const FirmwareDir = PersistentDir + "/firmware"; StateDir = PersistentDir + "/state"
+const StateDirMode fs.FileMode = 0o700; SpentTokensFile = "spent-tokens.json"
+const FetchSocketDir = "/var/run/patchbay/fetchlog"; FetchSocket = FetchSocketDir + "/fetches.sock"
+const FetchSocketMode fs.FileMode = 0o666
+const ModulesStagingDir = "/var/lib/patchbay/asterisk-modules"
+const AgentUID, AgentGID = 65532, 65532; FileserverUID, FileserverGID = 65533, 65533
+const AsteriskUID = 1000; DefaultFSGroup = 1000
+const VersionDirPrefix = "v"; IndexFile = "bundle.json"; VersionDirMode = 0o755; IndexFileMode = 0o640
+func TreeModes(tree string) (dir, file fs.FileMode, ok bool)
+func ValidVersion(v string) bool
+func VersionDir(version string) (string, error)
+func VersionFromDir(name string) (string, bool)
+var ErrNoCurrent error
+func Current(liveDir string) (string, error)
+func OpenTree(liveDir, version, tree string) (*os.Root, error)
+
+// agent/sensor
+type FetchEvent struct {
+    Transport api.Transport; File string; Result api.FetchResult; At time.Time; Source string
+    BundleVersion, BundlePath, Device, Version, Error string
+}
+func (e FetchEvent) Validate() error
+const ProvisioningUnknownFile = "p/"; MaxFileLength = 255; MaxErrorLength = 512
+type FetchRecorder interface{ RecordFetch(FetchEvent) }
+type FetchRecorderFunc func(FetchEvent)
+type ScrapeTarget struct{ Device, Address string; Live bool }
+type ScrapeTargets interface{ ScrapeTargets(now time.Time) []ScrapeTarget }
+type ScrapeRecorder interface{ RecordScrape(device string, w api.WebScrape) }
+type FirmwareSensor interface{ Status() api.FirmwareStore }
+const MaxWireLine = 16 << 10
+var ErrLineTooLong error
+func WriteFetchEvent(w io.Writer, e FetchEvent) error
+func NewFetchEventReader(r io.Reader) *FetchEventReader
+func (r *FetchEventReader) Next() (FetchEvent, error)
+
+// agent/provision
+type Grant struct{ Device, Token, File, BundleVersion, Version string } // String/GoString/MarshalLog redact Token; json:"-"
+type Source interface{ Grants() (bundleVersion string, grants []Grant) }
+
+// agent/ami (ami.go)
+var ErrNotConnected, ErrUnsafeValue error
+type Client interface {
+    SetAccount(username, password string)
+    State() State
+    Reload(ctx context.Context, module string) error
+    Endpoints(ctx context.Context) ([]string, error)
+    DialplanContexts(ctx context.Context) ([]string, error)
+    Contacts(ctx context.Context) ([]Contact, error)
+    Channels(ctx context.Context) ([]Channel, error)
+    Notify(ctx context.Context, n Notify) error
+}
+type State struct{ Up bool; Version string; Since time.Time; Error string }
+type Contact struct{ Endpoint, AOR, URI, Address, UserAgent, CallID string; ExpiresAt time.Time; Qualify api.QualifyStatus }
+type Channel struct{ Name, Endpoint string }
+type Notify struct{ Endpoint string; Headers []Header; Body []string }
+type Header struct{ Name, Value string }
+
+// agent/firmware (store.go)
+const IncomingDir = ".incoming"; DirMode = 0o755; FileMode = 0o644
+var ErrNotFound error
+type Store interface{ sensor.FirmwareSensor; Open(name string) (*File, error) }
+type File struct{ *os.File; Load, Name string; Size int64; ModTime time.Time }
+
+// agent (server.go)
+type Options struct {
+    Tokens func() []string; Ready func() error
+    Observations func(now time.Time) api.Observations   // nil: api.Empty
+    Actions Actions                                     // nil: 501
+    Firmware http.Handler                               // PUT /v1/firmware/{load}/{name}, after auth; nil: 501
+    Metrics http.Handler                                // GET /metrics, no token; nil: 404
+    Now func() time.Time; Log logr.Logger
+}
+type Actions interface {
+    Resync(ctx context.Context, req api.ActionRequest) api.ActionResponse
+    Restart(ctx context.Context, req api.ActionRequest) api.ActionResponse
+}
+
+// agent/api: PathMetrics = "/metrics"; WebScrape and Fetch.Version semantics.
+```
+
+#### 5.2.5 Stage core: W2.1, W2.2, W2.5, W2.6, W2.11
+
+**`internal/agent/ami`** (beside `ami.go`):
+
+```go
+type Config struct {
+    Addr    string                                                    // "127.0.0.1:5038" (compile.AMIPort)
+    Dial    func(ctx context.Context, network, addr string) (net.Conn, error) // nil: net.Dialer
+    Backoff func(attempt int) time.Duration                           // nil: 1 s doubling to 30 s
+    Now     func() time.Time
+    Log     logr.Logger
+}
+func New(cfg Config) *Conn                // implements Client; does nothing until SetAccount and Run
+func (c *Conn) Run(ctx context.Context) error // keeps one session up until ctx is done
+```
+
+Protocol: read the `Asterisk Call Manager/…` banner; `Action: Login`
+(`Username`, `Secret`, `Events: off`); every action carries a unique
+`ActionID` and its reply is matched by it; list actions are read to their
+`…Complete` event; `CoreSettings` gives `AsteriskVersion`. `Reload` is
+`ModuleLoad` with `LoadType: reload` and `Module: <name>`. `Notify` is
+`PJSIPNotify` with `Endpoint`, then one `Variable: <Name>=<Value>` per
+header and one `Variable: Content=<line>` per body line, in order.
+`Contact.Address` is `ViaAddr`, else the URI's host; `ExpiresAt` from
+`ExpirationTime` (Unix seconds); `Qualify` from `Status`. `Channel.Endpoint`
+is the name without `PJSIP/` and its last `-<hex>` part.
+
+Tests (fake AMI server on a loopback listener): login success and refusal
+(the error never holds the password; capture logs with `funcr`); the exact
+request bytes of every action (golden strings); ActionID matching with
+interleaved replies; list parsing of `EndpointList`, `ListDialplan`,
+`ContactList` (with `CallId`), `CoreShowChannel`; reconnect after the
+server drops, with `ErrNotConnected` meanwhile and `State` saying why;
+`ErrUnsafeValue` for CR/LF and for Notify's `,` `"` `\` and a header name
+with `=` or `:`; a context deadline with no reply. **Recommended:** an
+`asterisk`-tagged `TestRealAsterisk…` in this package, modelled on
+`internal/compile/asterisk_check_test.go`, that drives this client against
+the pinned image booted on the `house` golden: login, version, endpoints,
+contexts, a REGISTER's `CallId` in `PJSIPShowContacts`, and a `Notify` that
+Asterisk accepts. It settles "W2 confirms PJSIPShowContacts reports the
+Call-ID" before e2e. Run it with
+`CGO_ENABLED=0 nix develop -c go test -tags asterisk -count=1 -run '^TestRealAsterisk' ./internal/agent/ami/`
+(the integrator adds it to `make asterisk-check`).
+
+**`internal/agent/intake`** (W2.1):
+
+```go
+type Config struct {
+    Client     kubernetes.Interface
+    Namespace  string
+    ConfigMap  string        // <fullname>-pbx-config
+    Secret     string        // <fullname>-pbx-secrets
+    Applier    Applier
+    RetryAfter time.Duration // 0: 5 min
+    Now        func() time.Time
+    Log        logr.Logger
+}
+type Applier interface {
+    Apply(ctx context.Context, r Resolved) error     // apply.Applier
+    Refuse(version string, reason error)             // records a version that never reached apply
+}
+type Resolved struct {
+    Bundle      compile.Bundle      // as decoded: placeholders intact
+    Files       map[string][]byte   // every file, placeholders resolved
+    AMIPassword string
+    Tokens      map[string]string   // device ID -> provisioning token, every rendered softphone
+}
+func Resolve(b compile.Bundle, secretData map[string][]byte) (Resolved, error)
+func New(cfg Config) (*Intake, error)
+func (i *Intake) Run(ctx context.Context) error
+```
+
+`Resolve` is pure: one pass of `compile.PlaceholderPattern` over each file
+(a resolved value is never expanded again; files are never otherwise
+changed), values looked up by `ProjectedKey`; any ref of
+`b.SecretRefs()` without a non-empty value → error
+`unresolved placeholder <name>/<key>` (the first in SecretRefs order) and
+nothing else. `Run` watches the two objects (one informer each, a
+`metadata.name` field selector, one worker), decodes with
+`compile.BundleFromConfigMap`, refuses a version that is not
+`layout.ValidVersion`, resolves, and calls `Apply`; a decode, validation or
+resolve failure goes to `Refuse` (so `LastApplyVersion`/`LastApplyError`
+show it). Retry policy per 5.2.1. A missing object is waited for (logged
+once). No secret value in any log line or error.
+
+Tests: `TestResolve` (passwords, tokens, AMI; unresolved → exact message;
+a value holding `@@secret:…@@` stays literal; non-UTF-8 files untouched);
+`TestRefusesBadVersion`; `TestRetryPolicy` with
+`k8s.io/client-go/kubernetes/fake` and a fake Applier (no retry of a failed
+pair before 5 min, retry on a Secret resourceVersion change and after 5
+min, no re-apply of an applied pair); `TestNoSecretInLogs`.
+
+**`internal/agent/apply`** (W2.2):
+
+```go
+type Config struct {
+    LiveDir       string        // compile.LiveDir
+    FSGroup       int           // layout.DefaultFSGroup (chart pbx.fsGroup)
+    AMI           ami.Client
+    Metrics       *metrics.Metrics // may be nil
+    Keep          int           // versions kept, 0: 3
+    VerifyTimeout time.Duration // 0: 30 s
+    Now           func() time.Time
+    Log           logr.Logger
+}
+type Status struct {
+    AppliedVersion, LastApplyVersion, LastApplyError string
+    LastApplyAt *time.Time
+    Verified bool                   // false while the live version waits for AMI
+}
+func New(cfg Config) (*Applier, error)           // adopts an existing current link
+func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error // intake.Applier
+func (a *Applier) Refuse(version string, reason error)
+func (a *Applier) Run(ctx context.Context) error  // verifies an unverified live version once AMI is up
+func (a *Applier) Ready() error                   // nil once a version is live
+func (a *Applier) Status() Status
+func (a *Applier) Grants() (string, []provision.Grant)     // provision.Source
+func (a *Applier) Applied() (string, compile.Index, bool)  // the live version's index
+func (a *Applier) Index(version string) (compile.Index, bool) // live or kept (memory, else v<version>/bundle.json)
+```
+
+Apply: write `v<version>` complete under a staging name in `LiveDir`
+(modes and group per 5.2.1, `bundle.json` = `json.Marshal(b.Index())`),
+rename it into place (reuse an existing complete `v<version>`), point a
+temporary symlink at it and rename it over `current`. With AMI up: reload
+`res_pjsip.so`, then `pbx_config.so`, then the owner of each other
+`asterisk/` file whose resolved bytes changed (`rtp.conf` →
+`res_rtp_asterisk.so`, `pjsip_notify.conf` → `res_pjsip_notify.so`,
+`indications.conf` → `indications`, `logger.conf` → `logger`), and
+`manager` last when `manager.conf` changed, followed by
+`AMI.SetAccount(new)`; `asterisk.conf`, `modules.conf` and the transports
+are not reloadable (the pod restarts for them). Verify, retrying for up to
+`VerifyTimeout`: `Endpoints()` equals the sorted IDs of the index's devices
+with a `Version`, and `DialplanContexts()` holds `compile.DevicesContext`
+and `compile.UnavailableContext`. A reload error or a mismatch: swap the
+previous version back, repeat the reloads, set `LastApplyVersion` and
+`LastApplyError` (`reload res_pjsip.so: …`, `verify: endpoints missing a, b;
+unexpected c`), count `ApplyFailed`, keep `AppliedVersion`. Success: all
+four fields, `SetAppliedVersion`, new grants from `r.Tokens`, and remove
+versions beyond the `Keep` newest (never `current` or the previous). With
+AMI down: unverified (5.2.1). `SetAccount` is called on the first apply
+and whenever the account changes.
+
+Tests (fake `ami.Client`, `t.TempDir()`, `os.Getgid()` as FSGroup):
+`TestWriteModesAndGroup` (every directory and file against
+`layout.TreeModes`, the index file, the group); `TestSwapIsAtomic` (a
+reader resolving `current` in a loop during 50 applies always finds a
+complete version); `TestReloadPlan` (which modules, in which order, for
+which changed files; `manager` then `SetAccount`); `TestVerifyMismatchRollsBack`;
+`TestReloadErrorRollsBack`; `TestFirstVersionWithoutAMI` (Ready at once,
+verified on connect; failure reported with nothing to roll back to);
+`TestAdoptOnRestart` (no rewrite, no reload); `TestKeepsThreeVersions`;
+`TestGrants` (copy, every rendered softphone, versions and file);
+`TestIndexOfAnOlderVersion` (from disk after a restart);
+`TestRefusesInvalidVersion`.
+
+**`internal/agent/actions`** (W2.5 actions):
+
+```go
+type Config struct {
+    AMI     ami.Client
+    Applied func() (string, compile.Index, bool) // apply.Applier.Applied
+    Timeout time.Duration                       // 0: 10 s
+    Log     logr.Logger
+}
+func New(cfg Config) *Actions // implements agent.Actions
+```
+
+For a device in the applied index: `Contacts()` now, its contact (by
+`Endpoint`, else by `AOR` = its number), then `Notify` with headers, in
+order, `Event: service-control`, `Subscription-State: active`,
+`Content-Type: text/plain`, and body lines, in order:
+
+```text
+action=restart                 (resync; action=reset for restart)
+RegisterCallId={<the contact's Call-ID>}
+ConfigVersionStamp={00000000-0000-0000-0000-000000000000}
+DialplanVersionStamp={00000000-0000-0000-0000-000000000000}
+SoftkeyVersionStamp={00000000-0000-0000-0000-000000000000}
+FeatureControlVersionStamp={00000000-0000-0000-0000-000000000000}
+HeadsetVersionStamp={0-0000000000}
+```
+
+`Sent: false` with `Error` for: `unknown device <id>`, `no live contact`,
+`no Call-ID` (the contact has none), `unsafe Call-ID`, AMI down or refusing
+(its error). Tests pin the exact `ami.Notify` for both actions and every
+`Sent: false` reason; the AMI bytes are pinned in `ami`'s tests.
+
+**`internal/agent/observe`** (W2.6):
+
+```go
+type Config struct {
+    AMI       ami.Client
+    Applied   func() (string, compile.Index, bool)            // apply
+    Index     func(version string) (compile.Index, bool)      // apply
+    Status    func() apply.Status                             // apply
+    Firmware  sensor.FirmwareSensor                           // the firmware store
+    Metrics   *metrics.Metrics                                // may be nil
+    PollEvery time.Duration                                   // 0: 5 s
+    Now       func() time.Time
+    Log       logr.Logger
+}
+func New(cfg Config) *Store
+func (s *Store) Run(ctx context.Context) error                  // polls Contacts and Channels
+func (s *Store) RecordFetch(e sensor.FetchEvent)                // sensor.FetchRecorder
+func (s *Store) RecordScrape(device string, w api.WebScrape)    // sensor.ScrapeRecorder
+func (s *Store) ScrapeTargets(now time.Time) []sensor.ScrapeTarget
+func (s *Store) Document(now time.Time) api.Observations        // agent.Options.Observations
+func ServeFetchSocket(ctx context.Context, path string, rec sensor.FetchRecorder, log logr.Logger) error
+```
+
+Attribution, first rule that applies: the event's `Device` (kept for that
+device even before any index has it: device HTTP re-records persisted
+spends at start); a file named `SEP<MAC>.cnf.xml`,
+`SEP<MAC>.cnf.xml.sgn`, `CTLSEP<MAC>.tlv` or
+`ITLSEP<MAC>.tlv` (12 hex digits, compared upper-case) → the device with
+that MAC; else the `Source`: the device whose latest served config fetch or
+live contact came from that address (the latest wins); else unattributed
+(counted, not listed). `Fetch.Version`: the event's, else, for a served
+event whose `BundlePath` is in the device's `Files` in the index of
+`BundleVersion`, that device's `Version`; else empty. 64 fetches per
+device, kept in `At` order. `UnknownDevices`: SEP config requests (`.cnf.xml`
+and `.cnf.xml.sgn`) of MACs no applied device has, at most 64 (the least
+recently seen go first), dropped once a device has the MAC. Registration
+and `Calls` from the latest poll (a contact belongs to the device named by
+its `Endpoint`, else to the one whose number is its `AOR`; a channel to
+its `Endpoint`; both cleared while AMI is down; the poll also sets
+`SetRegisteredEndpoints`). `Devices`: every device of the applied index
+any sensor has seen, sorted by ID. Every valid event counts in
+`metrics.Fetch`, attributed or not.
+`ScrapeTargets`: Phones of the applied index with an address (the live
+contact's, else the source of their latest attributed served fetch); `Live`
+= a contact that expires after `now` and is not qualify-unreachable.
+`Document` is a deep copy with every list non-nil; `Agent` from `Status()`
+and `AMI.State()`; `Firmware` from `Firmware.Status()`.
+`ServeFetchSocket` removes a stale socket file, listens, chmods
+`layout.FetchSocketMode`, reads each connection with
+`sensor.NewFetchEventReader`, drops `http8088` events and events with
+`Device` or `Version` set (device HTTP is in-process, and the file server
+never knows either: a compromised file server must not be able to claim a
+softphone's provisioning fetch), closes a connection on its first bad
+line, and removes the socket when `ctx` ends.
+
+Tests: `TestAttribution` (a matrix: each rule × each transport, a
+provisioning event with `Device`, an unattributable fetch);
+`TestFetchVersion` (served SEP → the device version of that bundle
+version, an older version through `Index`, notFound → none, the event's own
+kept); `TestRingBuffer`; `TestUnknownDevices`; `TestRegistrationAndCalls`;
+`TestScrapeTargets`; `TestDocumentShape` (`api.Empty` lists, sorted, a deep
+copy); `TestFetchSocket` (a real unix socket in `t.TempDir()`: events
+arrive; `http8088` refused; a bad line ends only its connection; a stale
+file is replaced; the mode).
+
+**`internal/agent/metrics`** (W2.11):
+
+```go
+func New() *Metrics                                   // its own prometheus.Registry, plus Go and process collectors
+func (m *Metrics) Handler() http.Handler              // agent.Options.Metrics
+func (m *Metrics) SetAppliedVersion(version string)   // patchbay_agent_applied_version_info{version} 1, one series
+func (m *Metrics) ApplyFailed()                       // patchbay_agent_apply_failures_total
+func (m *Metrics) Fetch(t api.Transport, r api.FetchResult) // patchbay_agent_fetches_total{transport,result}
+func (m *Metrics) SetRegisteredEndpoints(n int)       // patchbay_agent_registered_endpoints
+```
+
+Every method is a no-op on a nil `*Metrics`. Test: gather and check names,
+labels and values.
+
+**Core acceptance:** with
+`P="./internal/agent/ami/... ./internal/agent/intake/... ./internal/agent/apply/... ./internal/agent/actions/... ./internal/agent/observe/... ./internal/agent/metrics/..."`:
+`go test -race -count=1 $P` (and `-tags e2e`), `go vet $P`,
+`golangci-lint run $P` green; `go test -cover $P` ≥ 80% each.
+
+#### 5.2.6 Stage files: W2.3, W2.8
+
+**`internal/agent/firmware`** (beside `store.go`):
+
+```go
+type Manifest struct{ /* unexported */ }
+func NewManifest(reg *drivers.Registry) (*Manifest, error)
+func (m *Manifest) Lookup(load, name string) (drivers.FirmwareLoad, drivers.FirmwareFile, bool) // an upload's target
+func (m *Manifest) Resolve(name string) (drivers.FirmwareLoad, drivers.FirmwareFile, bool)      // a device's request (Shared → default load)
+func NewDisk(dir string, m *Manifest, log logr.Logger) *Disk // implements Store; does no I/O
+func (d *Disk) Open(name string) (*File, error)
+func (d *Disk) Status() api.FirmwareStore
+func (d *Disk) Put(ctx context.Context, load, name string, body io.Reader) (int, api.FirmwareUploadResponse)
+func NewUploadHandler(d *Disk, log logr.Logger) http.Handler // agent.Options.Firmware
+```
+
+Default loads: for each driver and each of its models, the profile's
+`Provisioning.DefaultFirmware`, if that driver's manifest has it. A Shared
+name resolves to the one default load carrying it; none or several → not
+served (logged once). The upload handler reads `r.PathValue("load")` and
+`("name")` and always answers a `FirmwareUploadResponse`: 404 (`Lookup`
+fails); 412 (pending digest; the body is not read; nothing stored); 413
+(`Content-Length` over `api.MaxFirmwareFileSize`, or the stream exceeds
+it); else the body streams into `.incoming/<random>` (0600; `Put` creates
+the store directory with `DirMode` and `.incoming` with 0700 when missing)
+through SHA-256: a mismatch is 422 and the temp file is removed; a match
+with the file already stored and verified is 200; otherwise fsync, chmod
+`FileMode`, `MkdirAll` the load directory (`DirMode`), rename into place,
+fsync the directory: 201. The manifest size is advisory, never enforced.
+`Status` lists every manifest file in registry, load and file order;
+`Open`/`Status` share one digest cache keyed by (device, inode, size,
+modification time); only regular files count (a symlink never does); all
+access through an `os.Root` on the store directory, opened lazily: while
+the directory is missing the store is empty, and it is retried on the next
+call.
+
+Tests (fake drivers with generated file bytes; the e2e load under
+`-tags e2e`): `TestResolve` (unique, Shared from the default, Shared with
+no or two defaults, unknown); `TestUpload` (201; 200 on repeat; 404 load
+and file; 412 stores nothing; 413 by header and by stream; 422 stores
+nothing and leaves `.incoming` empty); `TestOpenServesOnlyVerified`
+(pending never; a file planted with the right digest is served; a wrong
+digest, a rewrite in place and a symlink are not); `TestDigestCache`
+(a second `Status` hashes nothing; a changed mtime re-hashes);
+`TestE2ELoad` (`//go:build e2e`: upload `cisco79x5.E2ELoadFile` bytes →
+201, `Open` serves them).
+
+**`internal/agent/fileserver`** (W2.3):
+
+```go
+type Config struct {
+    LiveDir    string               // compile.LiveDir, mounted read-only
+    Firmware   firmware.Store       // firmware.NewDisk(layout.FirmwareDir, …)
+    TFTPListen string               // "<pbx address>:69"
+    HTTPListen string               // "<pbx address>:6970"
+    ReportSocket string             // layout.FetchSocket
+    Recorder   sensor.FetchRecorder // nil: a Reporter on ReportSocket, started after the drop; tests inject
+    UID, GID   int                  // layout.FileserverUID, layout.FileserverGID
+    Drop       func(uid, gid int) error // nil: DropPrivileges
+    Now        func() time.Time
+    Log        logr.Logger
+}
+func Run(ctx context.Context, cfg Config) error       // bind both, Drop, then serve until ctx ends
+func DropPrivileges(uid, gid int) error               // setgroups([]), setresgid, setresuid, CheckDropped(/proc/self/status)
+func CheckDropped(procStatus []byte, uid, gid int) error
+func NewReporter(socket string, log logr.Logger) *Reporter // sensor.FetchRecorder; no I/O until Run
+func (r *Reporter) Run(ctx context.Context) error
+```
+
+`Run` opens no file and no socket but its two listeners before `Drop`
+returns (its own `Reporter` connects only afterwards); a `Drop` error
+closes them and is returned (the process exits non-zero). Name resolution, the same for both transports: strip one
+leading `/` (HTTP: the unescaped URL path); a name with `\`, NUL, an empty,
+`.` or `..` element, or over `sensor.MaxFileLength` is notFound and is
+reported with `File` = `strconv.QuoteToASCII(name)` cut to 200 bytes;
+otherwise `Firmware.Open(name)` first (served from the store, no
+`BundleVersion`), then, if it says `ErrNotFound`, the live `tftp/` tree:
+`compile.TreeOf("tftp/"+name)` must pass, `layout.Current` once,
+`layout.OpenTree(…, compile.TreeTFTP)`, regular files only; `BundleVersion`
+and `BundlePath` `tftp/<name>` are reported whenever a version is live.
+Exactly one event per request: served, notFound or error (an HTTP HEAD is
+answered but not reported). TFTP:
+`pin/tftp/v3`, read requests only (write requests are refused and not
+reported), `Server.Serve` on the UDP socket bound before the drop,
+5 s timeout, 5 retries; the reply's source is the address the request
+came to (`RequestPacketInfo.LocalIP`). HTTP :6970: GET and HEAD (405
+otherwise), `http.ServeContent`, `text/xml; charset=utf-8` for `.xml`,
+else `application/octet-stream`; one fixed 404 body; `ReadHeaderTimeout`
+5 s, `WriteTimeout` 5 min, `MaxHeaderBytes` 8 KiB. The `Reporter` speaks
+the `sensor` wire format: a queue of 1024 events (the oldest dropped first,
+drops counted and logged), reconnecting about once a second, a 1 s write
+deadline.
+
+Tests: `TestTFTPServesTheLiveVersion` (a `pin/tftp` client against the
+server on 127.0.0.1:0; bytes and event); `TestHTTP6970Parity` (the same
+names give the same bytes and events but `http6970`);
+`TestSwapMidTransfer` (the bytes and `BundleVersion` of the version
+resolved at the start); `TestFirmwareFirst` (a fake `Store`);
+`TestNoPathEscapes` (`../asterisk/pjsip.conf`, `/../x`, `%2e%2e/x`, an
+absolute path, a symlink in `tftp/` to `../asterisk/` → notFound, never the
+bytes); `TestOneEventPerRequest` (served, notFound, a client that stops
+acking → error); `TestInvalidNameIsReportedQuoted`; `TestReplySource`
+(a request to 127.0.0.2 with the server on 0.0.0.0 is answered from
+127.0.0.2); `TestRunDropsBeforeServing` (an injected `Drop` sees both
+listeners bound and the `Store` and `Recorder` unused);
+`TestRunExitsWhenDropFails`; `TestCheckDropped` (sample status texts: each
+field wrong once); `TestReporter` (a unix socket in `t.TempDir()`: order
+kept; the listener restarts and events continue; overflow drops the
+oldest).
+
+**Files acceptance:** with
+`P="./internal/agent/firmware/... ./internal/agent/fileserver/..."`, the
+same commands as core; coverage ≥ 80% each.
+
+#### 5.2.7 Stage web: W2.4, W2.7
+
+**`internal/agent/devicehttp`** (W2.4):
+
+```go
+type Config struct {
+    LiveDir  string               // compile.LiveDir
+    Grants   provision.Source     // apply
+    Recorder sensor.FetchRecorder // observe
+    StateDir string               // layout.StateDir
+    Now      func() time.Time
+    Log      logr.Logger
+}
+func New(cfg Config) (*Server, error) // creates StateDir (layout.StateDirMode) if missing, loads SpentTokensFile, re-records each spend's event
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request)
+func (s *Server) Run(ctx context.Context, addr string) error // "<pbx address>:8088"
+```
+
+GET and HEAD only (405 otherwise). `ProvisioningPathPrefix + token`: the
+`provision` package rules. The token is the rest of the path; with a `/`
+in it, or matching no grant, or a spent one, the answer is the one 404
+(status, headers, body byte-identical to an unknown path; `Content-Type:
+text/plain; charset=utf-8`, `X-Content-Type-Options: nosniff`, body
+`404 page not found\n`). A match compares `sha256(token)` with every
+grant's `sha256(Token)` using `subtle.ConstantTimeCompare`, all of them,
+with no early exit. A first match, in this order: read `Grant.File` from
+`v<Grant.BundleVersion>` via `layout.OpenTree` into memory (missing: the
+one 404, nothing spent, recorded as notFound); persist the spend (the state
+file rewritten whole: temp file, fsync, rename, fsync the directory; if
+that fails: 503, nothing served, nothing spent, recorded as error); answer
+200 `text/xml; charset=utf-8` with `Cache-Control: no-store`; record the
+persisted event `{http8088, File = BundlePath = Grant.File, BundleVersion,
+Device, Version, served}`, even if the client stopped reading: the token is
+spent either way, and only a served fetch makes the controller rotate it
+(a fresh QR) instead of leaving the softphone Issued on a dead URL. A
+spent token: 404, recorded as notFound with `File` = `Grant.File` and
+`Device`. No token matched: 404, recorded as notFound with `File =
+sensor.ProvisioningUnknownFile`. Any other path `/<p>`: `layout.Current`,
+`compile.TreeOf("http/"+p)` must pass, `layout.OpenTree(…,
+compile.TreeHTTP)`, regular files only; `text/xml; charset=utf-8` for
+`.xml`, else `application/octet-stream`; recorded with `File = p`,
+`BundlePath = http/<p>`. Pruning: whenever the grants' bundle version
+differs from the last prune (and is not empty), drop spends whose digest
+no current grant has. A corrupt state file fails `New`. Timeouts:
+`ReadHeaderTimeout` 5 s, `ReadTimeout` 10 s, `WriteTimeout` 30 s,
+`MaxHeaderBytes` 8 KiB. No token in any log line, event, error or the
+state file.
+
+Tests: `TestServesTheHTTPTree`; `TestProvisioningOneUse` (200 with the
+document of the grant's own version even after `current` moved on; then
+404); `TestIdentical404s` (an unknown path, an unknown token, a spent
+token, a token followed by `/x`, the bare prefix: byte-identical responses
+but `Date`); `TestComparesEveryGrant` (a comparison hook, an unexported
+package variable set from `export_test.go`, sees every grant compared on a
+first-grant match); `TestServedProvisioningCarriesVersion`;
+`TestSpendSurvivesRestart` (a second `Server` on the same `StateDir`: 404,
+and the served event is recorded again with `Device` and `Version`);
+`TestSpendPersistedBeforeServing` (a read-only `StateDir`: 503, no
+document, the token still unspent afterwards); `TestPrune` (a rotated token
+is pruned; the same token across bundle versions stays spent);
+`TestNoTokenAnywhere` (logs via `funcr`, events, the state file);
+`TestBeforeFirstApply` (no grants, no `current`: 404).
+
+**`internal/agent/scrape`** (W2.7):
+
+```go
+type Config struct {
+    Targets      sensor.ScrapeTargets  // observe
+    Recorder     sensor.ScrapeRecorder // observe
+    Client       *http.Client          // nil: 5 s timeout, no redirects, no proxy
+    Port         int                   // 0: 80
+    NotLiveEvery time.Duration         // 0: 60 s
+    LiveEvery    time.Duration         // 0: 5 min
+    Tick         time.Duration         // 0: 5 s
+    Concurrency  int                   // 0: 4
+    Now          func() time.Time
+    Log          logr.Logger
+}
+func New(cfg Config) *Scraper
+func (s *Scraper) Run(ctx context.Context) error
+func (s *Scraper) Scrape(ctx context.Context, t sensor.ScrapeTarget) api.WebScrape // one scrape, merged per the rules; records nothing
+// The pages' XML shapes, exported so the e2e fakephone (W3) serves exactly what this parses:
+type DeviceInformationX struct{ /* xml tags */ }
+type NetworkConfigurationX struct{ /* xml tags */ }
+type DeviceLogX struct{ /* xml tags */ }
+func ParseDeviceInformation(b []byte) (*api.DeviceInformation, error)
+func ParseNetworkConfiguration(b []byte) (*api.NetworkConfiguration, error)
+func ParseDeviceLog(b []byte) ([]string, error) // the last 20 lines, oldest first
+```
+
+A device is due when never scraped, when its address changed, or when its
+interval (`Live` → `LiveEvery`, else `NotLiveEvery`) has passed since the
+last attempt; devices gone from the targets are forgotten. Pages:
+`http://<address>:<port>/DeviceInformationX`, `/NetworkConfigurationX`,
+`/DeviceLogX`; 2xx only; bodies over 256 KiB fail; XML decoded with a
+hand-written `CharsetReader` for `ISO-8859-1`/`latin1`, `US-ASCII` and
+`UTF-8` (no new module). Element names are matched case-insensitively:
+`versionID`, `appLoadID`, `bootLoadID`, `hardwareRevision`, `serialNumber`,
+`modelNumber`; the Admin VLAN as `AdminVLANId` (or `AdminVLANID`); Unified
+CM 1 as `CallManager1`, `UnifiedCM1` or `CUCM1`; log lines are the `status`
+elements' text (every leaf's text if there are none), trimmed, empty ones
+dropped. Which names a real 79x5 uses is a bench check (§8); the shapes
+are written from the documented field lists and generated, never copied
+from a phone. Addresses that are loopback, unspecified, multicast or
+link-local are refused (a failed scrape) without a request. The merge is
+`sensor.ScrapeRecorder`'s rule: a failed scrape adopts nothing.
+
+Tests: `TestParse…` on generated fixtures (case variants, an ISO-8859-1
+document with a Latin-1 byte, missing fields); `TestScrapeSuccess`
+(httptest; every field; `At` is when the last page was read);
+`TestScrapeFailureAdoptsNothing` (DeviceInformationX read, DeviceLogX 500:
+`Error` set, the fields are the previous success's, nil the first time);
+`TestSchedule` (60 s, 5 min, an address change, `Live` switching, removal);
+`TestRefusedAddresses`; `TestBodyLimit`; `TestNoRedirects`; `TestTimeout`.
+
+**Web acceptance:** with
+`P="./internal/agent/devicehttp/... ./internal/agent/scrape/..."`, the same
+commands as core; coverage ≥ 80% each.
+
+#### 5.2.8 Integrator: W2.9, W2.10, cmd, e2e, docs
+
+After the three stages, in one tree:
+
+1. **Reconcile** reported deviations; add compile-time assertions in
+   `cmd/patchbay`: `var _ ami.Client = (*ami.Conn)(nil)`,
+   `_ intake.Applier = (*apply.Applier)(nil)`, `_ provision.Source =
+   (*apply.Applier)(nil)`; `sensor.FetchRecorder`, `sensor.ScrapeRecorder`
+   and `sensor.ScrapeTargets` each `= (*observe.Store)(nil)`;
+   `_ firmware.Store = (*firmware.Disk)(nil)`, `_ agent.Actions =
+   (*actions.Actions)(nil)`, `_ sensor.FetchRecorder =
+   (*fileserver.Reporter)(nil)`, `_ http.Handler = (*devicehttp.Server)(nil)`.
+   Run `go mod tidy` once.
+2. **`internal/agent/sounds`** (W2.9): `Install(src, dst string) error`
+   (both formats of `compile.SoundNoEmergency` and `SoundNotAvailable`,
+   0644) and `Check(dst string) error`; `hack/gen-sounds.sh`, `make
+   sounds`, espeak-ng in `flake.nix`, `!build/sounds/` in `.dockerignore`,
+   `/build/` in `.gitignore`, the Dockerfile copies them to
+   `/usr/share/patchbay/sounds/`, `make image` depends on `sounds` (§2(c)).
+3. **`cmd/patchbay agent`**: flags `--namespace` ($POD_NAMESPACE),
+   `--bundle-configmap`, `--secrets`, `--live-dir` (`compile.LiveDir`),
+   `--firmware-dir`, `--state-dir`, `--sounds-dir`, `--sounds-src`,
+   `--fetch-socket`, `--fs-group`, `--device-http-listen`, plus the
+   existing `--listen`, `--token-file`. Wiring: `builtin.Registry()` →
+   `firmware.NewManifest` → `NewDisk`; `ami.New`; `metrics.New`;
+   `apply.New`; `observe.New`; `intake.New`; `devicehttp.New`;
+   `scrape.New`; `actions.New`; `agent.NewHandler(Options{Ready: apply ∧
+   sounds, Observations: obs.Document, Actions, Firmware:
+   firmware.NewUploadHandler, Metrics: m.Handler()})`; run every `Run`
+   and `ServeFetchSocket` under one errgroup. **`cmd/patchbay
+   fileserver`**: `--live-dir`, `--firmware-dir`, `--tftp-listen`,
+   `--http-listen`, `--fetch-socket`, `--uid`, `--gid`; it builds the
+   manifest and `firmware.NewDisk` (no I/O) and calls `fileserver.Run`,
+   whose own `Reporter` starts after the drop.
+4. **Chart** (W2.10): the agent gets a projected service-account token
+   (only the agent: the pod keeps `automountServiceAccountToken: false`),
+   a Role and RoleBinding per 5.2.1, the flags above; a `fileserver`
+   container (5.2.1 security context; the `tftp`/`cisco-http` container
+   ports move to it; live volume and firmware read-only, the fetch socket
+   emptyDir read-only); an `asterisk-modules` init container first (the
+   Asterisk image, uid 1000, `sh -ec 'for m in "$@"; do cp
+   /usr/lib/asterisk/modules/"$m" /var/lib/patchbay/asterisk-modules/;
+   done' sh <modules…>`), its emptyDir mounted read-only at
+   `/usr/lib/asterisk/modules` in Asterisk; the firmware PVC whole at
+   `layout.PersistentDir` (agent rw, file server ro; an emptyDir without
+   persistence); `sounds` and the fetch socket emptyDirs;
+   every Asterisk probe with `-C`; a checksum annotation over the settings
+   that compile into non-reloadable files; the PodMonitor scrapes the
+   agent's `/metrics`; **`pbx.staticConfig` retired** (template, values,
+   e2e values). Tests: `TestChartUsesTheLiveLayout` (three live mounts:
+   agent, Asterisk and the file server read-only), a new
+   `TestChartModulesMatchCompile`, and one that every `layout` path and
+   uid appears in the chart.
+5. **Build**: Dockerfile `ARG GO_TAGS` passed to `go build -tags`; `make
+   e2e-images` builds with `GO_TAGS=e2e`; `make asterisk-check` also runs
+   `./internal/agent/ami/` if core added its real-Asterisk test.
+6. **e2e**, with the controller scaled to 0 (the harness compiles: §5's
+   last paragraph; `AllowedNetworks` includes `10.244.0.0/16`;
+   fakephone gains `--auth-user`): `TestPBXUp` also asserts the agent
+   (65532, no capabilities) and the file server (65533:65533, no groups,
+   all capability sets zero, `NoNewPrivs`) from `/proc`, and that the
+   file server cannot open `current/asterisk/manager.conf`;
+   `TestModulesNarrowed` (over AMI as the agent's account, from a
+   host-network tools-image pod: fakephone gains an `ami` subcommand;
+   `ModuleLoad` of `app_system.so`, `func_shell.so`,
+   `res_agi.so`, `res_ari.so` and `../usr/lib/asterisk/modules/app_system.so`
+   all fail; `module show` lists exactly `compile.Modules()`);
+   `TestTFTPAndHTTP6970` (the SEP file, resolved, over both; a `.sgn` is
+   notFound; the fetches attributed in `/v1/observations` with the
+   device's version); `TestFirmwareUploadAndServe` (PUT the e2e load
+   through the agent Service with the token: 201, then 200; a corrupted
+   file 422; then served over TFTP and present in the store sensor);
+   `TestRegister` and `TestEchoCall` on compiled config; `TestPrompts` (911
+   and 0 answered with ≥ 2 s of non-silent audio); `TestRollback` (a broken
+   ConfigMap: the old config still registers and echoes; the agent reports
+   `LastApplyVersion` and the error); `TestProvisioningOneTime` (200, then
+   404, then 404 again after the agent container is killed, with the
+   served fetch back in the observations); `TestResyncNotify` (fakephone
+   receives the service-control NOTIFY with the 5.2.5 body and refetches).
+   Assertions say 401 for an endpoint ACL refusal and 403 only for the
+   global ACL.
+7. **Docs**: rewrite docs/e2e.md for compiled config, the file server and
+   the module shadow; CLAUDE.md commands (`make sounds`).
+
+#### 5.2.9 W2 acceptance
+
+```sh
+cd /home/chris/Repos/patchbay
+nix develop -c make generate check-generated fmt vet lint test   # green
+nix develop -c go mod tidy -diff                                 # empty
+nix develop -c make check-hygiene
+nix develop -c make asterisk-check
+nix develop -c make e2e                                          # leaves no cluster
+```
+
+Done when every 5.2.5–5.2.8 test exists and passes, every carry-over in
+5.2.2 is closed, and CLAUDE.md "Deviations" lists what W2 changed.
+
+#### 5.2.10 Handed to W3
+
+- The controller writes `pbx-secrets` (keys `ProjectedKey`, exactly
+  `SecretRefs`) before `pbx-config`, and mints the agent token; in W2 the
+  e2e harness does both.
+- fakephone's scripted `run` mode, its fake web pages (built from
+  `scrape`'s exported page types) and its Linphone mode; `TestPhoneLifecycle`
+  and the other W3 rows of §9.
+- `patchbay firmware load` and `status` (W2 tests the upload endpoint
+  directly).
+- The real-device questions stay §8's.
 
 ---
 

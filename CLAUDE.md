@@ -15,9 +15,13 @@ resources (Phone, Softphone, Person, Stream)
         driver.Decide()    -> status, actions
         GET /v1/observations, POST /v1/actions/... (agent control API, :9440)
    -> PBX pod (hostNetwork, pinned node)
-        agent      native sidecar: applies bundles, serves TFTP/HTTP, scrapes
-                   phones, talks AMI. Senses and acts; never decides.
-        asterisk   SIP 5060, RTP 10000-10099
+        agent      native sidecar: applies bundles, serves device HTTP :8088,
+                   scrapes phones, talks AMI, keeps the observations.
+                   Senses and acts; never decides.
+        fileserver TFTP :69 and HTTP :6970; binds as root, then runs as
+                   65533 with no capabilities; reports each transfer to the
+                   agent over a unix socket
+        asterisk   SIP 5060, RTP 10000-10099; sees only the compiled modules
 ```
 
 **Pure core, imperative shell.**
@@ -39,10 +43,16 @@ Settings, device Secret names; in `layout.go` the bundle's four trees, the
 live directory the agent swaps and the sound prompts; in `configmap.go` the
 pbx-config ConfigMap encoding), `internal/drivers` (Driver, Device and the
 DeviceID format, Memory, Observations, DecideSettings, Decision, Profile with
-EndpointOptions, FirmwareLoad) and `internal/agent/api` (the control API's
-JSON). Change them deliberately: the controller, agent, drivers and e2e fake
-phone all build on them. The release A plan, with the reasoning behind each
-contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
+EndpointOptions, FirmwareLoad), `internal/agent/api` (the control API's
+JSON), and the agent's internal seams: `internal/agent/sensor` (fetch
+events, the file server's socket format, the scrape and firmware sensors),
+`internal/agent/provision` (one-time token grants), `internal/agent/layout`
+(mounts, uids, file modes, version directories), `internal/agent/ami/ami.go`
+(the AMI client interface), `internal/agent/firmware/store.go` (the
+firmware store interface) and `agent.Options` (what the control API
+serves). Change them deliberately: the controller, agent, drivers and e2e
+fake phone all build on them. The release A plan, with the reasoning behind
+each contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
 
 ## Deviations from the design
 
@@ -77,6 +87,20 @@ departs from it, the departure is recorded here (and in the code's docs).
   directory". They serve only their own tree (`tftp/`, `http/`); Asterisk's
   `asterisk/` tree, which holds every password once resolved, is never
   served.
+- **A separate file server** (§5 has the agent serve TFTP :69 and HTTP
+  :6970): `patchbay fileserver`, a third container in the PBX pod, binds
+  both as root with only `NET_BIND_SERVICE`, `SETUID` and `SETGID`, then
+  drops to uid 65533 with no groups and no capabilities before it reads a
+  file. The code that parses packets from the voice VLAN holds no token
+  and no AMI password, and file modes keep it from every resolved file but
+  the `tftp/` tree it serves. It reports transfers to the agent over a unix
+  socket (docs/plans/release-a.md §5.2.1).
+- **One projected Secret** (§5: the agent "watches pbx-config and its
+  Secrets"): the agent reads only `<fullname>-pbx-secrets`, which the
+  controller writes before each pbx-config with every secret the bundle
+  references (`Bundle.SecretRefs`), each under `SecretRef.ProjectedKey`
+  (`<name>_<key>`). The agent's Role names that Secret and the ConfigMap,
+  nothing else.
 - **Request annotations** (`patchbay.chrismiller.xyz/resync-requested`,
   `.../reissue-requested`) are acted on once per value, recorded in
   `status.handledRequest`, so the controller never edits metadata.
