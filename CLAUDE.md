@@ -41,7 +41,8 @@ pbx-config ConfigMap encoding), `internal/drivers` (Driver, Device and the
 DeviceID format, Memory, Observations, DecideSettings, Decision, Profile with
 EndpointOptions, FirmwareLoad) and `internal/agent/api` (the control API's
 JSON). Change them deliberately: the controller, agent, drivers and e2e fake
-phone all build on them.
+phone all build on them. The release A plan, with the reasoning behind each
+contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
 
 ## Deviations from the design
 
