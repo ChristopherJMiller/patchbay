@@ -4,13 +4,16 @@
 // resource status (design §5). Each reconcile observes (resources, agent
 // observations), decides with pure functions (compile.Compile, a driver's
 // Decide), then acts (ConfigMap, Secrets, status, agent actions) and
-// requeues. Reconcilers land here, tested against a real API server with
-// envtest; this file only builds the manager they will run in.
+// requeues. The pieces live in its subpackages (docs/plans/release-a.md
+// §6.2.3 has the map); this package builds the manager (NewManager) and
+// wires them into it (Setup), tested against a real API server with
+// envtest.
 package controller
 
 import (
 	"errors"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -40,6 +43,24 @@ type Options struct {
 	// LeaderElection makes the manager hold a Lease before running
 	// reconcilers, so only one replica ever decides.
 	LeaderElection bool
+
+	// Fullname is the chart's fullname, which every object of the install
+	// is named after (install.NewNames). Required by Setup.
+	Fullname string
+
+	// SettingsFile is the settings.json the install's settings were read
+	// from (the chart's <fullname>-settings ConfigMap, mounted). Setup is
+	// given the settings themselves; this is for the log.
+	SettingsFile string
+
+	// AgentURL is the agent's control API. "" is the agent Service's
+	// address on the default port (install.AgentURL).
+	AgentURL string
+
+	// Registerer takes the controller's own metrics. Nil is
+	// controller-runtime's metrics.Registry, which the manager serves on
+	// MetricsAddr; a process can register there only once.
+	Registerer prometheus.Registerer
 }
 
 // NewScheme returns a scheme holding the built-in Kubernetes types and the
