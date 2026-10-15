@@ -203,3 +203,16 @@ func TestRecorderFunc(t *testing.T) {
 		t.Fatalf("recorded %+v", got)
 	}
 }
+
+func TestProvisioningName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"p/tok": true, "/p/tok": true, "//p/tok": true, "P/tok": true, "x/../p/tok": true, `p\tok`: true,
+		"p/a/b": true,
+		"p":     false, "p/": false, "/p": false, "SEPD0C78915E8C8.cnf.xml": false, "pp/tok": false,
+		"tok/p": false, "provisioning/softphone-x.xml": false, "": false,
+	} {
+		if got := sensor.ProvisioningName(name); got != want {
+			t.Errorf("ProvisioningName(%q) = %t, want %t", name, got, want)
+		}
+	}
+}

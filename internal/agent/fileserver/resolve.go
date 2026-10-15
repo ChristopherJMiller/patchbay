@@ -73,8 +73,13 @@ func quoteName(name string) string {
 	return q
 }
 
-// fileOf is FetchEvent.File for a request: the name, or quoted.
+// fileOf is FetchEvent.File for a request: the name, or quoted, or
+// sensor.ProvisioningUnknownFile for a name that may carry a provisioning
+// token (sensor.ProvisioningName).
 func fileOf(raw string) string {
+	if sensor.ProvisioningName(raw) {
+		return sensor.ProvisioningUnknownFile
+	}
 	name, ok := checkName(raw)
 	if !ok {
 		return quoteName(name)
@@ -88,6 +93,13 @@ func fileOf(raw string) string {
 // Transport, At, Source and (when the file opened) Result. f is nil when
 // the event's Result is notFound or error.
 func (s *server) open(raw string) (*os.File, sensor.FetchEvent) {
+	// A softphone's provisioning URL sent here instead of device HTTP: the
+	// file server holds no token to compare with, so the name is never
+	// looked up, and is reported as p/ only (its token must not reach the
+	// fetch log).
+	if sensor.ProvisioningName(raw) {
+		return nil, sensor.FetchEvent{File: sensor.ProvisioningUnknownFile, Result: api.FetchNotFound}
+	}
 	name, ok := checkName(raw)
 	if !ok {
 		return nil, sensor.FetchEvent{File: quoteName(name), Result: api.FetchNotFound}

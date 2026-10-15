@@ -688,3 +688,40 @@ func TestFIFOInTheTreeNeverBlocks(t *testing.T) {
 		t.Errorf("a FIFO: %+v", ev)
 	}
 }
+
+// TestProvisioningURLNeverRecorded: a softphone's one-time provisioning
+// URL sent to the file server instead of device HTTP (:6970/p/<token>, or
+// a TFTP read of p/<token>) is never looked up, and is reported as
+// sensor.ProvisioningUnknownFile: the file server holds no token to
+// compare with, so no name under the provisioning prefix may reach the
+// fetch log (or the observations and status after it).
+func TestProvisioningURLNeverRecorded(t *testing.T) {
+	e := startEnv(t, nil, fastTFTP())
+	e.live.version(vA, map[string][]byte{sepName: generated("sep", 100)})
+	e.live.swap(vA)
+	const token = "not-a-secret-provisioning-token-0123456789"
+	for _, name := range []string{"p/" + token, "/p/" + token, "P/" + token, "x/../p/" + token, "p\\" + token, "//p/" + token} {
+		if _, err := tftpGet(t, e.tftp, name, 0); err == nil {
+			t.Errorf("%q was served", name)
+		}
+		if ev := e.rec.next(); ev.File != sensor.ProvisioningUnknownFile || ev.BundlePath != "" || ev.Result != api.FetchNotFound {
+			t.Errorf("TFTP %q: event %+v", name, ev)
+		}
+	}
+	for _, target := range []string{"/p/" + token, "//p/" + token, "/p%2F" + token, "/x/../p/" + token} {
+		resp, _ := httpGet(t, e.http, target)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s: %d", target, resp.StatusCode)
+		}
+		if ev := e.rec.next(); ev.File != sensor.ProvisioningUnknownFile || ev.BundlePath != "" || ev.Result != api.FetchNotFound {
+			t.Errorf("HTTP %s: event %+v", target, ev)
+		}
+	}
+	// "p" as a file name of its own is a name like any other.
+	if _, err := tftpGet(t, e.tftp, "p", 0); err == nil {
+		t.Error("p was served")
+	}
+	if ev := e.rec.next(); ev.File != "p" {
+		t.Errorf("p: event %+v", ev)
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -90,6 +91,28 @@ type FetchEvent struct {
 // whose token matched no grant, spent or not: the URL prefix without its
 // leading "/", and without the token.
 const ProvisioningUnknownFile = "p/"
+
+// provisioningElement is the first element of the provisioning URL path
+// (api.ProvisioningPathPrefix, "/p/").
+var provisioningElement = strings.Trim(api.ProvisioningPathPrefix, "/")
+
+// ProvisioningName reports whether a requested name or path could carry a
+// one-time provisioning token: an element "p" (any case) followed by
+// another, splitting at "/" and "\" and skipping empty elements (p/<token>,
+// /p/<token>, //p/<token>, x/../p/<token>, p\<token>). The file server
+// holds no token to compare with, so it never looks such a name up and
+// reports it as ProvisioningUnknownFile; the agent drops any other event
+// from it that has one. No manifest name (one element) and no bundle path
+// the compiler renders has such an element.
+func ProvisioningName(name string) bool {
+	els := strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' })
+	for i := 0; i+1 < len(els); i++ {
+		if strings.EqualFold(els[i], provisioningElement) {
+			return true
+		}
+	}
+	return false
+}
 
 // Limits on a FetchEvent's fields.
 const (
