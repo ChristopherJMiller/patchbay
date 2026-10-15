@@ -137,6 +137,9 @@ func TestFetchSocket(t *testing.T) {
 		t.Error("the connection with a bad line was not closed")
 	}
 	send(t, a, event("a-after"))
+	// Connections are served concurrently: only one connection's events
+	// keep their order, so c dials once a-after is in.
+	waitFiles(t, rec, "SEPD0C78915E8C8.cnf.xml", "dialplan.xml", "b1", "a-after")
 	c := dial(t, path)
 	send(t, c, event("c1"))
 	// A line over MaxWireLine also ends its connection.
