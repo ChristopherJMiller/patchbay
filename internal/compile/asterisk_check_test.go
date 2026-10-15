@@ -40,8 +40,10 @@ import (
 )
 
 const (
-	// checkLabel marks every container this check starts, so a run cut
-	// short can be cleaned up (make asterisk-check removes leftovers).
+	// checkLabel marks every container this check starts, with the PID of
+	// the test process that owns it as the value, so a run cut short can be
+	// cleaned up: make asterisk-check removes only containers whose owner
+	// is gone, never those of a run still going in another shell.
 	checkLabel = "patchbay.chrismiller.xyz/asterisk-check"
 	// asteriskConf is where the PBX pod's Asterisk reads its config.
 	asteriskConf = compile.AsteriskConfigDir + "/asterisk.conf"
@@ -159,7 +161,7 @@ func startAsterisk(t *testing.T, env checkEnv, name string, b compile.Bundle, se
 	defer cancel()
 	tmpfs := "uid=1000,gid=1000,mode=0750"
 	args := []string{
-		"run", "--detach", "--name", name, "--label", checkLabel + "=1",
+		"run", "--detach", "--name", name, "--label", checkLabel + "=" + strconv.Itoa(os.Getpid()),
 		"--network", "none",
 		"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 		"--tmpfs", "/var/run/asterisk:" + tmpfs,

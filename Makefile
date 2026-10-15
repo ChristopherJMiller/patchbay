@@ -127,17 +127,29 @@ clean: ## Remove build output.
 
 ##@ Real Asterisk (docker, no cluster)
 
-# Containers the check starts carry this label, so a run cut short can be
-# cleaned up by the next one.
+# Containers the check starts carry this label, valued with the PID of the
+# test process that owns them, so a run cut short can be cleaned up by the
+# next one. Only orphans are removed (no such process, or a label from
+# before owners were recorded): a run still going in another shell keeps its
+# containers. A recycled PID keeps an orphan until that process exits.
 ASTERISK_CHECK_LABEL := patchbay.chrismiller.xyz/asterisk-check
 
 .PHONY: asterisk-check
-asterisk-check: ## Boot every compile golden in the chart's pinned Asterisk (docker): modules, endpoints, dialplan, AMI, REGISTER and calls.
-	@docker ps -aq --filter label=$(ASTERISK_CHECK_LABEL) | xargs -r docker rm --force >/dev/null
+asterisk-check: asterisk-check-orphans ## Boot every compile golden in the chart's pinned Asterisk (docker): modules, endpoints, dialplan, AMI, REGISTER and calls.
 	docker pull --quiet $(ASTERISK_REPO):$(ASTERISK_TAG)@$(ASTERISK_DIGEST)
 	@# Static (CGO_ENABLED=0): the test binary also runs inside the Asterisk
 	@# container, as the SIP client (internal/compile/sipclient_asterisk_test.go).
 	CGO_ENABLED=0 go test -tags asterisk -count=1 -timeout 10m -run '^TestRealAsterisk' -v ./internal/compile/
+
+.PHONY: asterisk-check-orphans
+asterisk-check-orphans: ## Remove asterisk-check containers whose test process is gone.
+	@docker ps -a --filter label=$(ASTERISK_CHECK_LABEL) \
+		--format '{{.ID}} {{.Label "$(ASTERISK_CHECK_LABEL)"}}' | \
+	while read -r id owner; do \
+		if [[ $$owner =~ ^[0-9]+$$ ]] && (( owner > 1 )) && [[ -d /proc/$$owner ]]; then continue; fi; \
+		echo "asterisk-check: removing orphan container $$id (owner $${owner:-unknown})"; \
+		docker rm --force "$$id" >/dev/null; \
+	done
 
 ##@ End-to-end (kind + the chart + real Asterisk + fakephone; see docs/e2e.md)
 
