@@ -523,9 +523,9 @@ func TestReloadErrorRollsBack(t *testing.T) {
 	e.mustApply(v1)
 	e.ast.resetReloads()
 	v2 := houseWithFront(t)
-	e.ast.failReload[v2.Bundle.Version+" pbx_config.so"] = errors.New("ami: ModuleLoad: An unknown error occurred")
+	e.ast.failReload[v2.Bundle.Version+" pbx_config.so"] = errors.New("ami: Reload: An unknown error occurred")
 	err := e.apply(v2)
-	if err == nil || err.Error() != "reload pbx_config.so: ami: ModuleLoad: An unknown error occurred" {
+	if err == nil || err.Error() != "reload pbx_config.so: ami: Reload: An unknown error occurred" {
 		t.Fatalf("Apply = %v", err)
 	}
 	if e.current() != v1.Bundle.Version {

@@ -22,10 +22,15 @@ var (
 	listChannels  = &listSpec{item: "CoreShowChannel", complete: "CoreShowChannelsComplete"}
 )
 
-// Reload reloads one module (ModuleLoad, LoadType reload). Its error does
-// not repeat the module's name: the caller says which reload failed.
+// Reload reloads one module with the Reload action (Module: <name>). Not
+// ModuleLoad with LoadType reload, as ami.go's Client documentation has it:
+// Asterisk 22.11's ModuleLoad answers "Module not found." for the built-ins
+// apply reloads (manager, logger, indications), and Reload reloads those and
+// the .so modules alike, with the same privilege (system; checked by
+// TestRealAsteriskAMI). Its error does not repeat the module's name: the
+// caller says which reload failed.
 func (c *Conn) Reload(ctx context.Context, module string) error {
-	_, err := c.call(ctx, action{name: "ModuleLoad", fields: []field{{"Module", module}, {"LoadType", "reload"}}}, nil)
+	_, err := c.call(ctx, action{name: "Reload", fields: []field{{"Module", module}}}, nil)
 	return err
 }
 

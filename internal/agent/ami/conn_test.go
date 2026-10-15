@@ -146,7 +146,7 @@ func TestGoldenRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"Action: ModuleLoad\r\nActionID: <id>\r\nModule: res_pjsip.so\r\nLoadType: reload\r\n\r\n",
+		"Action: Reload\r\nActionID: <id>\r\nModule: res_pjsip.so\r\n\r\n",
 		"Action: PJSIPShowEndpoints\r\nActionID: <id>\r\n\r\n",
 		"Action: ShowDialPlan\r\nActionID: <id>\r\n\r\n",
 		"Action: PJSIPShowContacts\r\nActionID: <id>\r\n\r\n",
@@ -362,8 +362,8 @@ func TestErrorResponses(t *testing.T) {
 	f := newFakeAMI(t, secret)
 	f.setReply(func(c *fakeConn, r fakeRequest) {
 		switch r.action {
-		case "ModuleLoad":
-			c.send("Response: Error", "ActionID: "+r.id, "Message: No such module.")
+		case "Reload":
+			c.send("Response: Error", "ActionID: "+r.id, "Message: No such module")
 		case "PJSIPNotify":
 			c.send("Response: Error", "ActionID: "+r.id, "Message: Unable to retrieve endpoint phone-gone")
 		}
@@ -372,7 +372,7 @@ func TestErrorResponses(t *testing.T) {
 	waitUp(t, c)
 	ctx := ctx5s(t)
 	err := c.Reload(ctx, "res_nope.so")
-	if err == nil || err.Error() != "ami: ModuleLoad: No such module." {
+	if err == nil || err.Error() != "ami: Reload: No such module" {
 		t.Errorf("Reload = %v, want Asterisk's message", err)
 	}
 	err = c.Notify(ctx, Notify{Endpoint: "phone-gone", Body: []string{"x"}})
@@ -428,7 +428,7 @@ func TestUnsafeValues(t *testing.T) {
 func TestDeadline(t *testing.T) {
 	f := newFakeAMI(t, secret)
 	f.setReply(func(c *fakeConn, r fakeRequest) {
-		if r.action == "ModuleLoad" {
+		if r.action == "Reload" {
 			return // never answered
 		}
 		c.send("Response: Success", "ActionID: "+r.id, "EventList: start")
