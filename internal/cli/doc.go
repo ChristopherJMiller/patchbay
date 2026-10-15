@@ -7,8 +7,3 @@
 //
 // docs/plans/release-a.md §6.2 (W3.9) is the specification.
 package cli
-
-// The QR encoder the softphone QR code is drawn with (plan §6.2: rsc.io/qr,
-// one small pure-Go package, rendered here as half blocks). Imported here
-// so go.mod keeps the module until the renderer imports it for real.
-import _ "rsc.io/qr"
