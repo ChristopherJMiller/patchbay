@@ -286,10 +286,19 @@ type WebScrape struct {
 }
 
 // DeviceInformation is the subset of /DeviceInformationX the state machine
-// reads.
+// reads. The element names are the XML twin's (appLoadID, versionID, ...).
+// What a 79x5 puts in each is not yet confirmed on the real phone (a bench
+// check, docs/plans/release-a.md §8), so the agent reports both load fields
+// as the phone gives them and the driver accepts either.
 type DeviceInformation struct {
-	// AppLoadID is the running application load, e.g. SIP45.9-4-2SR4-3S, or
-	// jar45sccp.9-4-2SR4-3 on SCCP firmware.
+	// VersionID is the running load's ID, the name the SEP file's
+	// loadInformation and the firmware manifest use, e.g. SIP45.9-4-2SR4-3S,
+	// or SCCP45.9-4-2SR4-3S on SCCP firmware (the "Version" line of the
+	// phone's Device Information page).
+	VersionID string `json:"versionID,omitempty"`
+	// AppLoadID is the running application image, a file of the load, e.g.
+	// jar45sip.9-4-2SR4-3.sbn, or jar45sccp.9-4-2SR4-3.sbn on SCCP firmware.
+	// It is not the load ID: never compare it with a load name.
 	AppLoadID string `json:"appLoadID,omitempty"`
 	// BootLoadID is the boot load.
 	BootLoadID string `json:"bootLoadID,omitempty"`

@@ -45,7 +45,7 @@ func TestObservationsRoundTrip(t *testing.T) {
 			},
 			Web: &api.WebScrape{
 				At: at, Address: "192.168.20.100",
-				DeviceInformation:    &api.DeviceInformation{AppLoadID: "SIP45.9-4-2SR4-3S"},
+				DeviceInformation:    &api.DeviceInformation{VersionID: "SIP45.9-4-2SR4-3S", AppLoadID: "jar45sip.9-4-2SR4-3.sbn"},
 				NetworkConfiguration: &api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"},
 				DeviceLog:            []string{"Registered 100"},
 			},

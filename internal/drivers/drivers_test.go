@@ -192,7 +192,7 @@ func TestValidateFirmware(t *testing.T) {
 	if l, ok := drivers.LoadByName(twoLoads(), "SIP45.9-4-2SR3-1S"); !ok || len(l.Files) != 2 {
 		t.Errorf("LoadByName(SR3-1) = %+v, %v", l, ok)
 	}
-	if _, ok := drivers.LoadByName(twoLoads(), "jar45sccp.9-4-2SR4-3"); ok {
+	if _, ok := drivers.LoadByName(twoLoads(), "SCCP45.9-4-2SR4-3S"); ok {
 		t.Error("LoadByName found a load that is not in the manifest")
 	}
 

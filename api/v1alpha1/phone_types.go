@@ -67,8 +67,8 @@ type PhoneObserved struct {
 	// +optional
 	FirstSeen *metav1.Time `json:"firstSeen,omitempty"`
 
-	// Firmware is the load the phone last reported (for example
-	// SIP45.9-4-2SR4-3S, or jar45sccp.9-4-2SR4-3 while still on SCCP).
+	// Firmware is the load the phone last reported running (for example
+	// SIP45.9-4-2SR4-3S, or SCCP45.9-4-2SR4-3S while still on SCCP).
 	// +optional
 	Firmware string `json:"firmware,omitempty"`
 

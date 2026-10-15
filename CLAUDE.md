@@ -56,7 +56,12 @@ departs from it, the departure is recorded here (and in the code's docs).
   username is its ID (`phone-desk`, `drivers.DeviceID`), its SIP user and
   AOR are its number (`100`), and endpoints are identified by auth username.
   The ID survives renumbering; the line name stays the plain number the 79x5
-  expects.
+  expects. IDs are at most 30 characters, the 79x5's `authName` limit.
+- **The running load** (§8.2 names the "app/boot load ID"): the scraper
+  also reads `/DeviceInformationX`'s `versionID`, the load ID that
+  `loadInformation` and the manifest use; `appLoadID` is the application
+  image (`jar45sip….sbn`), which never equals a load name. The driver
+  accepts either until the bench shows which one the 79x5 fills.
 - **PBX down**: §7 says `Registered=False`, §8.3's Unknown row says
   `Registered=Unknown`. With Asterisk down the device is certainly not
   registered, so it is `False`, reason `PBXDown`; an unreachable agent is

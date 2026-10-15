@@ -12,8 +12,11 @@ import (
 // only model.
 const ModelSoftphone = "softphone"
 
-// DeviceIDMaxLength is the longest device ID DeviceID returns.
-const DeviceIDMaxLength = 63
+// DeviceIDMaxLength is the longest device ID DeviceID returns. It is the
+// tightest limit any device puts on the ID: the 79x5's authName (its SIP
+// auth username) holds at most 30 characters (usecallmanager.nz,
+// SEPMAC.cnf.xml), so a longer ID could never register.
+const DeviceIDMaxLength = 30
 
 // DeviceID returns a device's ID in the compiled bundle: the kind in lower
 // case, a dash, and the resource name, e.g. "phone-desk" or
@@ -27,8 +30,10 @@ const DeviceIDMaxLength = 63
 //
 // An ID longer than DeviceIDMaxLength is shortened: the name is cut, and the
 // first 8 hex digits of the name's SHA-256 are appended
-// ("phone-<cut name>-1a2b3c4d"). Only names deliberately crafted to collide
-// with such an ID can produce two devices with one ID; Compile refuses that.
+// ("phone-<cut name>-1a2b3c4d"), so a Phone name of up to 24 characters and
+// a Softphone name of up to 20 are kept whole. Only names deliberately
+// crafted to collide with such an ID can produce two devices with one ID;
+// Compile refuses that.
 func DeviceID(kind DeviceKind, name string) string {
 	prefix := strings.ToLower(string(kind)) + "-"
 	if len(prefix)+len(name) <= DeviceIDMaxLength {

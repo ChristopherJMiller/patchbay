@@ -77,7 +77,10 @@ type EndpointOptions struct {
 	// RegistrationExpiry is the AOR's default_expiration and
 	// maximum_expiration: the longest registration Asterisk grants. A
 	// device that asks for longer is granted this, so it must honour the
-	// Expires Asterisk answers with. At least a minute, whole seconds.
+	// Expires Asterisk answers with. A driver whose device config sets the
+	// expiry it asks for renders this same value there (the 79x5's
+	// sipStack/timerRegisterExpires, Linphone's reg_expires), so the two
+	// sides agree by construction. At least a minute, whole seconds.
 	RegistrationExpiry time.Duration
 }
 

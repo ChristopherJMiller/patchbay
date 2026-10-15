@@ -22,25 +22,33 @@ func TestDeviceID(t *testing.T) {
 		{drivers.KindPhone, "desk", "phone-desk"},
 		{drivers.KindSoftphone, "chris-laptop", "softphone-chris-laptop"},
 		{drivers.KindPhone, "upstairs.office", "phone-upstairs.office"},
-		// 63 characters exactly: kept whole.
-		{drivers.KindPhone, strings.Repeat("a", 57), "phone-" + strings.Repeat("a", 57)},
+		// 30 characters exactly (the 79x5's authName limit): kept whole.
+		{drivers.KindPhone, strings.Repeat("a", 24), "phone-" + strings.Repeat("a", 24)},
+		{drivers.KindSoftphone, strings.Repeat("a", 20), "softphone-" + strings.Repeat("a", 20)},
+		// One more: the name is cut, and 8 hex digits of its SHA-256 added.
+		{drivers.KindPhone, strings.Repeat("a", 25), "phone-" + strings.Repeat("a", 15) + "-2f521e2a"},
+		{drivers.KindSoftphone, strings.Repeat("a", 21), "softphone-" + strings.Repeat("a", 11) + "-7df8e299"},
 	} {
 		if got := drivers.DeviceID(tc.kind, tc.name); got != tc.want {
 			t.Errorf("DeviceID(%s, %q) = %q, want %q", tc.kind, tc.name, got, tc.want)
 		}
 	}
 
-	// Longer IDs are cut to 63 with a hash of the whole name, so two long
+	// Longer IDs are cut to 30 with a hash of the whole name, so two long
 	// names that share a prefix still differ, and a cut never leaves a
-	// trailing dot or dash before the hash.
+	// trailing dot or dash before the hash. A Phone keeps 15 characters of
+	// the name, a Softphone 11: the dash and dot below fall at the last kept
+	// character of one or the other.
 	id := regexp.MustCompile(`^(phone|softphone)-[a-z0-9]([-a-z0-9.]*[a-z0-9])?-[0-9a-f]{8}$`)
 	seen := map[string]string{}
 	for _, name := range []string{
-		strings.Repeat("a", 58),
+		strings.Repeat("a", 31),
 		strings.Repeat("a", 253),
 		strings.Repeat("a", 252) + "b",
-		strings.Repeat("a", 47) + "-" + strings.Repeat("b", 20),
-		strings.Repeat("a", 47) + "." + strings.Repeat("b", 20),
+		strings.Repeat("a", 14) + "-" + strings.Repeat("b", 20),
+		strings.Repeat("a", 14) + "." + strings.Repeat("b", 20),
+		strings.Repeat("a", 10) + "-" + strings.Repeat("b", 20),
+		strings.Repeat("a", 10) + "." + strings.Repeat("b", 20),
 	} {
 		for _, kind := range []drivers.DeviceKind{drivers.KindPhone, drivers.KindSoftphone} {
 			got := drivers.DeviceID(kind, name)
