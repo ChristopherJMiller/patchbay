@@ -40,3 +40,12 @@ func TestGrantNeverPrintsItsToken(t *testing.T) {
 		}
 	}
 }
+
+func TestSourceFunc(t *testing.T) {
+	var src provision.Source = provision.SourceFunc(func() (string, []provision.Grant) {
+		return "v", []provision.Grant{{Device: "softphone-den"}}
+	})
+	if v, g := src.Grants(); v != "v" || len(g) != 1 || g[0].Device != "softphone-den" {
+		t.Errorf("Grants = %q %v", v, g)
+	}
+}

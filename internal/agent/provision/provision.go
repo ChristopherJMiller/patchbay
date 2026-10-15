@@ -12,8 +12,10 @@
 //   - a token is spent by its first successful match: the spend is written
 //     durably (layout.StateDir/layout.SpentTokensFile, token digests only)
 //     before the document is sent, so a crash cannot make it reusable, and
-//     it stays spent until the live bundle no longer grants that token (the
-//     controller rotates it on seeing the fetch, design §8.4 Provisioned);
+//     it stays spent until the live bundle no longer grants that token and
+//     can no longer be rolled back to one that does (the settled grants,
+//     apply.Applier.SettledGrants; the controller rotates the token on
+//     seeing the fetch, design §8.4 Provisioned);
 //   - the document is read from Grant.BundleVersion's own directory, never
 //     through the current link, so token and document always belong to one
 //     version;
@@ -65,3 +67,10 @@ type Source interface {
 	// device HTTP calls it on every provisioning request.
 	Grants() (bundleVersion string, grants []Grant)
 }
+
+// SourceFunc is a function as a Source (apply.Applier.SettledGrants for
+// devicehttp.Config.Settled).
+type SourceFunc func() (bundleVersion string, grants []Grant)
+
+// Grants calls f.
+func (f SourceFunc) Grants() (string, []Grant) { return f() }

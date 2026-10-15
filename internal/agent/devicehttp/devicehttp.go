@@ -22,7 +22,8 @@
 // to the state directory before the document is sent (state.go): an agent
 // restart, before or after the controller saw the fetch, re-records the
 // served fetch and keeps the token spent until the live bundle no longer
-// grants it. HEAD never spends a token, and is answered with the one 404
+// grants it and no rollback can bring back one that does (Config.Settled).
+// HEAD never spends a token, and is answered with the one 404
 // under the provisioning prefix, so it cannot tell a good token from a bad
 // one either.
 package devicehttp
@@ -97,6 +98,13 @@ type Config struct {
 	LiveDir string
 	// Grants are the live bundle's provisioning grants (apply). Required.
 	Grants provision.Source
+	// Settled are the grants spent tokens are pruned against: the live
+	// version's once no failure can roll it back
+	// (provision.SourceFunc(apply.Applier.SettledGrants)). Pruning against
+	// Grants would forget the spends of an older version's tokens while a
+	// rollback can still make that version, and its grants, live again.
+	// Nil: spends are never pruned.
+	Settled provision.Source
 	// Recorder receives one event per GET (the observation store). Nil
 	// discards them.
 	Recorder sensor.FetchRecorder
@@ -114,6 +122,7 @@ type Server struct {
 	liveDir    string
 	stateDir   string
 	grants     provision.Source
+	settled    provision.Source
 	rec        sensor.FetchRecorder
 	now        func() time.Time
 	log        logr.Logger
@@ -140,7 +149,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("devicehttp: no grants")
 	}
 	s := &Server{
-		liveDir: cfg.LiveDir, stateDir: cfg.StateDir, grants: cfg.Grants, rec: cfg.Recorder,
+		liveDir: cfg.LiveDir, stateDir: cfg.StateDir, grants: cfg.Grants, settled: cfg.Settled, rec: cfg.Recorder,
 		now: cfg.Now, log: cfg.Log, pruneEvery: pruneEvery, spent: map[tokenDigest]bool{},
 	}
 	if s.rec == nil {
@@ -258,8 +267,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // provision serves a softphone's document to the holder of its token,
 // once.
 func (s *Server) provision(w http.ResponseWriter, token, src string) {
+	s.prune()
 	version, grants := s.grants.Grants()
-	s.pruneOnChange(version, grants)
 	if !layout.ValidVersion(version) {
 		version = ""
 	}
@@ -582,12 +591,11 @@ func writeDocument(w http.ResponseWriter, contentType string, body []byte, head,
 	return err
 }
 
-// pruneOnChange drops the spends of tokens the live bundle no longer
-// grants, once per grants version. It prunes only on a complete grant
+// pruneOnChange drops the spends of tokens the settled grants no longer
+// hold, once per settled version. It prunes only on a complete grant
 // list: every softphone the version's index says holds a token
 // (layout.IndexFile) must have its grant, so a list apply has not filled
-// yet (an adopted version before its tokens are resolved) never makes a
-// spent token usable again. Without the index it waits.
+// yet never makes a spent token usable again. Without the index it waits.
 func (s *Server) pruneOnChange(version string, grants []provision.Grant) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -633,9 +641,13 @@ func (s *Server) pruneOnChange(version string, grants []provision.Grant) {
 	s.prunedAt = version
 }
 
-// prune runs pruneOnChange on the grants as they are now.
+// prune runs pruneOnChange on the settled grants as they are now; without
+// a settled source it never prunes.
 func (s *Server) prune() {
-	version, grants := s.grants.Grants()
+	if s.settled == nil {
+		return
+	}
+	version, grants := s.settled.Grants()
 	s.pruneOnChange(version, grants)
 }
 

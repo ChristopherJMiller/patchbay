@@ -27,6 +27,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/layout"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/metrics"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/observe"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/provision"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/scrape"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sounds"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
@@ -189,7 +190,8 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	}
 	// After the store: New re-records each persisted spend's served fetch.
 	dh, err := devicehttp.New(devicehttp.Config{
-		LiveDir: o.liveDir, Grants: applier, Recorder: store, StateDir: o.stateDir, Log: log.WithName("devicehttp"),
+		LiveDir: o.liveDir, Grants: applier, Settled: provision.SourceFunc(applier.SettledGrants),
+		Recorder: store, StateDir: o.stateDir, Log: log.WithName("devicehttp"),
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)

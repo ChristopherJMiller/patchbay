@@ -200,11 +200,14 @@ func (l *logs) String() string {
 type fixture struct {
 	live, state string
 	grants      *grants
-	rec         *recorder
-	logs        *logs
-	now         time.Time
-	s           *devicehttp.Server
-	ts          *httptest.Server
+	// settled is what spends are pruned against: the serving grants unless
+	// a test sets another source (nil: never prune) before start.
+	settled provision.Source
+	rec     *recorder
+	logs    *logs
+	now     time.Time
+	s       *devicehttp.Server
+	ts      *httptest.Server
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -217,6 +220,7 @@ func newFixture(t *testing.T) *fixture {
 		logs:   &logs{},
 		now:    t0,
 	}
+	f.settled = f.grants
 	must(t, os.MkdirAll(f.live, 0o755))
 	must(t, os.MkdirAll(filepath.Dir(f.state), 0o755))
 	f.start(t)
@@ -232,7 +236,7 @@ func (f *fixture) start(t *testing.T) {
 	}
 	f.rec = newRecorder(t)
 	s, err := devicehttp.New(devicehttp.Config{
-		LiveDir: f.live, StateDir: f.state, Grants: f.grants, Recorder: f.rec,
+		LiveDir: f.live, StateDir: f.state, Grants: f.grants, Settled: f.settled, Recorder: f.rec,
 		Now: func() time.Time { return f.now },
 		Log: funcr.New(func(prefix, args string) {
 			f.logs.mu.Lock()

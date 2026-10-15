@@ -779,3 +779,71 @@ func TestMatch(t *testing.T) {
 		t.Errorf("Match with no grants = %d", got)
 	}
 }
+
+// TestPrunesOnlyAgainstSettledGrants: spends are pruned against the
+// settled grants, never the serving ones: a version swapped in unverified
+// can be rolled back, and its predecessor's tokens granted again, so their
+// spends must still be there.
+func TestPrunesOnlyAgainstSettledGrants(t *testing.T) {
+	f := newFixture(t)
+	settled := &grants{}
+	f.settled = settled
+	f.start(t)
+	hasSpend := func(tok string) bool { return strings.Contains(f.stateFile(t), digest(tok)) }
+
+	writeVersion(t, f.live, v1, v1Files("v1"), v1Devices(denV1, labV1))
+	setCurrent(t, f.live, v1)
+	g1 := []provision.Grant{grant("softphone-den", tokDen, denFile, v1, denV1), grant("softphone-lab", tokLab, labFile, v1, labV1)}
+	f.grants.set(v1, g1...)
+	settled.set(v1, g1...)
+	if r := f.get(t, "/p/"+tokDen); r.code != http.StatusOK {
+		t.Fatalf("first fetch = %d", r.code)
+	}
+	f.rec.next(t)
+
+	// v2, unverified, rotates den's token and serves; it is not settled.
+	writeVersion(t, f.live, v2, v1Files("v2"), v1Devices(denV2, labV1))
+	setCurrent(t, f.live, v2)
+	f.grants.set(v2, grant("softphone-den", tokDen2, denFile, v2, denV2), grant("softphone-lab", tokLab, labFile, v2, labV1))
+	settled.set("")
+	f.get(t, "/p/"+tokNone) // a provisioning request prunes
+	f.rec.next(t)
+	f.s.Prune()
+	if !hasSpend(tokDen) {
+		t.Fatal("a spend was pruned against grants that are not settled")
+	}
+
+	// v2 fails verification: the rollback grants v1's tokens again, and
+	// den's is still spent.
+	setCurrent(t, f.live, v1)
+	f.grants.set(v1, g1...)
+	if r := f.get(t, "/p/"+tokDen); r.code != http.StatusNotFound {
+		t.Errorf("den's spent token after the rollback = %d, want 404", r.code)
+	}
+	f.rec.next(t)
+
+	// v3 rotates it and settles: the old spend goes.
+	writeVersion(t, f.live, v3, v1Files("v3"), v1Devices(denV2, labV1))
+	setCurrent(t, f.live, v3)
+	g3 := []provision.Grant{grant("softphone-den", tokDen2, denFile, v3, denV2), grant("softphone-lab", tokLab, labFile, v3, labV1)}
+	f.grants.set(v3, g3...)
+	settled.set(v3, g3...)
+	f.s.Prune()
+	if hasSpend(tokDen) {
+		t.Errorf("the settled grants did not prune: %s", f.stateFile(t))
+	}
+
+	// Without a settled source nothing is ever pruned.
+	f.settled = nil
+	f.start(t)
+	if r := f.get(t, "/p/"+tokDen2); r.code != http.StatusOK {
+		t.Fatalf("den's new token = %d", r.code)
+	}
+	f.rec.next(t)
+	writeVersion(t, f.live, v4, v1Files("v4"), v1Devices(denV1, labV1))
+	f.grants.set(v4, grant("softphone-den", tokDen, denFile, v4, denV1), grant("softphone-lab", tokLab, labFile, v4, labV1))
+	f.s.Prune()
+	if !hasSpend(tokDen2) {
+		t.Error("a server without a settled source pruned")
+	}
+}
