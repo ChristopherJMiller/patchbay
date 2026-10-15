@@ -44,9 +44,11 @@ const (
 	PathFirmware = "/v1/firmware"
 	// PathHealthz answers 200 while the agent process is alive. No token.
 	PathHealthz = "/healthz"
-	// PathReadyz answers 200 once the agent has applied a config version.
-	// It backs the native sidecar's startup probe, so Asterisk starts only
-	// after valid config exists. No token.
+	// PathReadyz answers 200 once the agent has applied a config version and
+	// installed every sound prompt from its image (503 with the reason
+	// before). It backs the native sidecar's startup probe, so Asterisk
+	// starts only after valid config exists and 911 never plays a missing
+	// announcement. No token.
 	PathReadyz = "/readyz"
 	// PathMetrics is GET: the agent's Prometheus metrics (the chart's
 	// PodMonitor scrapes it). No token: it carries counts and version
@@ -91,8 +93,10 @@ const (
 // A device appears here once any sensor has seen it. A device the agent has
 // never seen is simply absent, which is itself an observation (Unseen).
 type Observations struct {
-	// GeneratedAt is when the agent assembled this document. The controller
-	// uses it, with its own clock, to judge staleness.
+	// GeneratedAt is when the agent assembled this document, by its clock.
+	// Informational: the controller judges staleness by its own clock, from
+	// when its poll succeeded (drivers.Observations.PolledAt), never from
+	// this, so a skewed node clock cannot make observations look fresh.
 	GeneratedAt time.Time `json:"generatedAt"`
 
 	// Agent is the agent's and Asterisk's health.
