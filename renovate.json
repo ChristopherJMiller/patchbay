@@ -52,6 +52,12 @@
       "minimumReleaseAge": "3 days"
     },
     {
+      "description": "Images wait 3 days too, a re-pushed tag (a new digest) as much as a new tag. A registry that gives no timestamp (gcr.io's distroless) is not held back for ever.",
+      "matchDatasources": ["docker"],
+      "minimumReleaseAge": "3 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
       "description": "The Kubernetes libraries move together.",
       "matchManagers": ["gomod"],
       "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/controller-runtime"],
@@ -82,10 +88,16 @@
       "enabled": false
     },
     {
-      "description": "A major update waits for a human. Everything else merges itself once ci-ok (check, e2e, image) passes: GitHub does the merge (platformAutomerge), so the main ruleset decides what passing means (docs/releasing.md).",
+      "description": "A major update waits for a human. Everything else (but Asterisk, below) merges itself once ci-ok (check, e2e, image) passes: GitHub does the merge (platformAutomerge), so the main ruleset decides what passing means (docs/releasing.md).",
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "addLabels": ["major"]
+    },
+    {
+      "description": "The Asterisk image never merges itself, digest updates included: andrius/asterisk is a community image that runs on the PBX node's host network and reads every SIP password and the AMI secret, and CI tests behaviour, not provenance. A person reads the upstream change and the new digest (one that changes behind an unchanged tag is the signal) before it can reach a release.",
+      "matchPackageNames": ["andrius/asterisk", "docker.io/andrius/asterisk"],
+      "automerge": false,
+      "addLabels": ["asterisk"]
     }
   ]
 }

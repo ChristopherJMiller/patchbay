@@ -43,8 +43,8 @@ Renovate (the Mend-hosted GitHub app) reads `renovate.json`.
   `flake.lock` bump) and every vulnerability fix. Renovate turns on
   GitHub's auto-merge when it opens the PR, so GitHub merges it the moment
   `ci-ok` passes, and Renovate rebases a PR that fell behind main first.
-- **Waits for a human:** major updates (label `major`), and anything whose
-  `ci-ok` failed.
+- **Waits for a human:** major updates (label `major`), every Asterisk
+  update (label `asterisk`), and anything whose `ci-ok` failed.
 - **Never proposed:** a new Go minor (flake and Dockerfile move together, by
   hand), Asterisk past 22 (a design change), our own image, kind node images.
 - Go modules, actions and images (tags and digests) wait 3 days after a
