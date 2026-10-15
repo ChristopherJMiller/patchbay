@@ -1,0 +1,68 @@
+package api_test
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
+)
+
+func TestEmptyMarshalsListsAsArrays(t *testing.T) {
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	got, err := json.Marshal(api.Empty(at, api.AgentStatus{StartedAt: at}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"generatedAt":"2026-10-14T12:00:00Z",` +
+		`"agent":{"startedAt":"2026-10-14T12:00:00Z","asteriskUp":false},` +
+		`"devices":[],"unknownDevices":[],"firmware":{"files":[]}}`
+	if string(got) != want {
+		t.Fatalf("empty document:\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestObservationsRoundTrip(t *testing.T) {
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	in := api.Observations{
+		GeneratedAt: at,
+		Agent: api.AgentStatus{
+			StartedAt: at, AppliedVersion: "7c1e", AsteriskUp: true, AsteriskVersion: "22.6.0",
+		},
+		Devices: []api.DeviceObservations{{
+			Device: "desk",
+			MAC:    "D0C78915E8C8",
+			Fetches: []api.Fetch{{
+				File: "SEPD0C78915E8C8.cnf.xml", Transport: api.TransportTFTP,
+				Result: api.FetchServed, At: at, Source: "192.168.20.100", Version: "7c1e",
+			}},
+			Registration: &api.Registration{
+				Contact: "sip:100@192.168.20.100:5060;transport=tcp", Address: "192.168.20.100",
+				UserAgent: "Cisco-CP7945G/9.4.2", CallID: "00112233-4455", ExpiresAt: at.Add(time.Hour),
+				Qualify: api.QualifyUnknown,
+			},
+			Web: &api.WebScrape{
+				At: at, Address: "192.168.20.100",
+				DeviceInformation:    &api.DeviceInformation{AppLoadID: "SIP45.9-4-2SR4-3S"},
+				NetworkConfiguration: &api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"},
+			},
+		}},
+		UnknownDevices: []api.UnknownDevice{{
+			MAC: "D0C78915EBB5", File: "SEPD0C78915EBB5.cnf.xml", Source: "192.168.20.101",
+			FirstSeen: at, LastSeen: at,
+		}},
+		Firmware: api.FirmwareStore{Files: []api.FirmwareFileStatus{{Name: "term45.default.loads", Present: true}}},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out api.Observations
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip changed the document:\n in %+v\nout %+v", in, out)
+	}
+}
