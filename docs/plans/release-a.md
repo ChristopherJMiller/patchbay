@@ -15,16 +15,15 @@ Release A is built in three workflows, each implement → review → fix:
 | **W2: agent + chart** | apply/verify/rollback, TFTP/HTTP serving, device HTTP, AMI, observations, actions, scraper, firmware store and upload, sound prompts, chart | the PBX pod |
 | **W3: controller + CLI + e2e loop** | reconcilers, Secrets, Compile → ConfigMap, polling, Decide orchestration, actions, conditions/events/metrics, conflicts, requests; CLI; e2e loop and rollback | the controller, `cmd/patchbay`, `test/e2e` |
 
-W1 and W2 are specified at task level (files, signatures, tests; W2 in
-§5.2, written once its contracts had landed). W3 is specified at
-component level, with the interfaces between the workflows exact.
+W1, W2 and W3 are specified at task level (files, signatures, tests; W2
+in §5.2 and W3 in §6.2, each written once its contracts had landed).
 
 Contents: [1 Global constraints](#1-global-constraints) ·
 [2 Decisions made now](#2-decisions-made-now) ·
 [3 Contracts landed](#3-contracts-landed-commit-f346cf7) ·
 [4 W1 tasks](#4-w1-the-pure-core-task-level) ·
 [5 W2](#5-w2-agent-and-chart-component-level) ([5.2 task level](#52-w2-task-level)) ·
-[6 W3](#6-w3-controller-cli-and-e2e-loop-component-level) ·
+[6 W3](#6-w3-controller-cli-and-e2e-loop-component-level) ([6.2 task level](#62-w3-task-level)) ·
 [7 Agent ↔ controller interfaces](#7-agent--controller-interfaces) ·
 [8 Bench switches](#8-bench-test-switches-86) ·
 [9 Exit criteria → tests](#9-exit-criteria--acceptance-tests) ·
@@ -2351,7 +2350,7 @@ stage notes above, these hold.
 | W3.9 | **CLI** | `status` (resources' state, conditions, human action; unknown phones via a port-forwarded `GET /v1/observations`); `softphone qr <name> [--reissue]` (QR of `status.provisioningURL` in the terminal; `--reissue` sets the annotation to the current RFC 3339 time and waits up to 30 s for a new URL); `phone resync <name>` (annotation; warns unless the phone is Registered or ConfigStale); `firmware load <zip>` (match zip entries by base name against every load of every driver, case-sensitive, ignoring directories; local SHA-256; a name several loads carry (Shared `term45.default.loads`) goes to the load whose digest it matches, never to the others; refuse pending digests and mismatches with the file named; port-forward to the agent pod (`pods/portforward`), PUT each match, print each result; exit non-zero if any file failed or no file matched); `models` (profiles, endpoint options, features, loads with pending markers). Every CLI test passes a `--kubeconfig` that does not exist. |
 | W3.10 | **e2e loop** | §9. fakephone gains (`--auth-user` arrives with W2): a `run` script mode (fetch SEP over TFTP, parse it, register with its credentials for the `timerRegisterExpires` it carries, answer service-control NOTIFY by refetching, serve fake `/DeviceInformationX` etc. with a scripted `versionID` and `appLoadID`, request `.sgn`, fetch firmware files, stop refreshing); a blind transfer (in-dialog REFER to another number); a Linphone mode (GET the provisioning URL, parse the lpconfig XML, register over UDP). The e2e image and CLI are built with `GO_TAGS=e2e`. The harness stops creating the agent token. |
 
-### 6.1 Open decisions in W3, with recommendations
+### 6.1 Open decisions in W3, with recommendations (resolved in §6.2.1)
 
 | Decision | Recommendation |
 |---|---|
@@ -2360,6 +2359,954 @@ stage notes above, these hold.
 | What a failed action records | Nothing: memory keeps the previous `LastAction`, so the rate limit counts only sent NOTIFYs. |
 | Rollback e2e without production fault-injection | Split (§9): the agent half in e2e by writing a broken ConfigMap with the controller scaled to 0; the controller half in envtest with a fake agent document. |
 | QR library | A small pure-Go one (`rsc.io/qr` or `github.com/mdp/qrterminal/v3`, pinned in go.mod); whichever renders in a plain terminal at 80 columns. |
+
+### 6.2 W3 task level
+
+W3 runs as **five stages**: **controller-core**, **controller-devices**,
+**cli** and **fakephone** in parallel, in one working tree, each in its own
+packages; then the **integrator** wires them into `internal/controller`,
+`cmd/patchbay` and the chart, moves the e2e harness onto the real
+controller and writes the §9 W3 e2e tests. The seams between them landed
+first as contracts (`7b11480` the dependency, `462fe42`, `6ebf661`,
+`be986f0`, `82ffe70`), each pinned by a test. **The contract code is
+authoritative;** this section says what to build on it.
+
+#### 6.2.1 Decisions (§6.1 resolved, and new ones)
+
+| Decision | Resolution | Why |
+|---|---|---|
+| **Where `status` gets unknown phones** (§6.1) | **Confirmed:** `GET /v1/observations` through a port-forward to the agent, as `firmware load`. `status` prints the resources first; if the agent cannot be reached it prints `Unknown phones: could not ask the agent: <err>` and still exits 0. | Events are emitted once per MAC per agent start and expire after an hour, so they cannot list a phone that is still asking; the agent's document is the live truth, and the controller keeps no discovery state. `status` is an overview: a missing agent is a line in it, not a failure. |
+| **Event target for discovery** (§6.1) | **Confirmed:** the `pbx-config` ConfigMap, also for `ConfigWritten` and `CompileFailed`; while `pbx-config` does not exist yet, `CompileFailed` goes to the chart's `<fullname>-settings` ConfigMap (`install` events.go). | Both always exist once the install runs; the settings are the usual cause of a first compile failing. |
+| **What a failed action records** (§6.1) | **Confirmed, made exact:** on an `Actor` error, `Sent=false`, or a token Secret write that fails, the status write keeps the previous `lastAction` **and** `handledRequest` (a requested resync stays pending and is tried again), writes the rest of the `StatusPatch` (the fold), emits `ActionFailed` (Warning) and requeues in 30 s. Later actions of the same Decision are not attempted. | The rate limit counts only NOTIFYs that went out; consuming a human's request on a transient failure would lose it. |
+| **Rollback e2e** (§6.1) | **Confirmed, changed in one place:** the agent half in e2e with the controller scaled to 0; scaled back up, the controller rewrites its own version, and the test then reissues the laptop's token (a new version) because the agent does not clear its last apply error when the live version is written back (5.2.11). No device may show `ApplyFailed` for the broken version, which was never compiled. The controller half is envtest (controller-devices). | |
+| **QR library** (§6.1) | **`rsc.io/qr` v0.2.0** (BSD-3, pure Go, no dependencies; `7b11480`), drawn by our own renderer: half blocks (`▀`, one column per module, two module rows per line) with explicit ANSI black on bright white, level M, quiet zone 4. A provisioning URL (~60 bytes) is version 4: 33 modules + 8 = 41 columns, 21 lines. | `mdp/qrterminal` wraps the same encoder and adds `x/term`; explicit colours render the same on dark and light terminals; the renderer is ~30 lines and its output decodes back to the module grid in a unit test. |
+| **Settings** (W3.1) | The chart renders `<fullname>-settings` (key `settings.json`); the controller reads the **mounted file** once at start (`settings.Load`: strict JSON, `Validate`), then `install.CheckSettings` (its `amiSecret` must be `<fullname>-ami/password`). A checksum annotation over the JSON restarts the controller on change. | No RBAC, no watch, no partial reload: a settings change rolls one stateless pod. |
+| **How the device reconcilers read the compiled index** | From the cluster, every reconcile: `install.ReadCompiled` reads `pbx-config` (`bundle.json` only, `IndexOf`) and `pbx-secrets` from the cache. No component hands compiled state to another in memory. | The stateless option: it survives a controller restart without a warm-up, it is exactly what the agent and the CLI see, and the cost is decoding a few KB of JSON from an informer cache. An in-memory index would be empty after a restart until the bundle reconciler ran, and could drift from what was written. |
+| **The provisioning URL shows the compiled token** | `status.provisioningURL` uses `Compiled.ProvisioningToken`: `pbx-secrets`' value, only while its `bundle-version` annotation equals `pbx-config`'s version; otherwise the previous URL stays. | The device Secret changes before the bundle is recompiled; showing its token at once would publish a URL the agent does not serve yet. `qr --reissue` additionally waits until `ConfigCurrent` is not `ApplyPending` (the bundle is live). |
+| **Gating** | A Phone or Softphone reconciler writes no status before the poller's first attempt has ended (`Snapshot.Started`), or while the device is not in the compiled index; no reconciler (Person and Stream too) writes status while `pbx-config` does not exist (`ErrNotCompiled`). Each of those ends with an event that enqueues it (the poller enqueues every device after its first attempt; the `pbx-config` watch enqueues all). | A restarted controller must not flip every phone to Unknown for one poll; a device decided before it is compiled would decide on an empty `ConfigVersion`. |
+| **No status hot loop** (W1 carry-over) | Status is written only when it differs (`equality.Semantic.DeepEqual` on the whole status); `For` watches use `predicate.Or(GenerationChangedPredicate, AnnotationChangedPredicate)`, so the controller's own status writes never enqueue. | |
+| **First reconcile** | The bundle reconciler enqueues its singleton once when it starts (`source.Func`), besides its watches. | A fresh install with no resources still mints the agent token and writes a bundle (Asterisk with no devices), so the PBX pod starts. |
+| **Secret writers** | The bundle reconciler (through `secrets.Manager.Ensure`) creates every Secret and fills a missing or empty key, never changes a non-empty one, and adopts a device Secret whose controller reference is missing or names another UID (the values stay). The softphone reconciler's `rotateToken` is the only other writer: it updates one key (`provisioning-token`) of an existing Secret, and treats a missing Secret as a failed action. | One creator; a recreated Phone keeps its password; GC removes a deleted resource's Secret by its ownerReference. |
+| **Agent token** | Minted by the controller (`install.GenerateAgentToken`: 32 random bytes, unpadded base64url) into `<fullname>-agent-token`; the chart drops `pbx.agent.tokenSecretName` and its "create it before installing" note. The PBX pod waits in ContainerCreating until it exists (the kubelet retries the mount). | Design §4. Overriding the name would need a matching controller flag for no benefit. |
+| **Metrics** (W3.8) | `patchbay_devices{kind,state}` (from the cache at scrape; state `""` is `Pending`), `patchbay_registered_endpoints`, `patchbay_config_version_info{version}`, `patchbay_apply_failures_total` (each distinct `LastApplyVersion`+`LastApplyAt` with an error, once), `patchbay_observation_age_seconds` (absent before the first success); added: `patchbay_compile_failures_total` and `patchbay_agent_reachable`. Tested through `promhttp.HandlerFor` text. | The added two back W3.3's "metric" and design §10's "agent unreachable" alert. `prometheus/testutil` would add a module (`kylelemons/godebug`). |
+| **envtest** | Only `bundle`, `devices` and `numbers` (and the existing `internal/controller` root and `ctrltest`) start an API server; every other package uses the controller-runtime fake client. | Each envtest package runs its own kube-apiserver and etcd under `go test ./...`; five at once fit the workstation. |
+| **Control API connection cap** (W2 carry-over) | `agent.Serve` wraps its listener in `netlimit` (64 connections, 16 per source) (integrator). | Same reason as device HTTP: one host could otherwise exhaust the agent's 128 MiB. The controller keeps one or two keep-alive connections; the CLI's port-forward arrives from 127.0.0.1 one request at a time. |
+| **Fake phones in e2e** | `fakephone run` executes a `script.Script` (cisco or linphone mode); the harness drives it with signals and reads its `State` over the phone's own HTTP server through `pods/proxy`; the pod runs with the safe sysctl `net.ipv4.ip_unprivileged_port_start=0` so the server binds :80, where the agent scrapes. | A long-lived phone that answers NOTIFYs and calls is what the loop tests need; signals and state need nothing in the image and no port-forward per phone. |
+
+#### 6.2.2 Carry-over → owner
+
+| From | Item | Closed by |
+|---|---|---|
+| W1 | Claims come from `compile.ResolveClaims`, never re-derived | devices and numbers call `ResolveClaims` over every resource from the cache, `claims.Apply(&dev)`; `TestClaimsFromResolveClaims` (devices), `TestPersonNumberConflict` (numbers) |
+| W1 | Write status only when it changed | devices and numbers (6.2.1 "No status hot loop"); `TestStatusWrittenOnlyWhenChanged` in each |
+| W1 | `TestPhoneLifecycle` includes the Desk phone's factory-reset path | integrator: `TestPhoneLifecycle/reset` (6.2.9). In e2e the human action is **P6**, not P5: P5 needs the *default* load staged, and its digests are pending, so no e2e can stage it; the driver's `TestLifecycle` pins P5. Everything else on the row is asserted (never NeedsTrustReset again, Upgrading, Registered with FirmwareCurrent Unknown and no resync). |
+| W1 | Linphone bench items stay §8's | nobody: e2e proves only that the fake reads the keys the renderer writes; §8 records nothing as answered |
+| W2 | The controller writes `pbx-secrets` (exactly `SecretRefs`, the compiled values) before `pbx-config`, and mints the agent token | core: `bundle`, `secrets`; `install.ProjectedSecret` refuses values that do not give the bundle's version; `TestWritesSecretsThenConfigMap` |
+| W2 | `test/e2e/bundle_test.go` (`applyBundle`) deleted | integrator |
+| W2 | fakephone `run` mode, fake web pages from `scrape`'s page types, Linphone mode, blind transfer | fakephone stage (6.2.8) |
+| W2 | `patchbay firmware load` and `status` | cli stage; e2e `TestPhoneLifecycle/firmware-load`, `TestDiscovery` (integrator) |
+| W2 | After an agent restart and a rollback to the adopted version, its AMI account is unknown until intake hands it over again | **deferred to §11** (symptom and remedy there): it needs an agent restart *and* a version that fails verification, which the controller's compiled bundles do not produce in normal operation; the fix (parse the adopted `manager.conf`) belongs in a W2 package no W3 stage owns |
+| W2 | An AMI password change applied while AMI is down needs an Asterisk restart | **deferred to §11**: only a deleted `<fullname>-ami` Secret coinciding with an AMI outage causes it |
+| W2 | A version swapped in while AMI was down that later fails verification counts as applied for intake | **deferred to §11**: the failure is visible (`ApplyFailed` on every device) and any new version heals it |
+| W2 | The control API (:9440) has no connection cap | integrator: `netlimit` in `agent.Serve`, `TestServeCapsConnections` |
+| W2 | e2e on a reused cluster keeps the PBX pod (restart counts, the last apply) | integrator: every W3 test deletes and recreates its own resources at start, discovery uses a random MAC, assertions compare with what the test saw first, and `TestRollback` leaves a successful last apply |
+
+#### 6.2.3 Package map and ownership
+
+```text
+internal/controller/install/      contract (6ebf661)                             nobody
+internal/controller/agentview/    contract (6ebf661)                             nobody
+internal/controller/ctrltest/     contract: envtest harness (be986f0)            nobody
+internal/controller/settings/     W3.1                                           core
+internal/controller/secrets/      W3.2                                           core
+internal/controller/bundle/       W3.3                                           core
+internal/controller/agentclient/  W3.4: control API client                       core
+internal/controller/poller/       W3.4                                           core
+internal/controller/metrics/      W3.8                                           core
+internal/controller/devices/      W3.5                                           devices
+internal/controller/numbers/      W3.6                                           devices
+internal/controller/discovery/    W3.7                                           devices
+internal/cli/{doc,env,env_test}.go contract (7b11480, 82ffe70)                   nobody
+internal/cli/ (every other file)  W3.9                                           cli
+test/e2e/fakephone/script/        contract (82ffe70)                             nobody
+test/e2e/fakephone/ (the rest, Dockerfile, Dockerfile.dockerignore)  W3.10       fakephone
+internal/controller/*.go (the root package), cmd/patchbay/,
+internal/agent/server.go (+ its test), charts/, test/chart/, test/e2e/*.go,
+test/e2e/values.yaml, test/e2e/kind.yaml, Makefile, Dockerfile, .github/,
+docs/, CLAUDE.md, README.md                                                      integrator
+```
+
+**Rules for the parallel stages** (core, devices, cli, fakephone):
+
+1. Write only your own packages and files. Never edit a landed contract
+   file (`internal/controller/{install,agentview,ctrltest}/*`,
+   `internal/cli/{doc,env,env_test}.go`, `test/e2e/fakephone/script/*`) or
+   anything under `api/`, `internal/compile`, `internal/drivers`,
+   `internal/agent`, the root of `internal/controller`, `cmd`, `charts`,
+   `test/chart`, `test/e2e/*.go`, `docs`, the Makefile, Dockerfiles other
+   than fakephone's, `flake.*`, `go.mod`, `go.sum` or CLAUDE.md. If a
+   contract is wrong, work around it inside your package and report the
+   deviation; the integrator reconciles.
+2. Import your own stage's packages, the contract packages and
+   pre-existing ones (`api/v1alpha1`, `internal/compile`,
+   `internal/drivers`, `internal/drivers/builtin`, `internal/agent/api`,
+   `internal/agent/layout`, `internal/version`; the fakephone also
+   `internal/agent/scrape`); never another stage's package, never
+   `internal/controller` itself (it will import yours) or `cmd`.
+   Interfaces you consume are in the contracts; the integrator adds the
+   compile-time assertions that the other stages' types satisfy them.
+3. No new modules: no `go get`, no `go mod tidy`. Everything W3 needs is
+   required already (client-go `tools/portforward`, `transport/spdy`,
+   `tools/events`, `tools/clientcmd`; controller-runtime `client/fake`,
+   `client/interceptor`, `envtest`, `source`; `k8s.io/utils/clock` and
+   `clock/testing`; `rsc.io/qr`; sipgo; pin/tftp). Not
+   `prometheus/client_golang/prometheus/testutil` (it adds a module):
+   test metrics through `promhttp.HandlerFor`'s text, as
+   `internal/agent/metrics` does.
+4. Verify your own packages only; `make fmt` reformats everyone's files.
+   With `P` your packages:
+   `nix develop -c golangci-lint fmt $P`, `nix develop -c go vet $P`,
+   `nix develop -c go vet -tags e2e $P`, `nix develop -c golangci-lint run $P`,
+   `nix develop -c go test -race -count=1 $P` and
+   `nix develop -c go test -race -count=1 -short -tags e2e $P`. At the end
+   run `nix develop -c make vet lint test-unit` once and report (never
+   fix) a failure in another stage's package.
+5. TDD, small commits, `git add` your own paths only, message body ending
+   with the `Co-Authored-By` line. No cluster: only the integrator runs
+   e2e. envtest only in `bundle`, `devices`, `numbers` (through
+   `ctrltest.Main`); everything else uses the controller-runtime fake
+   client, loopback listeners on port 0, `t.TempDir()` and fakes.
+6. Never log, print, put in an Event or an error a secret value, a token
+   or a provisioning URL (a test that captures the logr output asserts
+   it where one is handled). The one exception is `patchbay softphone qr`,
+   whose output is the URL it was asked for.
+7. No test loads a kubeconfig. A CLI test that reaches `NewEnv` passes a
+   `--kubeconfig` path that does not exist and sets `KUBECONFIG` and
+   `HOME` to `t.TempDir()`.
+8. Coverage ≥ 80% per package (`go test -cover`).
+
+#### 6.2.4 Contracts landed (read the code; summary)
+
+```go
+// internal/controller/install (6ebf661)
+type Names struct{ Fullname, ConfigMap, ProjectedSecret, AgentTokenSecret, AMISecret, Settings, AgentService string }
+func NewNames(fullname string) Names            // <f>-pbx-config, -pbx-secrets, -agent-token, -ami, -settings, -agent
+func (n Names) Validate() error; AMIRef() compile.SecretRef; AgentTokenRef() compile.SecretRef
+const MaxFullnameLength = 50; AgentTokenKey = "token"; AMIPasswordKey = "password"; SettingsKey = "settings.json"
+func CheckSettings(s compile.Settings, n Names) error
+const LabelPartOf, PartOf, LabelManagedBy, ManagedBy = "app.kubernetes.io/part-of", "patchbay", "app.kubernetes.io/managed-by", "patchbay-controller"
+const AnnotationBundleVersion = "patchbay.chrismiller.xyz/bundle-version"
+func ManagedLabels() map[string]string
+const PollInterval = 5 * time.Second; StaleAfter = 30 * time.Second
+func DecideSettings(s compile.Settings) drivers.DecideSettings
+func DeviceHTTPURL(s compile.Settings) string                  // http://<pbx>:<deviceHTTPPort>
+func ProvisioningURL(s compile.Settings, token string) string  // + "/p/" + token
+func AgentURL(n Names, namespace string, port int) string      // http://<f>-agent.<ns>.svc:<port>
+var ErrNotCompiled error
+func ConfigMap(n Names, namespace string, b compile.Bundle) (*corev1.ConfigMap, error)
+func ProjectedSecret(n Names, namespace string, b compile.Bundle, values map[compile.SecretRef][]byte) (*corev1.Secret, error)
+func IndexOf(cm *corev1.ConfigMap) (compile.Index, error)
+func SecretValues(s *corev1.Secret) (map[compile.SecretRef][]byte, error)
+type Compiled struct{ Index compile.Index; ConfigMap *corev1.ConfigMap; Secrets map[compile.SecretRef][]byte }
+func ReadCompiled(ctx context.Context, c client.Reader, namespace string, n Names) (Compiled, error)
+func (c Compiled) Device(id string) (compile.BundleDevice, bool)
+func (c Compiled) ProvisioningToken(deviceID string) (string, bool)
+const ProvisioningTokenLength = 32; AMIPasswordLength = 32; AgentTokenBytes = 32
+func Generate(r io.Reader, length int, alphabet string) (string, error)   // r nil: crypto/rand
+func GeneratePassword(r io.Reader, p drivers.PasswordPolicy) (string, error)
+func GenerateProvisioningToken(r io.Reader) (string, error)
+func GenerateAMIPassword(r io.Reader) (string, error)
+func GenerateAgentToken(r io.Reader) (string, error)
+const EventRecorderName = "patchbay-controller"
+const EventReasonStateChanged, EventReasonActionSent, EventReasonActionFailed, EventReasonRequestIgnored,
+      EventReasonApplyFailed, EventReasonUnknownPhone, EventReasonConfigWritten, EventReasonCompileFailed
+const EventActionDecide, EventActionResync, EventActionRestart, EventActionRotateToken, EventActionDiscover, EventActionCompile
+func UnknownPhoneMessage(mac, source string) string   // "unknown phone <MAC> requested config from <IP>"
+
+// internal/controller/agentview (6ebf661)
+type Snapshot struct{ Document agentapi.Observations; PolledAt time.Time; AgentReachable bool; Polls uint64; LastError string }
+func (s Snapshot) Started() bool
+func (s Snapshot) Device(id string) *agentapi.DeviceObservations
+func (s Snapshot) For(deviceID, compiledVersion string) drivers.Observations
+type Observer interface{ Snapshot() Snapshot }
+type Holder struct{ /* RWMutex */ }; func (h *Holder) Snapshot() Snapshot; func (h *Holder) Set(s Snapshot)
+type SnapshotFunc func(ctx context.Context, s Snapshot)
+type Actor interface {
+    Resync(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
+    Restart(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
+}
+func ActionFailure(resp agentapi.ActionResponse, err error) string
+const DefaultChangesBuffer = 1024
+type Changes struct{ Phones chan event.TypedGenericEvent[*v1alpha1.Phone]; Softphones chan event.TypedGenericEvent[*v1alpha1.Softphone] }
+func NewChanges(buffer int) Changes
+func (c Changes) Notify(ctx context.Context, kind drivers.DeviceKind, namespace, name string) error
+
+// internal/controller/ctrltest (be986f0), _test.go files only
+type Env struct{ Config *rest.Config; Client client.Client; Scheme *runtime.Scheme }
+func Main(m *testing.M, env **Env) int; Need(t, env); Namespace(t, env) string
+func NewScheme() (*runtime.Scheme, error); CRDDir() (string, error)
+func NewManager(t, env, namespace string) ctrl.Manager; StartManager(t, mgr)
+
+// internal/cli (82ffe70): env.go
+type Env struct{ Kube client.Client; Namespace string; Agent AgentOpener; Registry *drivers.Registry; Clock clock.Clock; Out, Err io.Writer }
+type ClientFlags struct{ Namespace, Instance string }
+type AgentOpener interface{ OpenAgent(ctx context.Context) (*AgentConn, error) }
+type AgentConn struct{ BaseURL, Token string; HTTP *http.Client; Close func() error }  // String/GoString redact Token
+const LabelPartOf, PartOf, LabelComponent, ComponentPBX, LabelInstance, AgentContainer, ControlPortName, AgentTokenVolume
+
+// test/e2e/fakephone/script (82ffe70)
+const EnvScript = "FAKEPHONE_SCRIPT"; PathState = "/fakephone/state"; PathSignalPrefix = "/fakephone/signal/"
+type Script struct{ Mode; Server, MAC, ProvisioningURL, WebListen string; Web *Web; Answer *Answer; ToneHz float64; UserAgent string; Steps []Step; ExitWhenDone bool }
+type Step struct{ Label string; FetchConfig, Fetch, SetWeb, Register, Unregister, StopRefreshing, Call, Hangup, Transfer, WaitNotify, WaitCall, WaitSignal, Sleep *… }
+type State struct{ Mode; Step int; Label string; Done, Registered bool; Config *Config; Web Web; Fetches, Registrations, Notifies, Calls, Signals [] }
+func Parse([]byte) (Script, error); (Script) Validate() error; (Script) Encode() (string, error); NewState(Mode) State
+func Expand(file, mac, load string) string; SignalPath(name string) string; HzKey(hz float64) string
+
+// api/v1alpha1 (462fe42)
+const ReasonNumberConflict, ReasonNoConflict, ReasonRouted, ReasonMissingRingTargets, ReasonNoStreamBridge
+```
+
+#### 6.2.5 Stage controller-core: W3.1, W3.2, W3.3, W3.4, W3.8
+
+Exported API (exact; the integrator wires these):
+
+```go
+// internal/controller/settings (W3.1)
+func Load(path string) (compile.Settings, error) // reads the mounted settings.json, then Parse
+func Parse(raw []byte) (compile.Settings, error) // strict JSON (unknown field, trailing data: error), then Validate
+
+// internal/controller/secrets (W3.2)
+type Config struct {
+    Client    client.Client     // the manager's client: cached reads, writes to the API server
+    Namespace string
+    Names     install.Names
+    Registry  *drivers.Registry // each model's Provisioning.Password policy
+    Rand      io.Reader         // nil: crypto/rand.Reader
+    Log       logr.Logger
+}
+type Manager struct{ /* … */ }
+func New(cfg Config) (*Manager, error)
+// Ensure creates or completes every Secret the install needs and returns
+// the values Compile reads (compile.Inputs.Secrets): PasswordRef of every
+// Phone and Softphone whose model a driver serves, ProvisioningTokenRef of
+// every Softphone, and the AMI password. It also ensures the agent token.
+func (m *Manager) Ensure(ctx context.Context, phones []v1alpha1.Phone, softphones []v1alpha1.Softphone) (map[compile.SecretRef][]byte, error)
+// Tokens implements agentclient.TokenSource: the agent token in the cache
+// and the one it replaced, if this process saw it change ("" otherwise).
+func (m *Manager) Tokens(ctx context.Context) (current, previous string, err error)
+
+// internal/controller/bundle (W3.3)
+type Config struct {
+    Client    client.Client
+    Namespace string
+    Names     install.Names
+    Settings  compile.Settings
+    Registry  *drivers.Registry
+    Secrets   *secrets.Manager
+    Recorder  events.EventRecorder // k8s.io/client-go/tools/events
+    Metrics   *metrics.Metrics     // nil: none
+    Log       logr.Logger
+}
+type Reconciler struct{ /* … */ }
+func New(cfg Config) (*Reconciler, error)
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error)
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error
+
+// internal/controller/agentclient (W3.4)
+type TokenSource interface {
+    Tokens(ctx context.Context) (current, previous string, err error)
+}
+type Config struct {
+    URL    string       // install.AgentURL(names, namespace, api.DefaultPort)
+    Tokens TokenSource
+    HTTP   *http.Client // nil: no proxy, no redirects, a 5 s timeout per request
+    Log    logr.Logger
+}
+type Client struct{ /* … */ }
+func New(cfg Config) (*Client, error)
+func (c *Client) Observations(ctx context.Context) (agentapi.Observations, error)
+func (c *Client) Resync(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
+func (c *Client) Restart(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
+
+// internal/controller/poller (W3.4)
+type Source interface {
+    Observations(ctx context.Context) (agentapi.Observations, error)
+}
+type Config struct {
+    Source     Source
+    Reader     client.Reader // the manager's cached client (install.ReadCompiled)
+    Namespace  string
+    Names      install.Names
+    Interval   time.Duration // 0: install.PollInterval
+    Holder     *agentview.Holder
+    Changes    agentview.Changes
+    OnSnapshot []agentview.SnapshotFunc
+    Metrics    *metrics.Metrics // nil: none
+    Now        func() time.Time // nil: time.Now
+    Log        logr.Logger
+}
+type Poller struct{ /* … */ }
+func New(cfg Config) (*Poller, error)
+func (p *Poller) Start(ctx context.Context) error // manager.Runnable: Poll now, then every Interval, until ctx ends (nil)
+func (p *Poller) NeedLeaderElection() bool       // true
+func (p *Poller) Poll(ctx context.Context)       // one attempt (exported for tests)
+func (p *Poller) Snapshot() agentview.Snapshot   // agentview.Observer: Holder.Snapshot()
+
+// internal/controller/metrics (W3.8); every method is a no-op on a nil *Metrics
+type Config struct {
+    Registerer prometheus.Registerer // controller-runtime's metrics.Registry in production
+    Reader     client.Reader         // patchbay_devices, at scrape
+    Namespace  string
+    Observer   agentview.Observer    // registered endpoints, observation age, agent reachable
+    Now        func() time.Time
+}
+type Metrics struct{ /* … */ }
+func New(cfg Config) (*Metrics, error)
+func (m *Metrics) CompileFailed()
+func (m *Metrics) ConfigWritten(version string)        // config_version_info{version}=1, the previous series removed
+func (m *Metrics) ObserveSnapshot(s agentview.Snapshot) // apply failures, counted once per (LastApplyVersion, LastApplyAt)
+```
+
+**W3.1 settings.** `Parse` decodes into `compile.Settings` with
+`DisallowUnknownFields`, refuses trailing data, then `Validate`. The
+integrator calls `install.CheckSettings` after `Load`. *Tests:*
+`TestParseChartDefaults` (the JSON the chart must render with default
+values, as a literal fixture: test/chart checks the chart against the same
+document), `TestParseRejectsUnknownField`, `TestParseRejectsTrailingData`,
+`TestParseValidates` (a bad port names the field), `TestLoad` (a file;
+a missing file's error names the path).
+
+**W3.2 secrets.** `Ensure`:
+- per Phone and Softphone: ID `drivers.DeviceID(kind, name)`, Secret
+  `compile.DeviceSecretName(id)`, labels `install.ManagedLabels()`, owner
+  `controllerutil.SetControllerReference` (controller, blockOwnerDeletion;
+  RBAC already grants `*/finalizers`). Keys: `sip-password` from
+  `install.GeneratePassword` with the model's
+  `Profile.Provisioning.Password` (a model no driver serves gets no
+  password and no error: it is never rendered); Softphones also
+  `provisioning-token` (`GenerateProvisioningToken`);
+- `<fullname>-ami` (`password`, `GenerateAMIPassword`) and
+  `<fullname>-agent-token` (`token`, `GenerateAgentToken`): no owner;
+- create when missing; when present, add a missing or empty key, never
+  change a non-empty one, and adopt (set the controller reference) when it
+  is missing or names another UID; a Create that hits AlreadyExists (the
+  cache lags) returns an error, so the next reconcile reads it;
+- returns the stored values (never logs one).
+
+`Tokens` reads the agent-token Secret from the cache; when its value
+differs from the last one returned, that one becomes `previous`. Missing
+Secret: an error. *Tests (fake client, `interceptor.Funcs` counting
+writes):* `TestEnsureCreatesDeviceSecrets` (lengths 12, 24 + 32,
+alphanumerics, labels, owner fields, returned = stored),
+`TestEnsureWritesNothingWhenComplete`, `TestEnsureFillsMissingKey`,
+`TestEnsureRegeneratesDeleted` (a new value), `TestEnsureAdopts` (value
+kept), `TestInstallSecrets` (AMI 32 alphanumerics, token 43 base64url
+characters, no owner), `TestTokens` (current, then previous after a
+change, error when missing), `TestUnservedModelGetsNoPassword`,
+`TestNoSecretLogged` (a logr sink capturing everything; no value
+appears).
+
+**W3.3 bundle.** One reconciler, singleton key `{Namespace,
+Names.ConfigMap}` (every request maps to it; `MaxConcurrentReconciles`
+1). `Reconcile`:
+1. list Phones, Softphones, People, Streams (cache);
+2. `values, err := Secrets.Ensure(phones, softphones)`;
+3. `b, err := compile.Compile(Registry, compile.Inputs{…, Secrets: values}, Settings)`;
+   then `install.ProjectedSecret(…, b, values)` and `install.ConfigMap(…, b)`;
+   a compile or encoding error (`Compile`, `ErrBundleTooLarge`, the two
+   builders) → `CompileFailed` Event (Warning, action `Compile`, the error
+   as note) on `pbx-config`, or the settings ConfigMap while it does not
+   exist (only a log line if neither does), `Metrics.CompileFailed()`, the
+   old bundle untouched, `RequeueAfter: 5m` and no error (it needs a
+   resource change); an API error (listing, `Ensure`, a write) is returned,
+   so the reconcile is retried with backoff;
+4. read the current `pbx-secrets` and `pbx-config` (cache). Write
+   `pbx-secrets` (create, or update data, labels and annotation) unless its
+   data and `bundle-version` already match; **then** write `pbx-config`
+   unless its index version is `b.Version` and its annotation matches.
+   Nothing written → nothing else happens (no Event). Written →
+   `ConfigWritten` (Normal) on `pbx-config` ("version <v[:12]> written: <n>
+   files, <d> devices"), `Metrics.ConfigWritten(v)`.
+5. an Update conflict returns the error (requeue).
+
+Watches (`SetupWithManager`, `Named("bundle")`): Phone, Softphone, Person,
+Stream with `GenerationChangedPredicate` (create and delete always pass);
+Secrets that are owned by a Phone or Softphone of this API group or named
+`AMISecret`, `AgentTokenSecret` or `ProjectedSecret`; the ConfigMap named
+`ConfigMap` (an edit or delete is rewritten); every event maps to the
+singleton. Plus `source.Func` enqueueing the singleton once at start.
+*Tests (envtest, `ctrltest`):* `TestWritesSecretsThenConfigMap` (an
+`interceptor` client records writes: `pbx-secrets` before `pbx-config`;
+keys exactly `SecretRefs`' projected keys; `VersionWith(projected) ==`
+the index version; annotations; labels), `TestNoWritesWhenUnchanged` (a
+second reconcile writes nothing), `TestResourceChangeRecompiles` (a label
+patch: new version, Secret first again), `TestDeletedDeviceSecretHeals`
+(new password, new version, projected value = new),
+`TestEditedConfigMapRewritten`, `TestCompileErrorKeepsOldBundle` (a
+registry whose `cisco-7945` driver's Render fails: `CompileFailed` on a
+FakeRecorder, the metric, `pbx-config` unchanged),
+`TestFirstReconcileWithNoResources` (the agent token, the AMI Secret and
+a bundle with no devices), `TestWatchesTrigger` (a manager: a new Phone
+reaches `pbx-config`; deleting its Secret makes a new version).
+
+**W3.4 agentclient.** Every request: `Authorization: Bearer <current>`;
+on 401 retry once with `previous` when it is non-empty and different; a
+non-200 is an error quoting the status and the agent's `api.Error` (never
+the token); bodies limited (observations 16 MiB, actions 64 KiB); action
+requests time out at 10 s, observations at 5 s; no redirects. *Tests
+(httptest):* bearer header; 401 then 200 with the previous token; 401
+twice → error; 500 → error with the message; actions decode `Sent=false`
+with a nil error; 400 → error; a slow server times out; `var _
+agentview.Actor = (*Client)(nil)`; no token in any error or log.
+
+**W3.4 poller.** `Poll`:
+1. `doc, err := Source.Observations(ctx)`; `now := Now()`;
+2. next snapshot: success → `{doc, now, true, Polls+1, ""}`; failure →
+   `{previous Document, previous PolledAt, false, Polls+1, err.Error()}`;
+   `Holder.Set(next)`; `Metrics.ObserveSnapshot(next)`;
+3. what to enqueue: the *agent fingerprint* is a hash of
+   `AgentReachable`, `doc.Agent` (all fields) and `doc.Firmware`; each
+   device's fingerprint a hash of its `DeviceObservations` JSON. First
+   attempt, or a changed agent fingerprint → every device; otherwise each
+   device whose fingerprint appeared, changed or disappeared;
+4. devices are named through `install.ReadCompiled(Reader, …)`: an ID in
+   the index → `Changes.Notify(ctx, kind, Namespace, name)`; an ID not in
+   it is skipped; `ErrNotCompiled` → nothing enqueued, not an error;
+5. after a success only, each `OnSnapshot(ctx, next)` in order.
+
+Fingerprints are the poller's memory (disposable). *Tests (fake Source,
+fake client holding a compiled `pbx-config` built with `install.ConfigMap`,
+`Changes` read in the test):* `TestFirstPollEnqueuesAll`,
+`TestUnchangedEnqueuesNothing`, `TestDeviceChangeEnqueuesOne`,
+`TestAgentChangeEnqueuesAll` (AsteriskUp, AppliedVersion, a firmware
+file), `TestFailureKeepsDocument` (AgentReachable false, document and
+PolledAt kept, LastError without the token, all enqueued once, a second
+failure enqueues nothing), `TestRecoveryEnqueuesAll`,
+`TestOnSnapshotOnSuccessOnly`, `TestUnknownIDSkipped`,
+`TestNotCompiled`, `TestStartPollsAtOnceAndStops`,
+`TestNeedsLeaderElection`.
+
+**W3.8 metrics** as 6.2.1. *Tests:* every name and label set in the
+`promhttp` text; `patchbay_devices` from a fake client's Phones and
+Softphones (state "" → `Pending`); age absent before the first success;
+apply failures counted once per distinct failure; `ConfigWritten` drops
+the previous version's series; nil-receiver calls do nothing.
+
+**Core acceptance:** `P="./internal/controller/settings/... ./internal/controller/secrets/... ./internal/controller/bundle/... ./internal/controller/agentclient/... ./internal/controller/poller/... ./internal/controller/metrics/..."`, the commands of rule 4; coverage ≥ 80% each.
+
+#### 6.2.6 Stage controller-devices: W3.5, W3.6, W3.7
+
+```go
+// internal/controller/devices (W3.5)
+type Config struct {
+    Client    client.Client        // the manager's client
+    Namespace string
+    Names     install.Names
+    Settings  compile.Settings
+    Registry  *drivers.Registry
+    Observer  agentview.Observer
+    Actor     agentview.Actor
+    Changes   agentview.Changes
+    Recorder  events.EventRecorder
+    Rand      io.Reader            // nil: crypto/rand.Reader (rotateToken)
+    Now       func() time.Time     // nil: time.Now
+    Log       logr.Logger
+}
+func Setup(mgr ctrl.Manager, cfg Config) error // both reconcilers
+type PhoneReconciler struct{ /* … */ }
+func NewPhoneReconciler(cfg Config) (*PhoneReconciler, error)
+func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error)
+type SoftphoneReconciler struct{ /* … */ }
+func NewSoftphoneReconciler(cfg Config) (*SoftphoneReconciler, error)
+func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error)
+const ActionRetryAfter = 30 * time.Second
+
+// internal/controller/numbers (W3.6)
+type Config struct {
+    Client    client.Client
+    Namespace string
+    Names     install.Names
+    Settings  compile.Settings
+    Recorder  events.EventRecorder
+    Now       func() time.Time
+    Log       logr.Logger
+}
+func Setup(mgr ctrl.Manager, cfg Config) error
+type PersonReconciler struct{ /* … */ }; func NewPersonReconciler(cfg Config) (*PersonReconciler, error)
+type StreamReconciler struct{ /* … */ }; func NewStreamReconciler(cfg Config) (*StreamReconciler, error)
+// each with Reconcile(ctx, req) (ctrl.Result, error)
+
+// internal/controller/discovery (W3.7)
+type Config struct {
+    Reader    client.Reader
+    Namespace string
+    Names     install.Names
+    Recorder  events.EventRecorder
+    Log       logr.Logger
+}
+type Reporter struct{ /* … */ }
+func New(cfg Config) *Reporter
+func (r *Reporter) Report(ctx context.Context, s agentview.Snapshot) // an agentview.SnapshotFunc
+```
+
+**W3.5 Phone and Softphone reconcilers.** `Reconcile`:
+1. get the resource (cache); NotFound → done;
+2. `snap := Observer.Snapshot()`; `!snap.Started()` → done, no status;
+3. `c, err := install.ReadCompiled(…)`; `ErrNotCompiled` → done; `bd, ok
+   := c.Device(id)`; `!ok` → done;
+4. list every Phone, Softphone, Person and Stream; `claims :=
+   compile.ResolveClaims(inputs, Settings.NumberPlan)`;
+5. `dev := drivers.PhoneDevice(p)` (`SoftphoneDevice`); `claims.Apply(&dev)`;
+   `dev.ConfigVersion = bd.Version`; the driver is
+   `Registry.ForModel(dev.Model)` (no driver: log and stop; the CRD enum
+   admits only served models);
+6. `d := drv.Decide(dev, snap.For(id, c.Index.Version),
+   install.DecideSettings(Settings), now)`;
+7. actions in order: `resync` → `Actor.Resync({Device: id, Version:
+   a.Version})`, `restart` → `Actor.Restart`, `rotateToken` → a new
+   `install.GenerateProvisioningToken(Rand)` written to the existing
+   device Secret's `provisioning-token` (Update, the Secret from the
+   cache; missing Secret = failure). Success → `ActionSent`; failure
+   (`agentview.ActionFailure != ""`, or the write's error) → the 6.2.1
+   rule, `ActionFailed`, `RequeueAfter = ActionRetryAfter` (or the
+   Decision's, if sooner), stop;
+8. the new status, from the old: `State = d.State`; `ObservedGeneration
+   = metadata.generation`; each `d.Conditions` entry gets
+   `ObservedGeneration` and `LastTransitionTime = now` truncated to the
+   second, then `meta.SetStatusCondition`; `patch.ToPhoneStatus` /
+   `ToSoftphoneStatus`; `HumanAction = d.HumanAction`; Softphone
+   `ProvisioningURL`: `install.ProvisioningURL(Settings, token)` when
+   `c.ProvisioningToken(id)` is ok, `""` when `bd.ProvisioningToken` is
+   nil (not rendered), else unchanged;
+9. `Status().Update` only when the status differs
+   (`equality.Semantic.DeepEqual`); a conflict returns the error;
+10. after a write: `StateChanged` when `state` changed (old `""` written
+    `None`); `RequestIgnored` when `handledRequest` advanced to
+    `dev.Request` and the Decision held no `resync` (Phone) /
+    `rotateToken` (Softphone); `ApplyFailed` when `ConfigCurrent` became
+    False/`ApplyFailed` from anything else (notes as in `install`
+    events.go);
+11. `ctrl.Result{RequeueAfter: d.RequeueAfter}` (or step 7's).
+
+Watches (`Setup`): `For` with
+`predicate.Or(GenerationChangedPredicate{}, AnnotationChangedPredicate{})`;
+the ConfigMap named `Names.ConfigMap` → every resource of the kind;
+`WatchesRawSource(source.Channel(cfg.Changes.Phones,
+&handler.TypedEnqueueRequestForObject[*v1alpha1.Phone]{}))` (Softphones
+likewise). Controller names `phone`, `softphone`.
+
+*Tests (envtest; the test writes `pbx-config` and `pbx-secrets` with
+`compile.Compile` + `install.ConfigMap`/`ProjectedSecret` as core would;
+an `agentview.Holder`; a fake Actor recording calls; `events.NewFakeRecorder`;
+a fixed clock):*
+`TestPhoneUnseen` (state, every condition with ObservedGeneration, P2,
+requeue 10 min), `TestStatusWrittenOnlyWhenChanged` (second reconcile: no
+Update, resourceVersion unchanged), `TestNothingBeforeFirstPoll`,
+`TestNothingBeforeCompiled` (no `pbx-config`; device not in the index),
+`TestClaimsFromResolveClaims` (two Phones on 100: the newer is Invalid
+with the older named; a MAC conflict; number 200 → NumberNotInPlan; the
+same resources compiled give the same holders),
+`TestResyncSentAndRecorded` (ConfigStale → one `Resync{phone-desk, V}`,
+`lastAction{resync, V, now, 1}`, ActionSent),
+`TestResyncFailureKeepsLastAction` (Sent=false and an error, each: no
+`lastAction`, `handledRequest` unchanged with a pending request,
+ActionFailed Warning, requeue 30 s), `TestRequestIgnored` (Unseen +
+annotation), `TestApplyFailedControllerHalf` (§9 rollback: an agent
+document with `LastApplyVersion` = the compiled version and an error →
+`ConfigCurrent=False ApplyFailed` with the agent's message, one
+`ApplyFailed` Event, none on a second reconcile; an error about another
+version → no ApplyFailed), `TestNoResyncDuringCall` (§10.5: `Calls=1` →
+no Actor call, ConfigCurrent False Stale "waiting for the call to end",
+requeue 30 s; `Calls=0` → exactly one Resync),
+`TestUnknownKeepsState` (unreachable agent: state kept, Ready Unknown
+AgentUnreachable), `TestSoftphoneIssuedURL` (URL from the compiled
+token; a `pbx-secrets` written ahead keeps the old URL),
+`TestSoftphoneRotatesToken` (served provisioning fetch → the Secret's
+token changes, 32 alphanumerics, `lastAction rotateToken`; Secret missing
+→ ActionFailed), `TestSoftphoneReissue` (annotation → rotate, Issued,
+`handledRequest`), `TestStateChangedEvent`, `TestSetupTriggers` (a
+manager: a `Changes` event and a `pbx-config` update each reconcile; a
+status-only update does not).
+
+**W3.6 Person and Stream.** Gating as 6.2.1. Claims from
+`ResolveClaims`. Conditions, in order Ready, NumberConflict, each with
+ObservedGeneration:
+- NumberConflict → NumberConflict True `NumberConflict` (claim message),
+  Ready False `NumberConflict`, state `Invalid`;
+- NumberOutOfPlan → NumberConflict False `NoConflict`, Ready False
+  `NumberNotInPlan` (claim message), state `Invalid`;
+- Person holding its number: each ring target exists (cache) and is
+  routed (its index entry has a `Number`). All → Ready True `Routed`
+  ("rings phone desk, softphone laptop"), state `Ready`; some →
+  Ready False `MissingRingTargets` ("rings phone desk; not softphone x
+  (does not exist), phone y (not routed)"), state `Incomplete`; none →
+  the same reason, state `Unavailable` ("…: dialling 301 plays \"not
+  available\"");
+- Stream holding its number: Ready False `NoStreamBridge` ("release A has
+  no stream bridge: dialling 705 plays \"not available\""), state
+  `Unavailable`.
+
+Write only on change; `StateChanged` Events. Watches: `For` with
+`GenerationChangedPredicate`; the `pbx-config` ConfigMap → all of the
+kind (any resource change that matters recompiles it). *Tests (envtest):*
+`TestPersonRouted`, `TestPersonMissingTargets` (one missing, one
+unrouted by a number conflict, then none left), `TestPersonNumberConflict`
+(two Persons on 301), `TestPersonNotInPlan` (Person on 100),
+`TestStreamNoBridge`, `TestStreamConflict`,
+`TestStatusWrittenOnlyWhenChanged`, `TestNothingBeforeCompiled`.
+
+**W3.7 discovery.** `Report`: for each `s.Document.UnknownDevices` entry
+not yet reported for this `Document.Agent.StartedAt`: Get the `pbx-config`
+ConfigMap (missing → skip, *not* marked, so it is reported once the
+ConfigMap exists), Event Normal `UnknownPhone`, action `Discover`, note
+`install.UnknownPhoneMessage(MAC, Source)`, regarding the ConfigMap; mark
+it. A new `StartedAt` forgets the old set. It never blocks (the recorder
+is asynchronous). *Tests (fake client, FakeRecorder):* once per MAC; the
+same snapshot again: none; a new StartedAt: again; no ConfigMap: none,
+then reported; exact note.
+
+**Devices acceptance:** `P="./internal/controller/devices/... ./internal/controller/numbers/... ./internal/controller/discovery/..."`, rule 4's commands; coverage ≥ 80% each.
+
+#### 6.2.7 Stage cli: W3.9
+
+```go
+// internal/cli, beside the landed env.go
+func NewEnv(kubeconfig string, f ClientFlags, out, errOut io.Writer) (*Env, error)
+func Status(ctx context.Context, env *Env) error
+func SoftphoneQR(ctx context.Context, env *Env, name string, reissue bool) error
+func PhoneResync(ctx context.Context, env *Env, name string) error
+func FirmwareLoad(ctx context.Context, env *Env, zipPath string) error
+func Models(w io.Writer, reg *drivers.Registry) error
+func RenderQR(w io.Writer, text string) error
+const ReissueWait = 30 * time.Second
+const ReissuePoll = time.Second
+```
+
+**NewEnv.** `kubeconfig != ""` → that file only (`clientcmd` with
+`ExplicitPath`; a missing file is an error naming it, never a fallback);
+`""` → client-go's default rules (`$KUBECONFIG`, then `~/.kube/config`),
+never the in-cluster config (the deferred loader falls back to it when
+nothing is found: use the loaded raw config, not that fallback). Namespace: `f.Namespace`, else the context's, else
+`default`. `Kube`: a controller-runtime client with the built-in types and
+v1alpha1. `Agent`: the port-forward opener (`AgentOpener` docs: the
+Running pod with the labels, exactly one or an error naming the count and
+`--instance`; the token from the Secret its `agent-token` volume names,
+key `install.AgentTokenKey`, trimmed; the port named `control` on the
+`agent` init container; `portforward.NewOnAddresses` on 127.0.0.1 port 0
+through `spdy.RoundTripperFor`; `Close` stops it and waits). `Registry`:
+`builtin.Registry()`. `Clock`: `clock.RealClock{}`.
+
+**Status.** Out, in order:
+1. `Agent: <agent version>, Asterisk up (<version>) | Asterisk down,
+   config <applied[:12]> applied[, last apply of <v[:12]> failed: <err>]`,
+   or `Agent: could not ask the agent: <err>`;
+2. per kind (Phone, Softphone, Person, Stream; names sorted; a kind with
+   none is left out): `<Kind> <name> (<number>): <state or Pending>`, then
+   two-space-indented lines: every condition not in its healthy status
+   (True for Ready, FirmwareAvailable, FirmwareCurrent, Provisioned,
+   Registered, ConfigCurrent; False for NumberConflict, MACConflict,
+   Unsupported, LabelShortened) as `<Type>=<Status> <Reason>: <Message>`;
+   `human action: <text>` when set; a Softphone with a URL: `provisioning:
+   patchbay softphone qr <name>` (status never prints the URL);
+3. `Unknown phones: none`, or `Unknown phones:` and one line each:
+   `  <MAC> from <source>, first seen <RFC3339>, last seen <RFC3339>,
+   asked for <file>`, or `Unknown phones: could not ask the agent: <err>`.
+Exit 0 whenever the resources could be listed.
+
+**SoftphoneQR.** Get the Softphone (NotFound: an error naming the
+namespace). With `reissue`: value `Clock.Now().UTC()` in RFC 3339 with
+nanoseconds, a JSON merge patch of
+`metadata.annotations["patchbay.chrismiller.xyz/reissue-requested"]`, then
+every `ReissuePoll` for at most `ReissueWait` until `handledRequest ==
+value`, `provisioningURL` non-empty and different from before, and
+`ConfigCurrent`'s reason is not `ApplyPending`; timeout → an error naming
+the state. Without it: an empty URL is an error naming the state. Out: the
+URL, a blank line, `RenderQR`, a blank line, `This code works once;
+patchbay softphone qr <name> --reissue makes a new one.`
+
+**PhoneResync.** Get the Phone; value as above; merge patch of
+`…/resync-requested`; when `status.state` is not `Registered` or
+`ConfigStale`, Err: `warning: phone <name> is <state>; the controller
+resyncs only a Registered or ConfigStale phone, so it will mark this
+request handled without a resync`; Out: `resync requested for phone <name>
+(<value>)`.
+
+**RenderQR.** `qr.Encode(text, qr.M)`; quiet zone 4; module rows paired
+top/bottom (an odd last row's bottom is light); each cell is
+`"\x1b[" + fg + ";" + bg + "m▀"` with fg 30 (dark) / 97 (light) for the
+top module and bg 40 / 107 for the bottom one; each line ends
+`"\x1b[0m\n"`.
+
+**FirmwareLoad** (W3.9, Review Focus 3). Open the zip (never extracted to
+disk). For each entry, sorted by name: skip directories; base name = the
+part after the last `/` or `\`; refuse locally an entry over
+`api.MaxFirmwareFileSize` (by its header and by reading at most that +1
+bytes); hash it. Match the base name, case-sensitively, against every
+file of every load of every driver in `env.Registry`:
+- no match: `"<entry>: skipped: not in any firmware manifest"` (info);
+  but a name equal to a manifest name ignoring case: `"<entry>: not
+  uploaded: differs only in case from <name> (load <load>)"` (failure);
+- one or more loads carry the name: the non-pending ones whose digest
+  equals the hash get it (a Shared name thus goes only to the load it
+  belongs to; equal digests in several loads go to each); none and all
+  candidates pending → `"<name>: not uploaded: the manifest has no SHA-256
+  for it yet (load <load>); its SHA-256 is <hex>"` (failure); none
+  otherwise → `"<name>: not uploaded: its SHA-256 <hex> is not the
+  manifest's for load <load>"` (failure);
+- a (load, name) already matched by an earlier entry is not uploaded
+  twice.
+If anything matched, `OpenAgent` once, then PUT each match, in (load,
+name) order, to `BaseURL + api.FirmwarePath(load, name)` with the token
+and a Content-Length, and print `"<load>/<name>: stored (201)"`,
+`"…: already stored (200)"` or `"…: refused by the agent (<code>):
+<error>"` (failure). Then, per load touched, `"load <load>: <k> of <n>
+files stored"`. Return an error when any failure happened or no entry
+matched (`"no file in <zip> is in a firmware manifest"`).
+
+**Models.** For each driver (registry order), each model (sorted): the
+profile (hardware, provisioning with the password length, endpoint
+options, features per backend), then each firmware load with its source,
+models and files (`name  size  sha256 | pending`). A golden file pins it.
+
+*Tests (no cluster; fake client; an `httptest.Server` agent behind a fake
+`AgentOpener` that checks the bearer token and the manifest digests;
+`clock/testing.FakeClock`; a test registry of fake drivers whose loads
+are generated: `TESTA.1-0-0S` with `a.sbn`, `TESTA.1-0-0S.loads` and a
+Shared `term45.default.loads`, `TESTB.2-0-0S` with `b.sbn` and its own
+Shared `term45.default.loads`, and `TESTP.0-0-0S` whose `p.sbn` is
+pending):* `TestFirmwareLoadLayouts` with generated zips: flat; under a
+top-level folder; with extra files (readme, `.cop.sgn`); a wrong-case name
+(failure, nothing uploaded for it); another load's files; the Shared name
+of each load (uploaded only to its own); a pending file (failure naming
+its SHA-256); a corrupted file (failure, not uploaded); no match
+(failure); a duplicate entry; a directory entry; an oversized entry;
+`../` and `\` names (base name only). `TestFirmwareLoadAgentFailures`
+(422, 412, 500 → failure, exit error, the rest still uploaded).
+`TestStatus` (golden, with unknown phones), `TestStatusAgentUnreachable`.
+`TestSoftphoneQR`, `TestSoftphoneQRReissue` (the fake clock; a goroutine
+plays the controller), `TestSoftphoneQRReissueTimesOut`, `TestPhoneResync`
+(+ the warning), `TestRenderQR` (decodes back to `qr.Encode`'s grid; ≤ 80
+columns for a 60-byte URL), `TestModels` (golden; `//go:build !e2e`, as
+the e2e load changes it), `TestOpenAgent` (fake client: pod, Secret,
+port; zero or two pods; `--instance`), `TestNewEnvNeverFallsBack` (rule
+7).
+
+**CLI acceptance:** `P="./internal/cli/..."`, rule 4's commands; coverage
+≥ 80%.
+
+#### 6.2.8 Stage fakephone: W3.10
+
+`fakephone run [--script FILE]` (else `$FAKEPHONE_SCRIPT`) executes a
+`script.Script` exactly as the `script` package documents (the automatic
+behaviours in its package doc, each step type's doc). Beyond that:
+
+- **SEP parser** (its own `encoding/xml`, never `cisco79x5`):
+  `processNodeName`, `ports/sipPort`, `sipStack/timerRegisterExpires`,
+  `phoneLabel`, line 1's `name`, `authName`, `authPassword`,
+  `displayName`, `loadInformation`, `versionStamp`,
+  `transportLayerProtocol` (1 TCP, 2 UDP, anything else an error).
+  **lpconfig parser:** `proxy_0/reg_proxy` (`<sip:host:port;transport=…>`),
+  `reg_identity`, `reg_expires`, `auth_info_0/username`, `userid`,
+  `passwd`, `misc/config-uri` (cleared means present, empty, `overwrite`).
+  Both tested on the drivers' render goldens
+  (`internal/drivers/cisco79x5/testdata/render/*`,
+  `internal/drivers/softphone/testdata/render/*`, read-only), so a render
+  change that would break the fake phone fails here.
+- **Web pages:** `scrape.DeviceInformationX`, `NetworkConfigurationX`,
+  `DeviceLogX` and `scrape.MarshalPage`; tests parse them back with
+  `scrape.Parse*`.
+- **Calls:** answering per `script.Answer` (180, 200 with a PCMU answer
+  SDP, `ToneHz` out, Goertzel counts per `DetectHz` in, the INVITE's From
+  display name, `Remote-Party-ID` and `P-Asserted-Identity` recorded);
+  `Call` reuses `invite`; `Transfer` sends an in-dialog REFER
+  (`Refer-To: <sip:<to>@<pbx>>`) through the dialog session's `Do`,
+  answering a digest challenge, then answers the `refer` NOTIFYs and
+  leaves the call.
+- **`call` gains `--expect-hz`** (default `--tone-hz`, the echo): the
+  frequency whose packets `--min-tone-frames` counts, so a one-shot caller
+  can check the far phone's tone.
+- **Dockerfile:** `fakephone` now imports `internal/agent/scrape` (and
+  through it `api/` and `internal/`), so the build stage copies `api/` and
+  `internal/` and `Dockerfile.dockerignore` admits them (still without
+  `*_test.go` and `testdata/`).
+- **Logging:** a JSON line per step and per record (the State's records);
+  never a password, the provisioning URL or a token.
+
+*Tests (no cluster: a TFTP server from `pin/tftp` on 127.0.0.1:0, the
+existing fake registrar, `httptest` for the provisioning URL, a test UAC
+and UAS on loopback):* `TestParseSEP` / `TestParseLPConfig` (goldens; a
+password placeholder replaced; `transportLayerProtocol` 3 refused),
+`TestRunCiscoLifecycle` (fetch, `{load}.loads` retried until served,
+firmware fetch, web down/up, signals, register with the parsed
+credentials and expiry), `TestNotifyRefetchesAndReregisters` (new
+password after the refetch → a REGISTER with it at once),
+`TestRunLinphone` (GET once, 404 recorded, UDP register),
+`TestWebPagesParse`, `TestSignalBeforeStep`, `TestStateJSON` (no password,
+no URL), `TestAnswerRecordsCallerID`, `TestCallExpectTone`,
+`TestTransferSendsRefer`, `TestStopRefreshingAndUnregister`,
+`TestStepFailureExits` (exit 1, the step named), `TestRunNeverLogsSecrets`.
+Also `docker build -f test/e2e/fakephone/Dockerfile -t
+ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e .` succeeds (docker, no
+cluster).
+
+**Fakephone acceptance:** `P="./test/e2e/fakephone/"`, rule 4's commands,
+the docker build; coverage ≥ 80%.
+
+#### 6.2.9 Integrator: wiring, chart, e2e, docs
+
+1. **Reconcile** reported deviations. **Compile-time assertions** in
+   `internal/controller`: `var _ agentview.Actor = (*agentclient.Client)(nil)`,
+   `_ poller.Source = (*agentclient.Client)(nil)`,
+   `_ agentclient.TokenSource = (*secrets.Manager)(nil)`,
+   `_ agentview.Observer = (*poller.Poller)(nil)`,
+   `_ manager.LeaderElectionRunnable = (*poller.Poller)(nil)`,
+   `_ agentview.SnapshotFunc = (*discovery.Reporter)(nil).Report`.
+   Remove `internal/cli/doc.go`'s blank `rsc.io/qr` import once the
+   renderer imports it; run `go mod tidy -diff` (empty).
+2. **`internal/controller`** (root): `Options` gains `Fullname`,
+   `SettingsFile`, `AgentURL`; `func Setup(mgr ctrl.Manager, opts Options,
+   s compile.Settings, reg *drivers.Registry) error` builds: `names :=
+   install.NewNames(opts.Fullname)` (Validate), a `Holder`,
+   `NewChanges(DefaultChangesBuffer)`, the recorder
+   `mgr.GetEventRecorder(install.EventRecorderName)`, `metrics.New`
+   (controller-runtime's `metrics.Registry`; Observer: the `Holder`),
+   `secrets.New`, `agentclient.New` (Tokens: the secrets manager),
+   `discovery.New`, `poller.New` (Holder, Metrics, OnSnapshot: the
+   reporter) then `mgr.Add(poller)`, `bundle.New(…).SetupWithManager`,
+   `devices.Setup` (Observer: the `Holder`, which the poller publishes
+   through; this order has no cycle), `numbers.Setup`. envtest `TestSetupWiresEverything` (a
+   Phone compiles into `pbx-config`; a fake agent behind `httptest`
+   makes it Unseen).
+3. **`cmd/patchbay controller`**: flags `--fullname` (required),
+   `--settings-file` (default `/etc/patchbay/settings/settings.json`),
+   `--agent-url` (default `install.AgentURL(names, namespace,
+   api.DefaultPort)`); `settings.Load`, `install.CheckSettings`,
+   `builtin.Registry()`, `NewManager`, `Setup`. **Client commands**: the
+   stubs become thin cobra glue over `internal/cli` (`-n/--namespace`,
+   `--instance` on each client command; `models` needs no kubeconfig);
+   `main_test` keeps only `stream-bridge` as a stub and runs each command
+   through cobra with a `--kubeconfig` that does not exist and
+   `KUBECONFIG`/`HOME` in `t.TempDir()`.
+4. **`internal/agent/server.go`**: `Serve` caps connections with
+   `netlimit` (`MaxControlConns = 64`, `MaxControlConnsPerSource = 16`);
+   `TestServeCapsConnections`.
+5. **Chart**: values `timezone` (default `UTC`), `ntpServer`
+   (`192.168.20.1`), `pbx.signalling` (`pjsip`), `numberPlan` (§1.1),
+   `allowedNetworks` (`192.168.20.0/24`, `192.168.0.0/24`); a
+   `<fullname>-settings` ConfigMap rendering `settings.json` from them and
+   `pbx.address`/`pbx.ports` (`amiSecret` = `<fullname>-ami/password`,
+   `streamBridge` empty); the controller mounts it read-only at
+   `/etc/patchbay/settings`, gets `--fullname` and `--settings-file`, and a
+   `checksum/settings` annotation over the JSON; `pbx.agent.tokenSecretName`
+   and the "create it before installing" note go (NOTES.txt says the
+   controller mints the token). The controller's Role is unchanged.
+   *test/chart:* each ci values file's `settings.json` passes
+   `settings.Parse` and `install.CheckSettings`, the default one equals
+   core's `TestParseChartDefaults` fixture; the controller's flags, mount
+   and checksum (which changes with a setting); `internal/cli`'s constants
+   match the PBX pod (init container `agent`, port `control`, volume
+   `agent-token`, labels).
+6. **Build**: `make e2e-images` also builds `.e2e/bin/patchbay` with
+   `-tags e2e` (the CLI the e2e runs, with the e2e load); the fakephone
+   image build picks up its new Dockerfile.
+7. **e2e harness** (the real controller; `bundle_test.go` and its
+   `applyBundle`, `writeBundle`, `ensureSecretKey`, `newSecretKey`,
+   `rotateProvisioningToken` deleted, `secretValue`/`upsert*` kept where
+   still used):
+   - install: namespace, `helm upgrade --install` (runtime values add
+     `allowedNetworks: [<podCIDR>]`), wait for the CRDs, then create the
+     **site resources**: Phone `desk` (100, MAC `0200E2E00001`, label
+     `Desk`), Phone `kitchen` (101, `0200E2E00002`, `Kitchen`), Softphone
+     `laptop` (150, `Laptop`), Person `chris` (301 → desk, laptop); wait
+     for both rollouts (the PBX pod waits for the controller's token and
+     bundle); read the agent token from the controller's Secret;
+   - helpers: `startPhone(name, script.Script, extraEnv) pod` (a run-mode
+     tools pod with `securityContext.sysctls:
+     net.ipv4.ip_unprivileged_port_start=0` and `FAKEPHONE_SCRIPT`),
+     `signal(pod, name)` and `phoneState(pod) script.State` through
+     `pods/proxy` on port 80, `waitDevice(kind, name, what, timeout,
+     func(status) (bool, string))` watching status, `patchbay(args…)`
+     running `.e2e/bin/patchbay --kubeconfig <.e2e/kubeconfig> -n
+     patchbay-e2e`, `wipeE2ELoad()` (`docker exec <node> rm -rf` the e2e
+     load's directory on the firmware PV's host path);
+   - W2 tests move off the harness's bundle: they read the compiled
+     bundle with `install.ReadCompiled` (not `h.bundle`) and use `kitchen`
+     (never `desk` or `laptop`, which `TestDeskLoop` owns):
+     `TestTFTPAndHTTP6970`, `TestRegister`, `TestEchoCall`,
+     `TestResyncNotify`, `TestPrompts`, `TestRollback`'s register and echo;
+     `TestProvisioningOneTime` (sequential, before `TestDeskLoop`) takes the
+     URL from `laptop`'s status (waiting for `ConfigCurrent` not
+     `ApplyPending`) instead of rotating the token itself;
+   - `TestController` also asserts: `pbx-config` and `pbx-secrets` carry
+     the same `bundle-version`, the agent applied it, the agent token
+     Secret has the controller's labels.
+8. **e2e tests.** *Sequential* (Go runs these first, in file order):
+   `TestCRDs`, `TestPBXUp`, `TestController`, `TestFirmwareUploadAndServe`,
+   `TestProvisioningOneTime`, `TestRollback`. *Parallel* (`t.Parallel()`
+   before `testenv.Test`, or one `testenv.TestInParallel` if the framework
+   refuses): every other test, each on its own devices.
+
+   | Test | Steps | Assertions |
+   |---|---|---|
+   | `TestRollback` (§9 rollback, agent half) | scale the controller to 0 (wait for its pod to go); read `install.ReadCompiled`; write a broken bundle (`kitchen`'s endpoint renamed in `pjsip.conf`, version from `VersionWith`) with `install.ProjectedSecret` then `install.ConfigMap`; wait; register and echo as kitchen; scale to 1; `patchbay softphone qr laptop --reissue` | `LastApplyVersion` = broken with a verify error naming kitchen, `AppliedVersion` the good one, registers and echoes; after scale-up `pbx-config` holds the compiled version; after the reissue the agent's last apply is that new version with no error; no device ever showed `ApplyFailed` |
+   | `TestPhoneLifecycle/lifecycle` (§9 "Desk walks to Registered") | `wipeE2ELoad`; recreate Phone `lifecycle` (111, `0200E2E00011`, firmware `E2E45.0-0-1S`, label `Lifecycle`) → Unseen; start a cisco phone: web `SCCP45.9-4-2SR4-3S`/`jar45sccp…`, `fetchConfig`, `fetch {load}.loads` every 3 s within 3 min, `fetch appsE2E.0-0-1.sbn` every 1 s within 30 s (the CLI stores the `.loads` a moment before the `.sbn`), web down, `waitSignal boot`, web `E2E45.0-0-1S`, `fetchConfig`, `waitSignal register`, `register` | Unseen (Ready False Unseen, P2); NeedsFirmware (FirmwareAvailable False NotStaged, FirmwareCurrent False OtherLoad, P3 listing both files); after the firmware load, FirmwareAvailable True; Upgrading (P7, `upgradeStartedAt` set); signal `boot`; Registering at about `lastFw` + 3 min (Provisioned True, HumanAction ""); signal `register`; Registered: Ready, FirmwareAvailable, FirmwareCurrent (Running), Provisioned, Registered, ConfigCurrent all True, HumanAction "" |
+   | `TestPhoneLifecycle/firmware-load` (§9 `TestFirmwareLoad`, both rows) | before the good load, while lifecycle is NeedsFirmware: `patchbay firmware load` of a generated zip (under a top-level folder, with a readme) holding only a corrupted `.sbn` (a good `.loads` in it would be stored and start the upgrade); then the good zip of both files | the corrupted run exits non-zero naming the file and stores nothing for it (the store sensor still lacks it, lifecycle still NeedsFirmware); the good run exits 0 with `stored (201)` per file (or `already stored (200)`) |
+   | `TestPhoneLifecycle/reset` (§9, the Desk phone's own path) | recreate Phone `reset` (112, `0200E2E00012`, firmware `E2E45.0-0-1S`); start a cisco phone: web `E2E45.0-0-1S` with log `Trust List update failed`, `fetch SEP{mac}.cnf.xml.sgn` (notFound), `waitSignal reset` (sent once firmware-load has staged the load, so the downloads are served at once), web down, `fetch term45.default.loads` (notFound), `fetch E2E45.0-0-1S.loads` and `appsE2E.0-0-1.sbn` (retried until served), `fetchConfig`, `register` | NeedsTrustReset with **P6** (6.2.2); after `reset`: Upgrading and never NeedsTrustReset again (every state the watch saw); then Registered with FirmwareCurrent Unknown `NotReported`, no `lastAction`, no NOTIFY in the phone's state |
+   | `TestDeskLoop/softphone` (§9 Softphone, Review Focus 4) | `patchbay softphone qr laptop --reissue` (parse the URL from its output); start a linphone phone with it: `fetchConfig`, `register`; a one-shot `fakephone http GET` of the same URL | laptop Issued with that URL (HumanAction S1); Provisioned (`lastAction rotateToken`, a new URL); Registered (Ready True); the second GET is 404 and laptop stays Registered; its State's `configURICleared` |
+   | `TestDeskLoop/provision` | start a cisco phone as desk: `fetchConfig`, `register`; it answers calls (600 Hz, detects 800 and 1000) | desk Registered, ConfigCurrent True, its State's `phoneLabel` `Desk` |
+   | `TestDeskLoop/calls` (§9 `TestCalls`) | desk signal → `call 150` held 4 s expecting 800 Hz; laptop (answers with 800 Hz, detects 600) signal → `call 100` held 4 s expecting 600 Hz | both calls pass; laptop's record from desk: `fromDisplay` or `pAssertedIdentity` holds `Desk`, ≥ 50 packets of 600 Hz; desk's record from laptop: `remotePartyID` holds `Laptop`, ≥ 50 packets of 800 Hz |
+   | `TestDeskLoop/person` (§9 `301`) | one-shot `call 301` as kitchen, 3 s, `--expect-hz 600`; laptop's answer delay 3 s, desk's 1 s | both phones' States show the INVITE from 101; desk answered, laptop's was cancelled; kitchen heard 600 Hz |
+   | `TestDeskLoop/transfer` (§9 `TestTransfer`) | one-shot `call 100` as kitchen (1000 Hz, 12 s, no echo check); desk signal → `waitCall`, `transfer 150` | desk's REFER got 202; laptop answered a call from kitchen and counted ≥ 50 packets of 1000 Hz |
+   | `TestDeskLoop/label` (§9 `TestLabelLoop`) | patch desk's label to `Desk Two` | a new compiled version; one resync NOTIFY in desk's State; it refetched; `phoneLabel` `DeskTwo`; desk Registered with `lastConfigFetch.version` = its compiled version |
+   | `TestDeskLoop/change-during-call` (§10.5) | desk signal → `call 600` open; patch the label to `Desk Three`; wait 20 s; signal → `hangup` | while the call is up: ConfigStale, ConfigCurrent False Stale "waiting for the call to end", no new NOTIFY; after the BYE exactly one NOTIFY, then Registered |
+   | `TestDeskLoop/secret-heals` (§9 `TestSecretHeals`) | delete Secret `patchbay-phone-desk`; afterwards a one-shot REGISTER as desk with the old password | a new Secret (new UID, new value); a new version; one NOTIFY; desk's `passwordSHA256` = the new value's; desk Registered; the old password gets 401 |
+   | `TestDiscovery` (§9 second phone) | a random MAC `0200E2E1xxxx`; one-shot `tftp get SEP<mac>.cnf.xml`; `patchbay status`; create Phone `discovered` (113, that MAC); start a cisco phone: `fetchConfig`, `register` | an `UnknownPhone` Event on `pbx-config` with the exact note and the pod's IP; `status` lists the MAC with that source; then Registered (FirmwareCurrent Unknown) |
+   | `TestPrompts` (W2, extended: §9 reserved numbers) | as W2, also `999` and `205` | each answered with ≥ 2 s of non-silent audio |
+
+   Order inside `TestPhoneLifecycle` (subtests share its two phones):
+   wipe the e2e load; create `lifecycle`, assert Unseen, start its phone;
+   create `reset`, start its phone, assert NeedsTrustReset; assert
+   lifecycle NeedsFirmware; firmware-load (corrupted, then good); signal
+   `reset`; assert both Upgrading; signal `boot`; wait for reset Registered
+   and lifecycle Registering; signal `register`; lifecycle Registered.
+   Order inside `TestDeskLoop`: softphone, provision, calls, person,
+   transfer, label, change-during-call, secret-heals. Desk's and laptop's
+   phones are started once (in softphone and provision) with their whole
+   scripts: every later action is a step behind a named signal (`call-150`,
+   `call-100`, `transfer`, `call-600`, `hangup`), and both answer calls
+   throughout (desk after 1 s with 600 Hz, laptop after 3 s with 800 Hz;
+   both detect 600, 800 and 1000 Hz). Both test functions delete their
+   phone pods and per-test resources at the end, and recreate per-test
+   resources at the start (a reused cluster).
+
+   **Duration budget** (fresh cluster, images cached; target ≤ ~7 min):
+   kind create and image load 60 s; install, token, compile and rollout 40
+   s; sequential tests 100 s (TestRollback 60 s of it); the parallel group
+   225 s, set by `TestPhoneLifecycle` (the Upgrading window is a fixed 3
+   min after the last firmware fetch: lifecycle and reset fetch theirs
+   within ~30 s of each other) with `TestDeskLoop` (~180 s) and the rest
+   under it; teardown 15 s. Each test's own timeouts: states 60 s
+   (Registering and the final Registered: 5 min), Events 30 s, CLI runs 60
+   s. `E2E_TIMEOUT` stays 30m. Report the measured times in "W3 as built".
+9. **Docs**: docs/e2e.md rewritten for the real controller (site
+   resources, scripted phones, signals and state through pods/proxy, the
+   parallel group, the budget); CLAUDE.md deviations for W3's departures;
+   the plan's "W3 as built".
+
+#### 6.2.10 W3 acceptance
+
+```sh
+cd /home/chris/Repos/patchbay
+nix develop -c make generate check-generated fmt vet lint test   # green
+nix develop -c go mod tidy -diff                                 # empty
+nix develop -c make check-hygiene
+nix develop -c make asterisk-check
+nix develop -c make e2e                                          # leaves no cluster; ≤ ~7 min
+```
+
+Done when every 6.2.5–6.2.9 test exists and passes, every carry-over in
+6.2.2 is closed or in §11, every §9 row marked W3 has its test, and
+CLAUDE.md "Deviations" lists what W3 changed.
 
 ---
 
@@ -2515,3 +3462,32 @@ The five inputs most likely to break a real user that no test covers yet.
   `x-cisco-remotecc` REFERs, SUBSCRIBEs for features it was not given);
   stock PJSIP answers them with errors. Expected, and harmless unless the
   bench shows otherwise.
+- *(W3, from W2's open items: §6.2.2)* **After an agent restart, a
+  bundle that fails verification leaves the agent without AMI.** The
+  adopted version it rolls back to has no AMI account until intake hands
+  that version over again, so the agent cannot log in: every device shows
+  `Registered=False` `PBXDown` and softphone provisioning URLs answer 404,
+  while calls keep working. Any new version heals it: fix or revert the
+  change that broke the bundle (or `patchbay softphone qr <name>
+  --reissue`, which makes one). It needs an agent restart and a failing
+  version together; compiled bundles do not fail verification in normal
+  operation.
+- *(W3, from W2)* **An AMI password change while the AMI session is down**
+  (the `<fullname>-ami` Secret deleted during an Asterisk outage), or a
+  rollback whose `manager` reload cannot run, leaves the agent logging in
+  with a password Asterisk does not have: `PBXDown` on every device until
+  Asterisk restarts (`kubectl -n <namespace> delete pod -l
+  app.kubernetes.io/component=pbx`; calls in progress drop).
+- *(W3, from W2)* **A version swapped in while AMI was down that then
+  fails verification is not retried** by the agent until its ConfigMap or
+  Secret changes, and each agent restart applies it again and rolls it
+  back. Devices show `ConfigCurrent=False` `ApplyFailed` with the agent's
+  error until a new version arrives.
+- *(W3)* **The controller's objects outlive `helm uninstall`**:
+  `pbx-config`, `pbx-secrets`, `<fullname>-ami` and `<fullname>-agent-token`
+  have no owner (device Secrets go with their resources). Delete them with
+  `kubectl -n <namespace> delete configmap,secret -l
+  app.kubernetes.io/managed-by=patchbay-controller`.
+- *(W3)* **A controller restart reports each unknown phone again**, once:
+  discovery remembers which MACs it reported for the agent's current
+  process in memory only.
