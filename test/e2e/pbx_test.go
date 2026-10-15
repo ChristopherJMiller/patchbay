@@ -517,11 +517,11 @@ func TestRollback(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			// pbx-config back to the live version: the agent applied it
-			// already, so this changes nothing.
-			if err := h.writeBundle(ctx, h.bundle.Bundle); err != nil {
-				t.Errorf("restoring pbx-config: %v", err)
-			}
+			// pbx-config back to a good version, as a new one (the laptop's
+			// token rotated), so the agent's last apply is a success again:
+			// the live version written back would change nothing, and a
+			// reused cluster would start with this test's apply error.
+			h.rotateProvisioningToken(ctx, t)
 			return ctx
 		}).
 		Feature()
