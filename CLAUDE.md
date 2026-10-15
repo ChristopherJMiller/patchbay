@@ -100,14 +100,17 @@ departs from it, the departure is recorded here (and in the code's docs).
   controller writes before each pbx-config with every secret the bundle
   references (`Bundle.SecretRefs`), each under `SecretRef.ProjectedKey`
   (`<name>_<key>`). The agent's Role names that Secret and the ConfigMap,
-  nothing else.
+  nothing else. The agent applies a version only with the values it was
+  compiled with (`Bundle.VersionWith`): a Secret written ahead of its
+  ConfigMap is ignored, a ConfigMap ahead of its Secret waits 30 s for it.
 - **Spent provisioning tokens survive restarts** (§11: "The token is then
   spent: the same URL no longer serves"; nothing says where): device HTTP
   writes each spend (the token's SHA-256 and the served fetch) to
   `layout.StateDir` on the PBX's persistent volume *before* it sends the
   document, re-records the served fetches at start, and forgets a spend
-  only once the live bundle no longer grants that token, so a URL is never
-  reusable after an agent restart.
+  only once the *settled* bundle (verified, and not restored by a
+  rollback) no longer grants that token, so a URL is never reusable after
+  an agent restart or a rollback.
 - **The persistent volume** (§6: the `firmware` PVC) is mounted whole at
   `layout.PersistentDir` and holds the firmware store and the agent's
   state: read-write in the agent, read-only in the file server.

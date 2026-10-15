@@ -1355,10 +1355,10 @@ authoritative;** this section says what to build on it.
 |---|---|---|
 | **Port 69 privilege** (§5.1) | **Confirmed (a) with (b) inside, changed in two places.** `patchbay fileserver`, a third container (same image), serves TFTP :69 and HTTP :6970. It starts as uid 0 with only `NET_BIND_SERVICE`, `SETUID`, `SETGID` (container `runAsUser: 0`, `runAsNonRoot: false`, `allowPrivilegeEscalation: false`, read-only root), binds both ports, then `setgroups([])`, `setresgid`, `setresuid` to **65533:65533** (`layout.FileserverUID/GID`), checks `/proc/self/status` (all four uids and gids, no groups, `CapInh/CapPrm/CapEff/CapAmb` zero, `NoNewPrivs: 1`) and exits non-zero if anything differs, all before it opens any file. It binds **the PBX address** (`<pbx.address>:69`, `:6970`), not 0.0.0.0. | *Changed:* the plan dropped to 65532, the agent's uid. The file server must mount the whole live volume (a subPath pins one version and misses the swap), so with the agent's uid it could read every resolved file the agent wrote: the AMI password, every SIP password, the softphone documents. A uid of its own with no groups, plus per-tree modes (`layout.TreeModes`: only `tftp/` is world-readable), keeps it to the files it serves anyway. *Changed:* binding the PBX address: `top` also carries the control-plane VIP, and TFTP replies come from a new socket per transfer, so the source address must not be left to routing (the same lesson as RTP, docs/e2e.md). |
 | **Agent access to secrets** (§5.1) | **Confirmed.** One projected Secret `<fullname>-pbx-secrets`, key `SecretRef.ProjectedKey()` (`<name>_<key>`, landed in `compile`), holding exactly `Bundle.SecretRefs()` (landed). The agent's Role: `get,list,watch` on `configmaps` `[<fullname>-pbx-config]` and `secrets` `[<fullname>-pbx-secrets]`; informers use a `metadata.name` field selector, which RBAC needs for list/watch with `resourceNames`. Recorded in CLAUDE.md. | As §5.1. Both sides call one function for the key, so they cannot drift. |
-| **Retrying a failed version** (§5.1) | **Confirmed, made exact:** intake keys an attempt by (bundle version, `pbx-secrets` resourceVersion). A failed pair is retried when either changes, or 5 min after it failed; an applied pair is never re-applied (an informer resync is a no-op). | A failure caused by a missing secret heals when the Secret changes; anything else waits 5 min instead of reloading Asterisk every poll. |
+| **Retrying a failed version** (§5.1) | **Confirmed, made exact:** intake keys an attempt by (bundle version, `pbx-secrets` resourceVersion). A failed pair is retried when either changes, or 5 min after it failed; an applied pair is never re-applied (an informer resync is a no-op). | A failure caused by a missing secret heals when the Secret changes; anything else waits 5 min instead of reloading Asterisk every poll. *Added in the W2 review:* a version is applied only with the secret values it was compiled with (`compile.Bundle.VersionWith`): a Secret ahead of the applied version is ignored until its ConfigMap follows, and a new version waits `SecretGrace` (30 s) for its own Secret before it is refused (5.2.11). |
 | **Scrape cadence** (§5.1) | **Confirmed:** `sensor.ScrapeTarget.Live` (a live contact) → every 5 min, else every 60 s; an address change scrapes at once. | The agent senses; it does not compute Ready. |
 | **Narrow module directory** (W1 carry-over) | **Changed from the plan.** A separate `astmoddir` does not narrow anything: `module load ../usr/lib/asterisk/modules/app_system.so` loads through it (checked 2026-10-15 on the pinned `andrius/asterisk:22.11.0_debian-trixie`, and that the shadow below blocks it). Instead an init container (the Asterisk image, uid 1000) copies exactly `compile.Modules()` from `/usr/lib/asterisk/modules` into an emptyDir mounted at `layout.ModulesStagingDir`, and the Asterisk container mounts that emptyDir **read-only over** `compile.AsteriskModuleDir` (`/usr/lib/asterisk/modules`), hiding the image's directory. `astmoddir` is unchanged. The chart lists the modules; a Go test keeps the list equal to `compile.Modules()`. | The image's other module copies: none (checked with `find`). The init container never mounts the live config, so it never sees the AMI password. |
-| **Spent provisioning tokens** (W1 carry-over) | Device HTTP persists each spend **before** it sends the document: `layout.StateDir/layout.SpentTokensFile` (written whole: temp, fsync, rename), holding per spend the token's SHA-256 and the served `sensor.FetchEvent`. At start it reloads the file and re-records every spend's event, so the controller still sees the served fetch (and rotates the token) after an agent restart. A record is pruned once the live bundle no longer grants a token with that digest. `StateDir` is a 0700 directory device HTTP creates on the firmware PVC. | Spend-then-serve makes a crash between the two at worst lose a document, never reuse a token. Re-recording keeps the drivers unchanged: the softphone fold already rotates on a served fetch after the last rotation, and an old fetch before it is ignored. |
+| **Spent provisioning tokens** (W1 carry-over) | Device HTTP persists each spend **before** it sends the document: `layout.StateDir/layout.SpentTokensFile` (written whole: temp, fsync, rename), holding per spend the token's SHA-256 and the served `sensor.FetchEvent`. At start it reloads the file and re-records every spend's event, so the controller still sees the served fetch (and rotates the token) after an agent restart. A record is pruned once the *settled* grants (the live version's once it is verified and not restored by a rollback, `apply.Applier.SettledGrants`; W2 review) no longer hold a token with that digest. `StateDir` is a 0700 directory device HTTP creates on the firmware PVC. | Spend-then-serve makes a crash between the two at worst lose a document, never reuse a token. Re-recording keeps the drivers unchanged: the softphone fold already rotates on a served fetch after the last rotation, and an old fetch before it is ignored. |
 | **Which version a fetch served** | Every server resolves `layout.Current` once per request and reads only under that version's directory, reporting it as `FetchEvent.BundleVersion` with the `BundlePath`. Observations take the device's `Version` from that bundle version's index (`v<version>/bundle.json`, written by apply), or from the event when device HTTP set it. | A swap during a transfer cannot make a phone look current on a file it did not get. Indexes on disk survive agent restarts. |
 | **File modes** | Per tree (`layout` package doc): version dir 0755, `bundle.json` 0640, `tftp/` 0755/0644, `asterisk/` and `http/` 0750/0640, `provisioning/` 0700/0600; group `--fs-group` (the pod's fsGroup, 1000) set explicitly with `Lchown`, modes set explicitly with `Chmod`, never left to the umask or setgid inheritance. Firmware: dirs 0755, files 0644, uploads under `.incoming/` 0700. | Asterisk reads `asterisk/` through its group; the file server reads only what is world-readable. |
 | **AMI injection** | The client refuses CR/LF anywhere, and in PJSIPNotify variables `,` `"` `\` (Asterisk splits and unquotes `Variable:`), with `ami.ErrUnsafeValue`; the actions also refuse a Call-ID holding `{` or `}`. | A Call-ID is chosen by the device. |
@@ -1441,6 +1441,7 @@ func (r SecretRef) ProjectedKey() (string, error)          // "<name>_<key>"
 func SecretRefFromProjectedKey(key string) (SecretRef, error)
 func (b Bundle) SecretRefs() ([]SecretRef, error)          // placeholders + tokens + AMI, sorted, unique
 func (b Bundle) Index() Index
+func (b Bundle) VersionWith(secrets map[SecretRef][]byte) (string, error) // the version these values give (W2 review; Compile uses it)
 func Modules() []string                                    // modules.conf's list, in order
 const AsteriskModuleDir = "/usr/lib/asterisk/modules"
 
@@ -1469,6 +1470,7 @@ type FetchEvent struct {
 }
 func (e FetchEvent) Validate() error
 const ProvisioningUnknownFile = "p/"; MaxFileLength = 255; MaxErrorLength = 512
+func ProvisioningName(name string) bool // an element "p" followed by another: may carry a token (W2 review)
 type FetchRecorder interface{ RecordFetch(FetchEvent) }
 type FetchRecorderFunc func(FetchEvent)
 type ScrapeTarget struct{ Device, Address string; Live bool }
@@ -1484,6 +1486,7 @@ func (r *FetchEventReader) Next() (FetchEvent, error)
 // agent/provision
 type Grant struct{ Device, Token, File, BundleVersion, Version string } // String/GoString/MarshalLog redact Token; json:"-"
 type Source interface{ Grants() (bundleVersion string, grants []Grant) }
+type SourceFunc func() (bundleVersion string, grants []Grant) // a func as a Source (W2 review)
 
 // agent/ami (ami.go)
 var ErrNotConnected, ErrUnsafeValue error
@@ -2132,8 +2135,9 @@ Done when every 5.2.5–5.2.8 test exists and passes, every carry-over in
 #### 5.2.10 Handed to W3
 
 - The controller writes `pbx-secrets` (keys `ProjectedKey`, exactly
-  `SecretRefs`) before `pbx-config`, and mints the agent token; in W2 the
-  e2e harness does both.
+  `SecretRefs`, with exactly the values it compiled with: the agent checks
+  them with `Bundle.VersionWith`, 5.2.11) before `pbx-config`, and mints the
+  agent token; in W2 the e2e harness does both.
   The harness's stand-in is `test/e2e/bundle_test.go` (`applyBundle`); W3
   deletes it, or the two would fight over `pbx-config`.
 - fakephone's scripted `run` mode, its fake web pages (built from
@@ -2254,6 +2258,76 @@ records the departures from the design.
 - **Finding**: `pods/portforward` on the PBX pod (host network) reaches
   the node's loopback, so AMI too: the AMI password stays the barrier, as
   for any process on the node.
+
+**W2 review fixes** (three read-only reviews of W2; each fix has a test
+that fails without it). Where they differ from 5.2.1–5.2.9 and from the
+stage notes above, these hold.
+- **A version is applied only with its own secret values.** The
+  controller writes pbx-secrets before pbx-config and the two informers
+  deliver independently, so intake saw the live version's ConfigMap with
+  the next version's Secret: it re-applied the live version with a
+  rotated AMI password (the client then logged in with a password
+  Asterisk did not have yet, and with AMI down the next version could
+  never reload `manager`), and refused the live version when a device's
+  keys left the Secret. `compile.Bundle.VersionWith(values)` recomputes
+  the version from the files, the index and the values (`Compile` calls
+  it, so the two cannot drift); intake compares it with the version. A
+  Secret ahead of the version last applied is ignored until its
+  ConfigMap follows; a new version waits `intake.Config.SecretGrace`
+  (`DefaultSecretGrace`, 30 s) for its own Secret and is refused only if
+  it never comes (a missing value and other values alike). Applying the
+  live version again never replaces its known account or grants. W3's
+  controller must write pbx-secrets with exactly the values it compiled
+  with (extra keys are ignored).
+- **Spends are pruned only against settled grants.** Device HTTP pruned
+  against the serving grants: a version swapped in unverified (AMI down)
+  dropped the spends of the tokens it rotated, and a failed verification
+  then rolled back to the previous version, granting a spent token again
+  (its document, SIP password included, was served twice).
+  `apply.Applier.SettledGrants` are the live version's grants once it is
+  verified, its tokens are known and it was not restored by a rollback;
+  `devicehttp.Config.Settled` (nil: never prune) takes them through the
+  new `provision.SourceFunc`. After a rollback nothing is pruned until a
+  newer version settles, so a failed version applied again (after an
+  agent restart) still finds its spends.
+- **The adopted version is a rollback target.** After an agent restart the
+  adopted version was never rolled back to, so a version that had failed
+  and been rolled back before the restart was applied again and stayed
+  live. Now a version that fails rolls back to the adopted one, verified
+  again or not; verifying a version a rollback restored is not an apply
+  (the failed version stays `LastApplyVersion`, with its error).
+- **verify reports the mismatch**, not a check the deadline cut short
+  (`verify: context deadline exceeded` failed TestVerifyMismatchRollsBack
+  4 times in 30, and could fail e2e TestRollback).
+- **Provisioning names never reach the fetch log from the file server.**
+  A softphone's URL sent to `:6970` or asked for over TFTP (`p/<token>`)
+  was reported with its token, attributed by source and served in the
+  observations. `sensor.ProvisioningName` (an element `p`, any case,
+  followed by another) is the one rule: the file server never looks such
+  a name up and reports `p/`; the fetch socket also drops any event with
+  such a File, a bundle path outside `tftp/`, or a provisioning document
+  as File (a compromised file server could otherwise claim a softphone's
+  provisioning fetch and force a token rotation).
+- **Connection caps** (new package `internal/agent/netlimit`): device HTTP
+  holds at most 256 connections, 32 per source address; HTTP :6970 128
+  and 16. A connection over a cap is closed when accepted. Idle
+  keep-alive connections close after 15 s (was 60 s). Without caps one
+  host could hold thousands of connections and OOM the agent (128Mi) or
+  the file server (64Mi).
+- **Tests:** TestFetchSocket no longer orders events across two
+  connections (it failed under load); e2e TestRollback writes a broken
+  bundle with its own `VersionWith` version; TestProvisioningOneTime
+  rotates the laptop's token first (pbx-secrets, then pbx-config, as the
+  controller will) and waits for it to apply, so it also passes on a
+  reused cluster; TestFirmwareUploadAndServe expects 200 for files a
+  reused cluster's store already holds.
+- Still open: a version swapped in while AMI was down that later fails
+  verification counts as applied for intake (each agent restart applies
+  it again and rolls it back); an AMI password change applied while the
+  AMI *session* is down but Asterisk runs (the Secret-first order no
+  longer causes it), or a rollback whose manager reload cannot run, needs
+  an Asterisk restart to heal; the rolled-back-to adopted version's AMI
+  account is unknown until intake hands that version over.
 
 `go mod tidy`: `golang.org/x/sync` (errgroup) became a direct requirement.
 
