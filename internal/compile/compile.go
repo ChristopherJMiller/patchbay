@@ -15,8 +15,15 @@
 // placeholder, like every password); deny=0.0.0.0/0.0.0.0 then
 // permit=127.0.0.1/255.255.255.255; and read/write classes limited to what the
 // agent uses (module reloads, PJSIPNotify, registration queries), never all,
-// command or originate. The agent phase confirms the exact classes against
-// Asterisk 22 and the e2e suite asserts them.
+// command or originate. The classes do not contain a client that has the
+// secret: the agent needs the system class (PJSIPNotify, PJSIPShowContacts,
+// ModuleLoad), and system also allows ModuleLoad of any module in Asterisk's
+// module directory (the image ships app_system, func_shell, res_agi) and
+// DialplanExtensionAdd, so whoever holds the AMI secret can run commands as
+// Asterisk's user in the PBX pod. The secret is the barrier: only the agent
+// may hold it (docs/plans/release-a.md §5 keeps it out of every other
+// container), and narrowing the module directory to the listed modules is W2
+// work (AMIClasses).
 //
 // Secret values never appear in a bundle's files: a password appears only as
 // a placeholder, @@secret:<name>/<key>@@ (see SecretRef), so the ConfigMap the

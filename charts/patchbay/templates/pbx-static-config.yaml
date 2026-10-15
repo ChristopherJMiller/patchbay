@@ -102,8 +102,8 @@ stringData:
     ; AMI on 127.0.0.1. The pod is on the host network, so this is the
     ; NODE's loopback: every host-network process on the node can connect.
     ; No users yet; the agent's generated AMI user arrives with apply, and its
-    ; secret, deny/permit and narrow classes are the real barrier
-    ; (internal/compile, "manager.conf rules").
+    ; secret is the real barrier: the system class it needs also loads modules
+    ; and adds dialplan (internal/compile, "manager.conf rules").
     [general]
     enabled = yes
     bindaddr = 127.0.0.1

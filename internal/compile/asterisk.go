@@ -48,6 +48,13 @@ const (
 // PJSIPNotify need system; CoreShowChannels system or reporting;
 // ShowDialPlan config or reporting. Command needs command and Originate
 // originate, which this account lacks.
+//
+// That is not containment. system also grants ModuleLoad of any module in
+// astmoddir and DialplanExtensionAdd (both "system,all", checked
+// 2026-10-15), and the chart's image ships app_system.so, func_shell.so and
+// res_agi.so there: a client with the AMI secret can add an extension that
+// runs System() and call it. The secret is the barrier. W2 should point
+// astmoddir at a directory holding only the modules this package lists.
 const AMIClasses = "system,reporting"
 
 // modules is modules.conf's explicit list (autoload = no), grouped as the
@@ -328,9 +335,10 @@ func pjsipNotifyConf() []byte {
 func managerConf(secret SecretRef) []byte {
 	w := newConf()
 	w.comment("AMI on 127.0.0.1. The PBX pod is on the host network, so this is the\n" +
-		"node's loopback and any host-network process there can connect: the\n" +
-		"account's generated secret, its loopback-only permit and its narrow\n" +
-		"classes are the barrier.")
+		"node's loopback and any host-network process there can connect. The\n" +
+		"account's generated secret is the barrier: its system class, which the\n" +
+		"agent needs, also loads modules and adds dialplan, so whoever holds\n" +
+		"the secret controls this PBX.")
 	w.section("general")
 	w.set("enabled", "yes")
 	w.set("bindaddr", "127.0.0.1")

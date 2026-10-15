@@ -1043,7 +1043,15 @@ secrets they reference.
   displayconnects no; `[patchbay-agent]` `secret = <AMI placeholder>`,
   `deny = 0.0.0.0/0.0.0.0`, `permit = 127.0.0.1/255.255.255.255`, `read =
   system,reporting`, `write = system,reporting` (W2 confirms against
-  Asterisk 22; never `all`, `command`, `originate`).
+  Asterisk 22; never `all`, `command`, `originate`). *As built (W1
+  review):* the classes do not contain a client that holds the secret.
+  `system`, which `PJSIPNotify` and `PJSIPShowContacts` need, also grants
+  `ModuleLoad` of anything in astmoddir and `DialplanExtensionAdd`
+  (Asterisk 22.11, "system,all"), and the pinned image ships
+  `app_system.so`, `func_shell.so` and `res_agi.so`: with the secret, a
+  client can add an extension that runs `System()`. The AMI secret is the
+  barrier (only the agent holds it, §5.1), and W2.10 narrows the module
+  directory (§5).
 - `pjsip.conf`: `[global]` `user_agent = patchbay`, `default_realm =
   patchbay`, `endpoint_identifier_order = auth_username`; `[transport-udp]`
   and `[transport-tcp]` bound to `<PBXAddress>:<SIPPort>`; `[patchbay-acl]`
@@ -1179,7 +1187,7 @@ CLAUDE.md "Deviations" updated for anything W1 changed.
 | W2.7 | **Phone web scraper** | `GET http://<ip>/DeviceInformationX`, `/NetworkConfigurationX`, `/DeviceLogX` (5 s timeout; XML twins), every 60 s for phones without a live contact, every 5 min with one. Parses `versionID` and `appLoadID` (both, as the phone gives them: `api.DeviceInformation`), BootLoadID, hardware revision, serial, model, Admin VLAN, Unified CM 1, last 20 log lines. | unit against httptest fakes built from the documented XML shapes (generated, not copied) |
 | W2.8 | **Firmware store + upload** | Store at `/var/lib/patchbay/firmware/<load>/<name>`. `PUT FirmwarePath(load, name)`: stream to a temp file with SHA-256, compare with the manifest from `builtin.Registry()`, atomic rename; codes as in `api.PathFirmware` (201/200/404/412/413/422). Store sensor: hash every manifest file present at start and after each upload (cache by size+mtime). | unit: every status code; pending → 412 stores nothing; mismatch → 422 stores nothing |
 | W2.9 | **Sound prompts** | §2(c): `hack/gen-sounds.sh`, `make sounds`, espeak-ng in `flake.nix`, `!build/sounds/` in `.dockerignore`, `/build/` in `.gitignore`, Dockerfile COPY, agent installs into `SoundsDir` before `/readyz` and refuses to report ready if a prompt is missing from the image. | unit: install copies both formats; e2e: 911 and 0 return non-silent audio |
-| W2.10 | **Chart** | Agent ServiceAccount token mounted; Role: `get,list,watch` on `configmaps` resourceNames `[<fullname>-pbx-config]`, `secrets` resourceNames `[<fullname>-pbx-secrets]`. Port 69 per §5.1, recorded in docs/e2e.md. `sounds` emptyDir. A checksum annotation on the PBX pod over the settings that compile into non-reloadable files (W2.2). `--bundle-configmap`, `--secrets` flags. **Retire `pbx.staticConfig`** (template, values, e2e values). Update `TestChartUsesTheLiveLayout` for the sounds mount. | helm lint; `TestChartUsesTheLiveLayout`; e2e |
+| W2.10 | **Chart** | Agent ServiceAccount token mounted; Role: `get,list,watch` on `configmaps` resourceNames `[<fullname>-pbx-config]`, `secrets` resourceNames `[<fullname>-pbx-secrets]`. Port 69 per §5.1, recorded in docs/e2e.md. `sounds` emptyDir. A checksum annotation on the PBX pod over the settings that compile into non-reloadable files (W2.2). `--bundle-configmap`, `--secrets` flags. **Retire `pbx.staticConfig`** (template, values, e2e values). Update `TestChartUsesTheLiveLayout` for the sounds mount. **A narrow module directory** (W1 review): Asterisk's `astmoddir` holds only the modules `compile` lists (an init step copies them from the image into an emptyDir, and the compiled `asterisk.conf` points there), so even the AMI secret cannot `ModuleLoad` `app_system`, `func_shell`, `res_agi` or `res_ari`. | helm lint; `TestChartUsesTheLiveLayout`; e2e |
 | W2.11 | **Agent metrics** | `patchbay_agent_applied_version_info{version}`, `patchbay_agent_apply_failures_total`, `patchbay_agent_fetches_total{transport,result}`, `patchbay_agent_registered_endpoints`. PodMonitor gains the agent. | unit |
 
 W2's e2e, before W3 exists: with the controller scaled to 0, the harness
