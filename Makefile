@@ -83,9 +83,10 @@ fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
 	golangci-lint fmt ./...
 
 .PHONY: vet
-vet: ## go vet (including the e2e-tagged suite).
+vet: ## go vet (including the e2e-tagged suite and the asterisk-check).
 	go vet ./...
 	go vet -tags e2e ./test/e2e/...
+	go vet -tags asterisk ./internal/compile/
 
 .PHONY: lint
 lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
@@ -123,6 +124,20 @@ image: ## Build the container image (IMG, default ghcr.io/christopherjmiller/pat
 .PHONY: clean
 clean: ## Remove build output.
 	rm -rf bin/ cover.out
+
+##@ Real Asterisk (docker, no cluster)
+
+# Containers the check starts carry this label, so a run cut short can be
+# cleaned up by the next one.
+ASTERISK_CHECK_LABEL := patchbay.chrismiller.xyz/asterisk-check
+
+.PHONY: asterisk-check
+asterisk-check: ## Boot every compile golden in the chart's pinned Asterisk (docker): modules, endpoints, dialplan, AMI, REGISTER and calls.
+	@docker ps -aq --filter label=$(ASTERISK_CHECK_LABEL) | xargs -r docker rm --force >/dev/null
+	docker pull --quiet $(ASTERISK_REPO):$(ASTERISK_TAG)@$(ASTERISK_DIGEST)
+	@# Static (CGO_ENABLED=0): the test binary also runs inside the Asterisk
+	@# container, as the SIP client (internal/compile/sipclient_asterisk_test.go).
+	CGO_ENABLED=0 go test -tags asterisk -count=1 -timeout 10m -run '^TestRealAsterisk' -v ./internal/compile/
 
 ##@ End-to-end (kind + the chart + real Asterisk + fakephone; see docs/e2e.md)
 

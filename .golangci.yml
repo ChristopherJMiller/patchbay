@@ -9,6 +9,8 @@ run:
   # Lint the e2e suite (test/e2e, behind the e2e build tag) too.
   build-tags:
     - e2e
+    # The real-Asterisk check (make asterisk-check).
+    - asterisk
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
