@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -71,9 +72,9 @@ func Status(ctx context.Context, env *Env) error {
 
 	p := &printer{w: env.Out}
 	if agentErr != nil {
-		p.printf("Agent: could not ask the agent: %v\n", agentErr)
+		p.printf("Agent: could not ask the agent: %s\n", printable(agentErr.Error()))
 	} else {
-		p.printf("Agent: %s\n", agentSummary(doc.Agent))
+		p.printf("Agent: %s\n", printable(agentSummary(doc.Agent)))
 	}
 	for _, rows := range sections {
 		p.printf("\n")
@@ -84,7 +85,7 @@ func Status(ctx context.Context, env *Env) error {
 	p.printf("\n")
 	switch {
 	case agentErr != nil:
-		p.printf("Unknown phones: could not ask the agent: %v\n", agentErr)
+		p.printf("Unknown phones: could not ask the agent: %s\n", printable(agentErr.Error()))
 	case len(doc.UnknownDevices) == 0:
 		p.printf("Unknown phones: none\n")
 	default:
@@ -93,7 +94,7 @@ func Status(ctx context.Context, env *Env) error {
 		slices.SortFunc(unknown, func(a, b agentapi.UnknownDevice) int { return cmp.Compare(a.MAC, b.MAC) })
 		for _, u := range unknown {
 			p.printf("  %s from %s, first seen %s, last seen %s, asked for %s\n",
-				u.MAC, u.Source, u.FirstSeen.UTC().Format(time.RFC3339), u.LastSeen.UTC().Format(time.RFC3339), u.File)
+				printable(u.MAC), printable(u.Source), u.FirstSeen.UTC().Format(time.RFC3339), u.LastSeen.UTC().Format(time.RFC3339), printable(u.File))
 		}
 	}
 	return p.err
@@ -160,7 +161,7 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 }
 
 func printRow(p *printer, r resourceRow) {
-	p.printf("%s %s (%s): %s\n", r.kind, r.name, r.number, displayState(r.state))
+	p.printf("%s %s (%s): %s\n", r.kind, r.name, printable(r.number), printable(displayState(r.state)))
 	for _, c := range r.conditions {
 		if want, known := healthyStatus[c.Type]; known && c.Status == want {
 			continue
@@ -169,10 +170,10 @@ func printRow(p *printer, r resourceRow) {
 		if c.Message != "" {
 			line += ": " + c.Message
 		}
-		p.printf("  %s\n", indentLines(line))
+		p.printf("  %s\n", indentLines(printable(line)))
 	}
 	if r.humanAction != "" {
-		p.printf("  human action: %s\n", indentLines(r.humanAction))
+		p.printf("  human action: %s\n", indentLines(printable(r.humanAction)))
 	}
 	if r.provisioning {
 		p.printf("  provisioning: patchbay softphone qr %s\n", r.name)
@@ -185,6 +186,19 @@ func displayState(state string) string {
 		return "Pending"
 	}
 	return state
+}
+
+// printable is text from the cluster or the agent as status prints it:
+// valid UTF-8, each control character but a newline a space. Status text
+// can carry what a device sent (its web page, its SIP user agent), and a
+// terminal escape or carriage return in it could rewrite the lines above.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r != '\n' && unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(s, "\uFFFD"))
 }
 
 // indentLines keeps a multi-line message under its row.

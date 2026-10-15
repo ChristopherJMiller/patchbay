@@ -311,3 +311,37 @@ func TestStatusAgentAnswers(t *testing.T) {
 		}
 	})
 }
+
+// TestStatusPrintsNoEscapes: status text can carry what a device sent (its
+// web page, its SIP user agent) or the agent reported; a terminal escape,
+// carriage return or C1 control in it could rewrite the lines above, so
+// status prints each control character but a newline as a space.
+func TestStatusPrintsNoEscapes(t *testing.T) {
+	const evil = "\x1b[2J\rspoofed\u009b[1A\x07"
+	hostile := &v1alpha1.Phone{
+		ObjectMeta: objectMeta("hostile", testNow),
+		Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "0200E2E00009", Number: "109"},
+		Status: v1alpha1.PhoneStatus{State: "NeedsFirmware" + evil, HumanAction: "stage it" + evil,
+			Conditions: []metav1.Condition{
+				condition(v1alpha1.ConditionFirmwareCurrent, metav1.ConditionFalse, "OtherLoad", "running SIP45"+evil+"\nsecond line"),
+			}},
+	}
+	te := newTestEnv(t, hostile)
+	doc := statusObservations()
+	doc.Agent.LastApplyError = "verify" + evil
+	doc.UnknownDevices[0].Source += evil
+	doc.UnknownDevices[0].File += evil
+	te.agent.observations = doc
+	if err := cli.Status(context.Background(), te.Env); err != nil {
+		t.Fatal(err)
+	}
+	out := te.out.String()
+	if strings.ContainsAny(out, "\x1b\r\a\u009b") {
+		t.Errorf("status printed a control character:\n%q", out)
+	}
+	for _, want := range []string{"running SIP45 [2J spoofed [1A \n    second line", "human action: stage it [2J"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+}
