@@ -79,14 +79,15 @@ The human action in `patchbay status` is the instruction; this is the why.
 | `Invalid` (`NumberConflict`, `MACConflict`, `UnknownFirmware`) | An older resource holds its number or MAC, or its model's load is not in the manifest (a 7975 in release A). | Change the number or MAC; the older resource keeps it. |
 | `NeedsFirmware` | Its load is not staged, or the manifest has no SHA-256 for it yet (plan §11: staging Cisco firmware needs a patchbay release). | `patchbay firmware load <cisco zip> -n <ns>`; for pending digests, the release first. |
 | `NeedsTrustReset` | It trusts another call manager (old trust list): it asks only for the signed `.sgn` config. | Factory reset (hold # while powering on, then 123456789*0#), after the default load is staged. |
-| `Upgrading` | It is downloading firmware. | Do not unplug it. "Upgrade stuck" after 30 min: look at its screen. |
+| `Upgrading` | It is downloading firmware. | Do not unplug it. "Upgrade stuck" after 20 min: look at its screen. |
 | `Registering` | It fetched its config but has not registered; the human action quotes its own log. | Usually a wrong time, VLAN or network; after a renumbering it registers under the old number and needs a power-cycle (plan §11). |
 | `ConfigStale` | Its config changed; the controller sends a resync NOTIFY (twice, 5 min apart), never during a call ("waiting for the call to end"). Ready says when a resync did not go out, and it is tried again in 30 s. | Nothing, unless the human action asks: press Settings then **#**, or power-cycle it. |
 | `Unreachable` | Its registration lapsed: at most 600 s plus the 10 min grace (plan §11). | Power-cycle it, check its cable. |
 | `LabelShortened` True | The 79x5 shows at most 12 characters without spaces on its screen and 30 on its line; runs of `@` become one. | The message says what it shows; shorten the label if you mind. |
 
-`patchbay phone resync <name> -n <ns>` and `patchbay phone restart <name>`
-ask for a resync or a reboot (request annotations, acted on once).
+`patchbay phone resync <name> -n <ns>` asks for a resync (the request
+annotation `patchbay.chrismiller.xyz/resync-requested`, acted on once;
+held while the phone is on a call).
 
 ## One Softphone
 
