@@ -179,8 +179,10 @@ func (p *phone) userAgent() sip.Header {
 }
 
 // register sends REGISTER for expires seconds (0 unregisters), answering a
-// digest challenge, and returns the final response.
-func (p *phone) register(ctx context.Context, expires int) (*sip.Response, error) {
+// digest challenge, and returns the final response and whether the PBX
+// challenged at all. A PBX that accepts an unauthenticated REGISTER is
+// misconfigured; the e2e suite checks that it challenged.
+func (p *phone) register(ctx context.Context, expires int) (res *sip.Response, challenged bool, err error) {
 	req := sip.NewRequest(sip.REGISTER, p.serverURI(""))
 	from := &sip.FromHeader{Address: p.aor(), Params: sip.NewParams()}
 	from.Params.Add("tag", sip.GenerateTagN(16))
@@ -192,21 +194,22 @@ func (p *phone) register(ctx context.Context, expires int) (*sip.Response, error
 	req.AppendHeader(p.userAgent())
 	req.SetTransport(strings.ToUpper(p.transport))
 
-	res, err := p.client.Do(ctx, req, sipgo.ClientRequestRegisterBuild)
+	res, err = p.client.Do(ctx, req, sipgo.ClientRequestRegisterBuild)
 	if err != nil {
-		return nil, fmt.Errorf("REGISTER: %w", err)
+		return nil, false, fmt.Errorf("REGISTER: %w", err)
 	}
 	if res.StatusCode == sip.StatusUnauthorized || res.StatusCode == sip.StatusProxyAuthRequired {
 		p.log.Debug("REGISTER challenged", "status", res.StatusCode)
+		challenged = true
 		res, err = p.client.DoDigestAuth(ctx, req, res, sipgo.DigestAuth{
 			Username: p.opts.User,
 			Password: p.opts.Password,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("REGISTER with credentials: %w", err)
+			return nil, true, fmt.Errorf("REGISTER with credentials: %w", err)
 		}
 	}
-	return res, nil
+	return res, challenged, nil
 }
 
 // call is one established outgoing call.

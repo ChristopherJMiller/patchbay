@@ -17,7 +17,9 @@ import (
 )
 
 // registrar is an in-process SIP registrar that challenges every REGISTER
-// with digest auth (as Asterisk does) and records what it accepted.
+// with digest auth (as Asterisk does) and records what it accepted. With an
+// empty password it is open instead: it accepts any REGISTER unchallenged,
+// like an endpoint that lost its auth.
 type registrar struct {
 	addr     string // 127.0.0.1:port, UDP and TCP
 	password string
@@ -50,6 +52,12 @@ func startRegistrar(t *testing.T, user, password string) *registrar {
 	}
 	chal := digest.Challenge{Realm: "patchbay-test", Nonce: "n0nce", Algorithm: "MD5"}
 	srv.OnRegister(func(req *sip.Request, tx sip.ServerTransaction) {
+		if r.password == "" {
+			res := sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil)
+			res.AppendHeader(req.Contact().Clone())
+			_ = tx.Respond(res)
+			return
+		}
 		h := req.GetHeader("Authorization")
 		if h == nil {
 			res := sip.NewResponseFromRequest(req, sip.StatusUnauthorized, "Unauthorized", nil)
@@ -117,12 +125,12 @@ func TestRegister(t *testing.T) {
 			}
 			defer p.close()
 
-			res, err := p.register(ctx, 120)
+			res, challenged, err := p.register(ctx, 120)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if res.StatusCode != sip.StatusOK {
-				t.Fatalf("REGISTER: %d %s", res.StatusCode, res.Reason)
+			if res.StatusCode != sip.StatusOK || !challenged {
+				t.Fatalf("REGISTER: %d %s, challenged=%t; want 200 after a challenge", res.StatusCode, res.Reason, challenged)
 			}
 			reg.mu.Lock()
 			defer reg.mu.Unlock()
@@ -149,12 +157,36 @@ func TestRegisterWrongPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.close()
-	res, err := p.register(ctx, 120)
+	res, _, err := p.register(ctx, 120)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.StatusCode != sip.StatusForbidden {
 		t.Fatalf("REGISTER with a wrong password: %d, want 403", res.StatusCode)
+	}
+}
+
+// TestRegisterReportsNoChallenge: against a PBX that accepts REGISTER
+// without asking for credentials, register succeeds but says so, which is
+// what lets the e2e suite catch an endpoint that lost its auth.
+func TestRegisterReportsNoChallenge(t *testing.T) {
+	reg := startRegistrar(t, "e2e-phone", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p, err := newPhone(ctx, sipOptions{
+		Server: reg.addr, Transport: "tcp", User: "e2e-phone", Password: "unused",
+		LocalIP: "127.0.0.1", SIPPort: freePort(t), UserAgent: "unit-test",
+	}, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	res, challenged, err := p.register(ctx, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != sip.StatusOK || challenged {
+		t.Fatalf("REGISTER to an open registrar: %d, challenged=%t; want 200, false", res.StatusCode, challenged)
 	}
 }
 

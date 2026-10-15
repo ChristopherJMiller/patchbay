@@ -126,20 +126,21 @@ The contact stays registered for --expires seconds after fakephone exits;
 			}
 			defer p.close()
 
-			res, err := p.register(ctx, expires)
+			res, challenged, err := p.register(ctx, expires)
 			if err != nil {
 				return err
 			}
 			if res.StatusCode != sip.StatusOK {
-				return fmt.Errorf("REGISTER: %d %s", res.StatusCode, res.Reason)
+				return fmt.Errorf("REGISTER: %d %s (challenged=%t)", res.StatusCode, res.Reason, challenged)
 			}
 			contact := ""
 			if h := res.Contact(); h != nil {
 				contact = h.Value()
 			}
 			log.Info("registered", "server", o.Server, "transport", p.transport,
-				"user", o.User, "contact", contact)
-			fmt.Fprintf(cmd.OutOrStdout(), "registered %s via %s contact=%s\n", o.User, p.transport, contact)
+				"user", o.User, "challenged", challenged, "contact", contact)
+			fmt.Fprintf(cmd.OutOrStdout(), "registered %s via %s challenged=%t contact=%s\n",
+				o.User, p.transport, challenged, contact)
 			return nil
 		},
 	}
