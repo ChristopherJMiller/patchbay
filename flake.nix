@@ -52,6 +52,7 @@
               gotools
               golangci-lint
               kubernetes-controller-tools # controller-gen
+              govulncheck # make vulncheck
 
               # Kubernetes / e2e
               kind

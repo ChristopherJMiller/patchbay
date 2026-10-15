@@ -46,6 +46,7 @@ tools-versions: ## Print the version of every tool in the dev shell.
 	@yq --version
 	@echo "actionlint $$(actionlint -version | sed -n 1p)"
 	@echo "gitleaks $$(gitleaks version)"
+	@govulncheck -version | sed -n '/^Scanner:/p'
 	@# sipp -v exits 99 by design; keep its version line only.
 	@{ sipp -v 2>&1 || true; } | grep SIPp | sed -n 1p
 	@{ tftp -V 2>&1 || true; } | sed -n 1p
@@ -78,6 +79,18 @@ check-generated: generate ## Fail if generated files are out of date.
 .PHONY: check-hygiene
 check-hygiene: ## Fail on tracked binaries, files over 512 KiB, firmware/archive/secret types, or secrets in history.
 	hack/check-hygiene.sh
+
+# govulncheck judges the standard library by the go command it runs. The Go
+# that matters is the one that builds the image (the Dockerfile's builder;
+# Renovate bumps its patch releases), and that can be ahead of nixpkgs'
+# go_1_26, so vulncheck runs that exact release: the go command fetches it
+# from the Go module proxy, checked against sum.golang.org.
+GO_IMAGE_VERSION := $(shell sed -n 's/^FROM .*golang:\([0-9][0-9.]*\)-.*/\1/p' Dockerfile)
+
+.PHONY: vulncheck
+vulncheck: ## Known vulnerabilities in code patchbay calls, with the image's Go (govulncheck; fetches vuln.go.dev).
+	@test -n "$(GO_IMAGE_VERSION)" || { echo "vulncheck: no golang builder version in Dockerfile"; exit 1; }
+	GOTOOLCHAIN=go$(GO_IMAGE_VERSION) govulncheck ./...
 
 .PHONY: fmt
 fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
