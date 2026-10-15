@@ -2316,11 +2316,14 @@ stage notes above, these hold.
   the file server (64Mi).
 - **Tests:** TestFetchSocket no longer orders events across two
   connections (it failed under load); e2e TestRollback writes a broken
-  bundle with its own `VersionWith` version; TestProvisioningOneTime
-  rotates the laptop's token first (pbx-secrets, then pbx-config, as the
-  controller will) and waits for it to apply, so it also passes on a
-  reused cluster; TestFirmwareUploadAndServe expects 200 for files a
-  reused cluster's store already holds.
+  bundle with its own `VersionWith` version, and its teardown writes a new
+  good version (the laptop's token rotated) so the last apply is a success
+  again (writing the live version back changed nothing, and a reused
+  cluster's TestPBXUp then saw the broken version's error);
+  TestProvisioningOneTime rotates the laptop's token first (pbx-secrets,
+  then pbx-config, as the controller will) and waits for it to apply, so
+  it also passes on a reused cluster; TestFirmwareUploadAndServe expects
+  200 for files a reused cluster's store already holds.
 - Still open: a version swapped in while AMI was down that later fails
   verification counts as applied for intake (each agent restart applies
   it again and rolls it back); an AMI password change applied while the
