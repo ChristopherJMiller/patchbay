@@ -116,8 +116,12 @@ E2E_TAGGED_TESTS = go test $(GO_TEST_FLAGS) -short -tags e2e ./internal/...
 # controller-devices' TestPhoneLifecycleFirmware.
 E2E_TAGGED_ENVTEST = go test $(GO_TEST_FLAGS) -tags e2e -run '^TestPhoneLifecycleFirmware$$' ./internal/controller/devices/
 
+.PHONY: check-versions
+check-versions: envtest-assets ## Fail unless envtest's kube-apiserver minor is go.mod's k8s.io one, and the flake's Go minor the Dockerfile's.
+	hack/check-versions.sh
+
 .PHONY: test
-test: envtest-assets ## Unit tests plus envtest (real kube-apiserver + etcd), then the unit tests with the e2e tag.
+test: envtest-assets check-versions ## Unit tests plus envtest (real kube-apiserver + etcd), then the unit tests with the e2e tag.
 	go test $(GO_TEST_FLAGS) ./...
 	$(E2E_TAGGED_TESTS)
 	$(E2E_TAGGED_ENVTEST)
