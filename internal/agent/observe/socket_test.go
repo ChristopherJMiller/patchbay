@@ -213,3 +213,49 @@ func TestFetchSocketLimitsConnections(t *testing.T) {
 		t.Errorf("%d of 20 connections closed, want 12 over the limit of 8", closed)
 	}
 }
+
+// TestFetchSocketDropsWhatTheFileServerCannotServe: the file server reads
+// only the firmware store and the tftp/ tree, and reports a name that may
+// carry a provisioning token as p/ only. An event that says otherwise (a
+// compromised file server claiming a softphone's provisioning fetch, or
+// one carrying a token) is dropped; the connection stays.
+func TestFetchSocketDropsWhatTheFileServerCannotServe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fetches.sock")
+	rec := &recorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = observe.ServeFetchSocket(ctx, path, rec, logr.Discard()) }()
+	var c net.Conn
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var err error
+		if c, err = (&net.Dialer{}).DialContext(context.Background(), "unix", path); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no socket")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	defer func() { _ = c.Close() }()
+
+	claim := event("provisioning/softphone-chris-laptop.xml")
+	claim.BundleVersion, claim.BundlePath = intaketestVersion, "provisioning/softphone-chris-laptop.xml"
+	send(t, c, claim)
+	inTFTP := event("provisioning/softphone-chris-laptop.xml")
+	inTFTP.BundleVersion, inTFTP.BundlePath = intaketestVersion, "tftp/provisioning/softphone-chris-laptop.xml"
+	send(t, c, inTFTP)
+	httpTree := event("directory.xml")
+	httpTree.BundleVersion, httpTree.BundlePath = intaketestVersion, "http/directory.xml"
+	send(t, c, httpTree)
+	send(t, c, event("p/not-a-secret-provisioning-token-0123456789"))
+	send(t, c, event("x/P/not-a-secret-provisioning-token-0123456789"))
+
+	unknown := event(sensor.ProvisioningUnknownFile)
+	unknown.Result = api.FetchNotFound
+	send(t, c, unknown)
+	sep := event("SEPD0C78915E8C8.cnf.xml")
+	sep.BundleVersion, sep.BundlePath = intaketestVersion, "tftp/SEPD0C78915E8C8.cnf.xml"
+	send(t, c, sep)
+	waitFiles(t, rec, sensor.ProvisioningUnknownFile, "SEPD0C78915E8C8.cnf.xml")
+}

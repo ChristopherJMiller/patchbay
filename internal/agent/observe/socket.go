@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/layout"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
+	"github.com/ChristopherJMiller/patchbay/internal/compile"
 )
 
 // maxSocketConns bounds the file server's connections: it holds one, and
@@ -28,10 +30,12 @@ const maxSocketConns = 8
 //
 // A stale socket file is removed first (anything else at path is an
 // error), and the socket is made layout.FetchSocketMode, so the file
-// server (another uid, no groups) can connect. Events that only device
-// HTTP may report are dropped: an http8088 event, or one that claims a
-// Device or a Version, which the file server never knows (a compromised
-// file server must not claim a softphone's provisioning fetch). A line
+// server (another uid, no groups) can connect. Events the file server
+// cannot report are dropped (fileServerMayReport): an http8088 event, one
+// that claims a Device or a Version, which the file server never knows, a
+// bundle path outside tftp/, a provisioning document, or a name that may
+// carry a provisioning token (a compromised file server must not claim a
+// softphone's provisioning fetch, nor hand a token on). A line
 // that is not one valid event closes its connection; the events before it
 // stand.
 func ServeFetchSocket(ctx context.Context, path string, rec sensor.FetchRecorder, log logr.Logger) error {
@@ -103,10 +107,33 @@ func serveEvents(ctx context.Context, conn net.Conn, rec sensor.FetchRecorder, l
 				log.Info("closing a fetch event connection: a bad line", "error", err.Error())
 			}
 			return
-		case e.Transport == api.TransportHTTPDevice || e.Device != "" || e.Version != "":
-			log.Info("dropping a fetch event the file server cannot report", "transport", string(e.Transport), "file", e.File)
+		case !fileServerMayReport(e):
+			// Never the File itself: it may hold a token.
+			log.Info("dropping a fetch event the file server cannot report", "transport", string(e.Transport))
 			continue
 		}
 		rec.RecordFetch(e)
 	}
+}
+
+// fileServerMayReport reports whether the file server could have sent e.
+// It knows no device and no version (device HTTP is in-process), it reads
+// only the firmware store and the tftp/ tree, and it reports a name that
+// may carry a provisioning token as sensor.ProvisioningUnknownFile only.
+// Anything else is a compromised or broken file server: it must not claim
+// a softphone's provisioning fetch (which would rotate its token and
+// count as its config fetch) or hand a token to the observations.
+func fileServerMayReport(e sensor.FetchEvent) bool {
+	tree, err := compile.TreeOf(e.File)
+	switch {
+	case e.Transport == api.TransportHTTPDevice || e.Device != "" || e.Version != "":
+		return false
+	case e.BundlePath != "" && !strings.HasPrefix(e.BundlePath, compile.TreeTFTP+"/"):
+		return false
+	case err == nil && tree == compile.TreeProvisioning:
+		return false
+	case sensor.ProvisioningName(e.File): // p/ itself is not one
+		return false
+	}
+	return true
 }
