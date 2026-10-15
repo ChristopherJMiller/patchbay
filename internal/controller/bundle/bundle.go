@@ -216,8 +216,9 @@ func (r *Reconciler) compileFailed(ctx context.Context, cause error) (ctrl.Resul
 	r.cfg.Metrics.CompileFailed()
 	r.cfg.Log.Error(cause, "compiling the bundle failed; the previous bundle stays")
 	if target := r.eventTarget(ctx); target != nil {
-		r.cfg.Recorder.Eventf(target, nil, corev1.EventTypeWarning, install.EventReasonCompileFailed, install.EventActionCompile,
-			"%s", install.EventNote(cause.Error()))
+		note := install.EventNote(cause.Error())
+		r.cfg.Recorder.Eventf(target, install.CompileFailedRelated(target, note), corev1.EventTypeWarning,
+			install.EventReasonCompileFailed, install.EventActionCompile, "%s", note)
 	}
 	return ctrl.Result{RequeueAfter: CompileRetryAfter}, nil
 }

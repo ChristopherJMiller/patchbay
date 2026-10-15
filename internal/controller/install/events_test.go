@@ -87,3 +87,35 @@ func TestEventSeries(t *testing.T) {
 		}
 	}
 }
+
+// TestCompileFailedSeries: each distinct compile error is an Event of its
+// own (CompileFailedRelated names it), while the same error repeated by
+// the 5 min retry joins its own series; without it every error on an
+// unchanged pbx-config joined the first one's series, which kept its note.
+func TestCompileFailedSeries(t *testing.T) {
+	cs := kubefake.NewClientset()
+	b := events.NewBroadcaster(&events.EventSinkImpl{Interface: cs.EventsV1()})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.StartRecordingToSinkWithContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Shutdown()
+	rec := b.NewRecorder(clientgoscheme.Scheme, install.EventRecorderName)
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: names.ConfigMap, Namespace: ns, UID: "uid-1", ResourceVersion: "7"}}
+	for _, note := range []string{"compile: Phone desk: first error", "compile: Phone desk: first error", "compile: a second error"} {
+		rec.Eventf(cm, install.CompileFailedRelated(cm, note), corev1.EventTypeWarning, install.EventReasonCompileFailed,
+			install.EventActionCompile, "%s", note)
+	}
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
+		c, p := sinkCounts(cs)
+		return c+p == 3, nil
+	})
+	if creates, patches := sinkCounts(cs); err != nil || creates != 2 || patches != 1 {
+		t.Errorf("%d creates, %d patches (%v); want 2 Events, the first repeated once", creates, patches, err)
+	}
+	if r := install.CompileFailedRelated(cm, "x"); r.Kind != "ConfigMap" || r.Name != cm.Name || r.Namespace != ns ||
+		r.FieldPath == install.CompileFailedRelated(cm, "y").FieldPath {
+		t.Errorf("related %+v: want pbx-config, a field path per error", r)
+	}
+}

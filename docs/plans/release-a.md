@@ -3704,14 +3704,14 @@ The five inputs most likely to break a real user that no test covers yet.
   so a real phone may be reported minutes late, or not at all if the
   flood pushes it out of the agent's 64. `patchbay status` lists the
   agent's live list.
-- *(W3 review)* **Some repeated Events keep their first note.** client-go's
-  events broadcaster joins Events with the same type, reason, action,
-  regarding object (resourceVersion included) and related object into one
-  series for six minutes after the last: an ActionFailed repeated before
-  the device's status changes, and a CompileFailed repeated while
-  `pbx-config` is unchanged (the 5 min retry keeps the series alive, so a
-  new compile error shows the first one's note). The controller log has
-  every one.
+- *(W3 review; resolved in the final review)* **Repeated Events keep
+  their first note only when it is the same note.** client-go's events
+  broadcaster joins Events with the same type, reason, action, regarding
+  object (resourceVersion included) and related object into one series
+  for six minutes after the last. A new compile error names itself in
+  related (`install.CompileFailedRelated`), and an ActionFailed with a new
+  note regards a new resourceVersion (the failure before it is in Ready),
+  so only an identical note joins a series, as a count.
 - *(W3 review; narrowed in the final review)* **The agent keeps a device's
   history by its ID** while the device stays in the applied index: its
   store forgets a device once a version without it, or with another MAC

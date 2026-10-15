@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -965,5 +966,24 @@ func TestCacheLagIsNotAnError(t *testing.T) {
 	f.inject.Store(&forbidden)
 	if _, err := f.r.Reconcile(context.Background(), f.r.Key()); !apierrors.IsForbidden(err) {
 		t.Errorf("a Forbidden write: error %v; want it returned", err)
+	}
+}
+
+// TestCompileFailedRelatedAccepted: the API server takes a CompileFailed
+// Event whose related object names its error (install.CompileFailedRelated).
+func TestCompileFailedRelatedAccepted(t *testing.T) {
+	f := newFixture(t)
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: names.ConfigMap}}
+	f.create(t, cm)
+	note := "compile: Phone desk: cisco79x5: no time zone"
+	ev := &eventsv1.Event{
+		ObjectMeta: metav1.ObjectMeta{Namespace: f.ns, Name: "compile-failed-related"},
+		EventTime:  metav1.NowMicro(), ReportingController: install.EventRecorderName, ReportingInstance: "test",
+		Action: install.EventActionCompile, Reason: install.EventReasonCompileFailed, Type: corev1.EventTypeWarning, Note: note,
+		Regarding: corev1.ObjectReference{APIVersion: "v1", Kind: "ConfigMap", Namespace: f.ns, Name: cm.Name, UID: cm.UID},
+		Related:   install.CompileFailedRelated(cm, note),
+	}
+	if err := f.c.Create(context.Background(), ev); err != nil {
+		t.Fatalf("the API server refused the Event: %v", err)
 	}
 }

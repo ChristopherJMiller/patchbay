@@ -1,6 +1,9 @@
 package install
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
@@ -28,11 +31,11 @@ import (
 // lost. So an Event whose note says something new must differ in one of
 // those: a device's Events after a status write regard its new
 // resourceVersion; each UnknownPhone Event names its MAC in related
-// (UnknownPhoneRelated). What stays one series: an ActionFailed repeated
-// before the status changes, and a CompileFailed repeated while pbx-config
-// is unchanged (the reconcile retries within six minutes, so the series
-// keeps the first error's note while any compile error persists; the log
-// has each one).
+// (UnknownPhoneRelated); each distinct compile error names itself in
+// related (CompileFailedRelated). An ActionFailed with a new note regards
+// a new resourceVersion: the status write after the one before put that
+// failure in Ready. What stays one series is the same note repeated, as
+// it should.
 
 // EventRecorderName is the reporting controller of every Event.
 const EventRecorderName = "patchbay-controller"
@@ -100,5 +103,20 @@ func UnknownPhoneRelated(namespace, mac string) *corev1.ObjectReference {
 	return &corev1.ObjectReference{
 		APIVersion: v1alpha1.GroupVersion.String(), Kind: string(drivers.KindPhone), Namespace: namespace,
 		FieldPath: "spec.mac{" + mac + "}",
+	}
+}
+
+// CompileFailedRelated is a CompileFailed Event's related object: the
+// ConfigMap the Event regards, with fieldPath "error{<the note's SHA-256,
+// 16 hex digits>}". It keeps each distinct error its own Event: without it
+// the broadcaster joined every CompileFailed on an unchanged pbx-config
+// into the first error's series (the 5 min retry keeps a series alive),
+// which kept that first note while a new error persisted. The same error
+// repeated still joins its own series.
+func CompileFailedRelated(cm *corev1.ConfigMap, note string) *corev1.ObjectReference {
+	sum := sha256.Sum256([]byte(note))
+	return &corev1.ObjectReference{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: cm.Namespace, Name: cm.Name, UID: cm.UID,
+		FieldPath: "error{" + hex.EncodeToString(sum[:8]) + "}",
 	}
 }
