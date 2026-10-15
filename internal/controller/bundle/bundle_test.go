@@ -24,6 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -157,13 +158,16 @@ func (l *logSink) String() string {
 }
 
 type fixture struct {
-	ns      string
-	c       client.Client // direct, for the test's own reads and writes
-	w       *writes
-	rec     *recorder
-	reg     *prometheus.Registry
-	log     *logSink
-	fail    *atomic.Bool
+	ns   string
+	c    client.Client // direct, for the test's own reads and writes
+	w    *writes
+	rec  *recorder
+	reg  *prometheus.Registry
+	log  *logSink
+	fail *atomic.Bool
+	// inject, when set, is what the next create or update of pbx-config
+	// or pbx-secrets returns instead of writing (once).
+	inject  atomic.Pointer[error]
 	r       *bundle.Reconciler
 	secrets *secrets.Manager
 }
@@ -181,10 +185,16 @@ func newFixture(t *testing.T) *fixture {
 	}
 	c := interceptor.NewClient(base, interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if err := f.injected(obj); err != nil {
+				return err
+			}
 			f.w.add("create", obj)
 			return c.Create(ctx, obj, opts...)
 		},
 		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if err := f.injected(obj); err != nil {
+				return err
+			}
 			f.w.add("update", obj)
 			return c.Update(ctx, obj, opts...)
 		},
@@ -217,6 +227,18 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// injected is the error f.inject holds for a write of pbx-config or
+// pbx-secrets, taken once.
+func (f *fixture) injected(obj client.Object) error {
+	if obj.GetName() != names.ConfigMap && obj.GetName() != names.ProjectedSecret {
+		return nil
+	}
+	if e := f.inject.Swap(nil); e != nil {
+		return *e
+	}
+	return nil
 }
 
 func (f *fixture) create(t *testing.T, objs ...client.Object) {
@@ -890,4 +912,58 @@ func (eventsList) has(ctx context.Context, t *testing.T, ns, reason string) bool
 		}
 	}
 	return false
+}
+
+// TestCacheLagIsNotAnError: the manager's client reads from an informer
+// cache, which learns of a write a moment after it succeeds, so a
+// reconcile right after one writes from a stale copy: an update conflicts,
+// a create finds the object already there. That is a quick requeue, not a
+// reconcile error (logged as ERROR, counted, backed off); other API errors
+// are still returned.
+func TestCacheLagIsNotAnError(t *testing.T) {
+	f := newFixture(t)
+	f.site(t)
+	lag := func(name string, err error) {
+		t.Helper()
+		f.inject.Store(&err)
+		res, rerr := f.r.Reconcile(context.Background(), f.r.Key())
+		if rerr != nil || res.RequeueAfter <= 0 || res.RequeueAfter > time.Second {
+			t.Errorf("%s: %+v, %v; want a requeue within a second and no error", name, res, rerr)
+		}
+		if f.inject.Load() != nil {
+			t.Errorf("%s: the reconcile did not write", name)
+		}
+	}
+	gr := schema.GroupResource{Resource: "secrets"}
+	lag("creating pbx-secrets: already exists", apierrors.NewAlreadyExists(gr, names.ProjectedSecret))
+	f.reconcile(t)
+	f.configMap(t) // written once the lag has passed
+
+	var p v1alpha1.Phone
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: f.ns, Name: "desk"}, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.Label = "Desk Two"
+	if err := f.c.Update(context.Background(), &p); err != nil {
+		t.Fatal(err)
+	}
+	lag("updating pbx-secrets: conflict", apierrors.NewConflict(gr, names.ProjectedSecret, errors.New("the object has been modified")))
+	cm := f.configMap(t)
+	f.reconcile(t)
+	if f.configMap(t).ResourceVersion == cm.ResourceVersion {
+		t.Error("the reconcile after the conflict wrote nothing")
+	}
+
+	forbidden := error(apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, names.ConfigMap, errors.New("RBAC")))
+	if err := f.c.Get(context.Background(), client.ObjectKey{Namespace: f.ns, Name: "desk"}, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.Label = "Desk Three"
+	if err := f.c.Update(context.Background(), &p); err != nil {
+		t.Fatal(err)
+	}
+	f.inject.Store(&forbidden)
+	if _, err := f.r.Reconcile(context.Background(), f.r.Key()); !apierrors.IsForbidden(err) {
+		t.Errorf("a Forbidden write: error %v; want it returned", err)
+	}
 }

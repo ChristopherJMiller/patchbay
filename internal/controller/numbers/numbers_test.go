@@ -476,7 +476,8 @@ func TestNothingBeforeCompiled(t *testing.T) {
 }
 
 // TestStatusWriteError: a failed write is returned, recognisable, and
-// quotes nothing from the object.
+// quotes nothing from the object; a conflict (the cache had not seen the
+// last write yet) is a quick requeue, not an error.
 func TestStatusWriteError(t *testing.T) {
 	f := newFixture(t)
 	f.newPerson("chris", "301", "phone desk")
@@ -490,8 +491,12 @@ func TestStatusWriteError(t *testing.T) {
 	}
 	conflict := error(apierrors.NewConflict(schema.GroupResource{Resource: "streams"}, "radio", nil))
 	f.statusErr.Store(&conflict)
-	if _, err := f.streams.Reconcile(f.ctx, req(f, "radio")); !apierrors.IsConflict(err) {
-		t.Errorf("error %v", err)
+	if res, err := f.streams.Reconcile(f.ctx, req(f, "radio")); err != nil || res.RequeueAfter <= 0 || res.RequeueAfter > time.Second {
+		t.Errorf("Stream conflict: %+v, %v; want a requeue within a second and no error", res, err)
+	}
+	f.newPerson("dana", "302", "phone desk")
+	if res, err := f.people.Reconcile(f.ctx, req(f, "dana")); err != nil || res.RequeueAfter <= 0 || res.RequeueAfter > time.Second {
+		t.Errorf("Person conflict: %+v, %v; want a requeue within a second and no error", res, err)
 	}
 	if e := f.rec.take(); len(e) != 0 {
 		t.Errorf("events %q after failed writes", e)

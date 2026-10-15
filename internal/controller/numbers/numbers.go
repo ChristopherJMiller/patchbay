@@ -224,6 +224,24 @@ func (b *base) written(obj runtime.Object, before, after string, v verdict) {
 		"%s", install.EventNote(fmt.Sprintf("%s -> %s: %s", before, after, v.ready.Message)))
 }
 
+// conflictRetry is how soon a resource whose status write met a conflict
+// is judged again. The reconcilers read from the informer cache, which
+// learns of a write a moment after it succeeds; a reconcile in that moment
+// writes from a copy the API server has moved past. That is not an error
+// (it would be logged as one and back off): a moment later the cache has
+// caught up.
+const conflictRetry = time.Second
+
+// writeFailed is the result of a failed status write: a conflict is a
+// quick requeue, anything else the error (writeError).
+func (b *base) writeFailed(kind, name string, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		b.log.V(1).Info("the status write met a newer copy; judging again once the cache has it", "kind", kind, "name", name)
+		return ctrl.Result{RequeueAfter: conflictRetry}, nil
+	}
+	return ctrl.Result{}, writeError(kind, name, err)
+}
+
 // statusChanged reports whether a status differs from its copy.
 func statusChanged(before, after any) bool { return !equality.Semantic.DeepEqual(before, after) }
 
@@ -279,7 +297,7 @@ func (r *PersonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	p.Status = *after
 	if err := r.cfg.Client.Status().Update(ctx, &p); err != nil {
-		return ctrl.Result{}, writeError("Person", p.Name, err)
+		return r.writeFailed("Person", p.Name, err)
 	}
 	r.written(&p, before.State, after.State, verdict)
 	return ctrl.Result{}, nil
@@ -370,7 +388,7 @@ func (r *StreamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	s.Status = *after
 	if err := r.cfg.Client.Status().Update(ctx, &s); err != nil {
-		return ctrl.Result{}, writeError("Stream", s.Name, err)
+		return r.writeFailed("Stream", s.Name, err)
 	}
 	r.written(&s, before.State, after.State, verdict)
 	return ctrl.Result{}, nil

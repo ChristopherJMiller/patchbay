@@ -23,8 +23,10 @@
 // CompileFailed Warning Event goes to pbx-config (or, while it does not
 // exist, the settings ConfigMap; or only the log), the compile-failures
 // metric counts it, and the reconcile ends without an error, to run again
-// after CompileRetryAfter or on the next change. Any other error (an API
-// call) is returned, so the reconcile is retried with backoff.
+// after CompileRetryAfter or on the next change. A write that meets cache
+// lag (a conflict, or a create of an object that exists) runs again after
+// StaleRetry. Any other error (an API call) is returned, so the reconcile
+// is retried with backoff.
 //
 // Neither Events, logs nor errors hold a secret value: compile errors name
 // Secrets and keys only.
@@ -68,6 +70,13 @@ const ControllerName = "bundle"
 // CompileRetryAfter is when a reconcile whose compile failed runs again
 // without a change.
 const CompileRetryAfter = 5 * time.Minute
+
+// StaleRetry is how soon a reconcile whose write met cache lag runs again.
+// The manager's client reads from an informer cache, which learns of a
+// write a moment after it succeeds; a reconcile in that moment writes from
+// a stale copy (an update conflicts, a create finds the object there).
+// That is not an error, which would be logged as one and back off.
+const StaleRetry = time.Second
 
 // Config configures the Reconciler.
 type Config struct {
@@ -154,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	case errors.Is(err, secrets.ErrInvalid):
 		return r.compileFailed(ctx, err)
 	case err != nil:
-		return ctrl.Result{}, err
+		return r.writeFailed(err)
 	}
 	in.Secrets = values
 
@@ -173,11 +182,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 
 	wroteSecret, err := r.writeSecret(ctx, sec)
 	if err != nil {
-		return ctrl.Result{}, err
+		return r.writeFailed(err)
 	}
 	current, wroteConfigMap, err := r.writeConfigMap(ctx, cm)
 	if err != nil {
-		return ctrl.Result{}, err
+		return r.writeFailed(err)
 	}
 	r.cfg.Metrics.ConfigWritten(b.Version)
 	if !wroteSecret && !wroteConfigMap {
@@ -188,6 +197,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	r.cfg.Recorder.Eventf(current, nil, corev1.EventTypeNormal, install.EventReasonConfigWritten, install.EventActionCompile,
 		"version %s written: %d files, %d devices", short(b.Version), len(b.Files), len(b.Devices))
 	return ctrl.Result{}, nil
+}
+
+// writeFailed is the result of a failed write: a conflict or an object
+// that already exists is cache lag, a quick requeue (StaleRetry); any
+// other API error is returned, so the reconcile backs off.
+func (r *Reconciler) writeFailed(err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) {
+		r.cfg.Log.V(1).Info("a write met a newer copy than the cache's; compiling again once the cache has it", "error", err.Error())
+		return ctrl.Result{RequeueAfter: StaleRetry}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 // compileFailed reports a failure only a human can fix and keeps the
