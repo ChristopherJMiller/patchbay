@@ -32,9 +32,12 @@ line. The design, including the per-device state machines, is
 
 **Pre-alpha.** The foundation is in place: the `v1alpha1` API and its CRDs, the
 contracts the compiler, drivers and agent implement, the controller manager,
-the agent's control API skeleton, and the CLI's shape. The compiler, the
-drivers' state machines, the agent's TFTP/AMI work and the Helm chart's
-workloads are not written yet. Nothing here runs a phone today.
+the agent's control API skeleton, the CLI's shape, the Helm chart (controller,
+PBX pod with Asterisk 22 and the agent sidecar), and an e2e suite in kind that
+registers a simulated phone and places an echo call against real Asterisk. The
+compiler, the drivers' state machines and the agent's TFTP/AMI/apply work are
+not written yet, so Asterisk runs a temporary static config in e2e. Nothing
+here runs a real phone today.
 
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
 extras (wallpaper, ringtones, speed dials, a Services menu, push messages).
@@ -53,10 +56,10 @@ make test                      # unit tests + envtest (real kube-apiserver + etc
 make lint                      # golangci-lint (with exhaustive) + helm lint
 make build                     # bin/patchbay
 make image                     # ghcr.io/christopherjmiller/patchbay:dev
+make e2e                       # kind + the chart + real Asterisk + a simulated phone
 ```
 
-`make e2e` (kind + real Asterisk + a simulated phone) is coming in the next
-stage.
+The e2e suite, its knobs and how to debug it: [docs/e2e.md](docs/e2e.md).
 
 ## Layout
 
@@ -67,7 +70,8 @@ internal/compile/      pure: resources + settings -> config bundle
 internal/drivers/      the driver contract; cisco79x5 and softphone drivers to come
 internal/agent/        the PBX pod's sidecar (control API today)
 internal/controller/   the controller manager and, soon, its reconcilers
-charts/patchbay/       Helm chart (CRDs today)
+charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk + agent sidecar)
+test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5
 config/samples/        one example of each resource
 docs/                  the design and the research behind it
 ```

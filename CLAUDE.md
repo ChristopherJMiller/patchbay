@@ -52,6 +52,9 @@ make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake)
 make test-unit    # -short: skips envtest
 make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev
 make tools-versions
+make e2e          # kind + chart + real Asterisk + fakephone; docs/e2e.md
+                  # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
+make e2e-down     # delete the e2e cluster
 ```
 
 The CRDs are generated into `charts/patchbay/templates/crds/` and carry
