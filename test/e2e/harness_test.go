@@ -16,12 +16,16 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,7 +62,11 @@ const (
 	sipPort     = 5060
 	controlPort = 9440
 
-	rolloutTimeout = 5 * time.Minute
+	// fakephoneSelector labels every fakephone pod.
+	fakephoneSelector = "app.kubernetes.io/name=fakephone"
+
+	rolloutTimeout    = 5 * time.Minute
+	kindCreateTimeout = 10 * time.Minute
 )
 
 var (
@@ -80,25 +88,101 @@ type harness struct {
 	nodeName string // the kind node (the PBX's pbx.nodeName)
 	nodeIP   string // its InternalIP (the PBX's pbx.address)
 	cs       *kubernetes.Clientset
+
+	// stoppedDiagnosed is set once diagnostics were saved after the suite
+	// was stopped (interrupt or budget); later failures are only fallout.
+	stoppedDiagnosed atomic.Bool
 }
 
 func TestMain(m *testing.M) {
+	os.Exit(runSuite(m))
+}
+
+// runSuite sets the suite up, runs it and tears it down, and returns the exit
+// code. It returns rather than exiting, so its deferred calls run.
+func runSuite(m *testing.M) int {
+	flag.Parse() // suiteBudget reads -test.timeout
 	var err error
 	h, err = newHarness()
 	if err != nil {
-		log.Fatalf("e2e: %v", err)
+		log.Printf("e2e: %v", err)
+		return 1
 	}
 	// Belt and braces: any child process that ignores --kubeconfig still
-	// lands on the e2e kubeconfig, never ~/.kube/config.
-	if err := os.Setenv("KUBECONFIG", h.kubeconfig); err != nil {
-		log.Fatalf("e2e: %v", err)
+	// lands on the e2e kubeconfig, never ~/.kube/config, and kubectl and
+	// helm keep their discovery cache under .e2e too, not in ~/.kube/cache.
+	for k, v := range h.childEnv() {
+		if err := os.Setenv(k, v); err != nil {
+			log.Printf("e2e: %v", err)
+			return 1
+		}
 	}
 
-	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(h.kubeconfig))
+	// Teardown is a Finish action, and only a returning testenv.Run runs it.
+	// Two things would kill the process first and strand the cluster:
+	//   - Ctrl-C or SIGTERM. Caught here, they cancel the suite's context
+	//     instead: the running step fails fast and teardown still runs. A
+	//     second signal kills as usual.
+	//   - go test's -timeout alarm, which panics. The suite stops itself a
+	//     margin earlier (suiteBudget), so teardown runs first.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	if budget := suiteBudget(); budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+		log.Printf("suite budget %s (-test.timeout less a margin for teardown)", budget)
+	}
+
+	testenv, err = env.NewWithContext(ctx, envconf.NewWithKubeConfig(h.kubeconfig))
+	if err != nil {
+		log.Printf("e2e: %v", err)
+		return 1
+	}
 	testenv.Setup(h.setupCluster, h.loadImages, h.install, h.waitForRollout)
 	testenv.AfterEachTest(h.diagnoseFailure)
 	testenv.Finish(h.teardown)
-	os.Exit(testenv.Run(m))
+	code := testenv.Run(m)
+	if ctx.Err() != nil {
+		log.Printf("e2e: stopped early: %v", context.Cause(ctx))
+		code = max(code, 1)
+	}
+	return code
+}
+
+// suiteBudget is how long the whole suite (setup, tests, teardown) may run:
+// -test.timeout less a margin, or 0 for no limit. go test's own timeout
+// alarm panics without running teardown, so the suite must give up first.
+// (The alarm only starts once the tests start, after setup, so a budget
+// counted from TestMain always ends before it.)
+func suiteBudget() time.Duration {
+	f := flag.Lookup("test.timeout")
+	if f == nil {
+		return 0
+	}
+	getter, ok := f.Value.(flag.Getter)
+	if !ok {
+		return 0
+	}
+	d, ok := getter.Get().(time.Duration)
+	if !ok || d <= 0 {
+		return 0
+	}
+	margin := min(max(d/10, 30*time.Second), 3*time.Minute, d/2)
+	return d - margin
+}
+
+// childEnv is the environment every child process (kind, kubectl, helm)
+// gets on top of the suite's: the e2e kubeconfig, and a kubectl/helm cache
+// directory under .e2e instead of the shared ~/.kube/cache.
+func (h *harness) childEnv() map[string]string {
+	return map[string]string{
+		"KUBECONFIG":   h.kubeconfig,
+		"KUBECACHEDIR": filepath.Join(h.root, ".e2e", "kube-cache"),
+	}
 }
 
 func newHarness() (*harness, error) {
@@ -152,11 +236,18 @@ func chartAsteriskImage(valuesFile string) (string, error) {
 }
 
 // run runs a command from the repository root and returns its combined
-// output. The command line is logged; the output only on failure.
+// output. The command line is logged; the output only on failure. When ctx
+// ends (an interrupt, the suite budget) the command gets SIGTERM, and
+// SIGKILL 15 s later.
 func (h *harness) run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = h.root
-	cmd.Env = append(os.Environ(), "KUBECONFIG="+h.kubeconfig)
+	cmd.Env = os.Environ()
+	for k, v := range h.childEnv() {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 15 * time.Second
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
 	log.Printf("$ %s %s  (%s)", name, strings.Join(args, " "), time.Since(start).Round(100*time.Millisecond))
@@ -200,7 +291,11 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 				return ctx, err
 			}
 		}
-		if _, err := h.run(ctx, "kind", "create", "cluster", "--name", clusterName,
+		// --wait bounds only the wait for a Ready node; the timeout bounds
+		// the whole create, a cold pull of the node image included.
+		createCtx, cancel := context.WithTimeout(ctx, kindCreateTimeout)
+		defer cancel()
+		if _, err := h.run(createCtx, "kind", "create", "cluster", "--name", clusterName,
 			"--config", filepath.Join("test", "e2e", "kind.yaml"),
 			"--kubeconfig", h.kubeconfig, "--wait", "3m"); err != nil {
 			return ctx, err
@@ -271,6 +366,12 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 	if _, err := h.cs.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return ctx, err
 	}
+	// A reused cluster starts without the previous run's fakephone pods, so
+	// their logs never show up in this run's diagnostics.
+	if err := h.cs.CoreV1().Pods(namespace).DeleteCollection(ctx, metav1.DeleteOptions{},
+		metav1.ListOptions{LabelSelector: fakephoneSelector}); err != nil {
+		return ctx, fmt.Errorf("deleting old fakephone pods: %w", err)
+	}
 
 	// The controller will mint the agent token (design §4). Until it does,
 	// the harness stands in for it. An existing token is kept, so a reused
@@ -339,6 +440,10 @@ func (h *harness) waitForRollout(ctx context.Context, _ *envconf.Config) (contex
 		})
 		if err != nil {
 			path := h.saveDiagnostics(context.WithoutCancel(ctx), "setup-"+name)
+			if ctx.Err() != nil {
+				return ctx, fmt.Errorf("deployment %s: stopped while waiting for its rollout (%s): %w; diagnostics: %s",
+					name, last, context.Cause(ctx), path)
+			}
 			return ctx, fmt.Errorf("deployment %s did not roll out within %s (%s); diagnostics: %s", name, rolloutTimeout, last, path)
 		}
 		log.Printf("deployment %s rolled out in %s", name, time.Since(start).Round(time.Second))
@@ -368,11 +473,18 @@ func rolledOut(d *appsv1.Deployment) (bool, string) {
 }
 
 // diagnoseFailure saves (and logs the path of) cluster diagnostics after a
-// failed test.
+// failed test. Once the suite has been stopped, every remaining test fails
+// fast; only the first of those gets diagnostics, so teardown is not held
+// up.
 func (h *harness) diagnoseFailure(ctx context.Context, _ *envconf.Config, t *testing.T) (context.Context, error) {
-	if t.Failed() {
-		t.Logf("diagnostics: %s", h.saveDiagnostics(context.WithoutCancel(ctx), t.Name()))
+	if !t.Failed() {
+		return ctx, nil
 	}
+	if ctx.Err() != nil && h.stoppedDiagnosed.Swap(true) {
+		t.Logf("suite stopped (%v); no further diagnostics", context.Cause(ctx))
+		return ctx, nil
+	}
+	t.Logf("diagnostics: %s", h.saveDiagnostics(context.WithoutCancel(ctx), t.Name()))
 	return ctx, nil
 }
 
@@ -388,7 +500,7 @@ func (h *harness) saveDiagnostics(ctx context.Context, label string) string {
 		{"describe", "pods", "--namespace", namespace},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--tail=300"},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--previous", "--tail=100"},
-		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/name=fakephone", "--prefix", "--tail=100"},
+		{"logs", "--namespace", namespace, "-l", fakephoneSelector, "--prefix", "--tail=100"},
 		{"get", "events", "--all-namespaces", "--sort-by=.lastTimestamp"},
 	} {
 		out, err := h.kubectl(ctx, args...)

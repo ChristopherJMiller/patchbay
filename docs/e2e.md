@@ -13,8 +13,9 @@ infrastructure before the real components land on it:
 | Test | Proves |
 |---|---|
 | `TestCRDs` | The chart installs the CRDs; `config/samples` are accepted and read back typed; a CEL rule (a ring target naming both a phone and a softphone) is enforced by the API server. |
-| `TestPBXUp` | The PBX pod runs on the host network of the pinned node with the agent as a native sidecar. Asterisk 22 is up as uid 1000 on a read-only root, binds SIP to the node IP over UDP and TCP, loads every module (including AudioSocket), keeps AMI on loopback and HTTP off. The agent answers `/readyz` and `/v1/observations` (401 without the token, 200 with it) **through its Service from the pod network**: the path the controller will use. |
-| `TestRegister` | fakephone registers with digest auth over **TCP** (what the 79x5 uses) and over UDP; Asterisk holds the pod's contact and User-Agent. |
+| `TestPBXUp` | The PBX pod runs on the host network of the pinned node with the agent as a native sidecar. Asterisk 22 is up as uid/gid 1000 with no capabilities, no_new_privs and a read-only root (read from its own `/proc/1/status` and `/proc/1/mounts`, not just the pod spec), binds SIP to the node IP over UDP and TCP, loads every module (including AudioSocket), keeps AMI on loopback and HTTP off. The agent answers `/readyz` and `/v1/observations` (401 without the token, 200 with it) **through its Service from the pod network**: the path the controller will use. |
+| `TestController` | The controller wins leader election (holds its Lease) under the chart's narrowed Role. |
+| `TestRegister` | fakephone registers over **TCP** (what the 79x5 uses) and over UDP, and Asterisk **challenged** it for digest auth first (fakephone reports `challenged=`); Asterisk holds the pod's contact and User-Agent. A wrong password gets 401/403 and leaves no contact. |
 | `TestEchoCall` | fakephone calls `600`; SIP crosses pod network → node IP, RTP crosses both ways, and a 1 kHz PCMU tone comes back (Goertzel check on every 20 ms packet) from the node's own address. An unrouted number fails with 404, and fakephone reports it. |
 
 ## Running it
@@ -33,7 +34,18 @@ nix develop -c make e2e-images   # just build/pull the three images
 - Without `PATCHBAY_E2E_REUSE=1` an existing `patchbay-e2e` cluster is
   deleted first, so a default run always starts from scratch.
 - Without `PATCHBAY_E2E_KEEP=1` the cluster is deleted at the end, pass or
-  fail.
+  fail, and also when the run is cut short:
+  - **Ctrl-C or SIGTERM**: the first signal cancels the running step and
+    teardown still deletes the cluster (give it a few seconds); a second
+    signal kills at once;
+  - **the time limit**: the suite gives itself `-timeout` (`E2E_TIMEOUT`,
+    30m) less a margin (3 min at 30m), so it stops and tears down before
+    go test's own alarm, which panics without any teardown.
+
+  Only a hard kill (SIGKILL, a second Ctrl-C) leaves the cluster behind;
+  `make e2e-down` removes it, and the next default run deletes it anyway.
+  With `PATCHBAY_E2E_KEEP=1` an interrupted run keeps a possibly half-built
+  cluster, so run once without `PATCHBAY_E2E_REUSE=1` afterwards.
 - A fresh run takes about two minutes once the images are cached; the cluster
   node uses about 0.9 GB of RAM.
 - Only one kind cluster, `patchbay-e2e`, is ever created.
@@ -45,7 +57,10 @@ The suite never reads or writes `~/.kube/config`:
 - the kubeconfig is **`.e2e/kubeconfig`** (gitignored), and every `kind`,
   `kubectl` and `helm` call passes `--kubeconfig` explicitly;
 - the Makefile and the harness also set `KUBECONFIG` to it, so a tool that
-  ignores the flag still cannot fall back to your real config.
+  ignores the flag still cannot fall back to your real config;
+- they set `KUBECACHEDIR=.e2e/kube-cache` too, so kubectl and helm keep
+  their discovery and HTTP caches there instead of adding a directory per
+  run to the shared `~/.kube/cache`.
 
 Use the same file by hand:
 
@@ -77,13 +92,17 @@ environment and features. Its own kind provider is not used, because it runs
 `kind create/delete cluster` without `--kubeconfig` and writes kubeconfigs to
 `$TMPDIR`; the harness drives `kind` itself.
 
-1. Create the cluster from `test/e2e/kind.yaml` (one node, the node image
-   kind v0.32.0 pairs with, pinned by digest), or reuse it.
+1. Create the cluster from `test/e2e/kind.yaml`, or reuse it. It is one
+   node running **Kubernetes 1.33** (kind v0.32.0's v1.33.12 image, pinned
+   by digest): the minor of the cluster patchbay is built for and the
+   chart's `kubeVersion` floor. envtest covers the newest end (1.37). The
+   whole create is bounded at 10 minutes.
 2. Set the node's `net.ipv4.ip_unprivileged_port_start` back to 1024 (see
    below).
 3. Load the three images.
 4. Create the namespace (labelled `pod-security.kubernetes.io/enforce:
-   privileged`, as a real install needs) and the agent token Secret: the
+   privileged`, as a real install needs), delete any fakephone pods a
+   reused cluster still holds, and create the agent token Secret: the
    controller will mint that token (design §4); until then the harness does.
 5. `helm upgrade --install patchbay charts/patchbay` with
    `test/e2e/values.yaml` plus `.e2e/values-runtime.yaml` (the node's name
@@ -93,8 +112,10 @@ environment and features. Its own kind provider is not used, because it runs
 
 Each fakephone run is a one-shot Pod (`restartPolicy: Never`) with
 `FAKEPHONE_SERVER=<node IP>:5060` and the test credentials in its
-environment. The test reads its exit status and logs. Pods that succeed are
-deleted; failed ones are kept for the diagnostics.
+environment. The test reads its exit status and logs. Each run says which
+outcome it expects (the unrouted call and the wrong password are meant to
+fail): a pod that ends as expected is deleted, and any other is kept for the
+diagnostics.
 
 ## Debugging a failure
 
@@ -163,10 +184,28 @@ Findings from building this suite. They shape the agent and compiler phases.
     (Kubernetes grants no ambient capabilities to non-root containers);
   - uid 0 with every capability dropped except `NET_BIND_SERVICE`: works.
 
-  So when the agent serves TFTP on 69 it must run as uid 0 with only
-  `NET_BIND_SERVICE` (and no privilege escalation, read-only root). File
-  capabilities on the binary would not help, because
-  `allowPrivilegeEscalation: false` sets no_new_privs, which ignores them.
+  Serving TFTP on 69 therefore needs *some* privilege, and how to get it is
+  an **open decision for the agent phase**. What is fixed: the process that
+  holds the privilege must not be the one holding the control API token,
+  the AMI password or resolved secrets, and it parses untrusted packets from
+  the voice VLAN. A hostNetwork pod cannot use a user namespace
+  (`hostUsers: false`), so uid 0 there is uid 0 on the node. Options:
+  - **(a) A separate minimal TFTP container** (uid 0, only
+    `NET_BIND_SERVICE`, read-only mount of `current/tftp` and the firmware
+    volume), reporting its fetch log to the agent. The agent stays 65532;
+    the cost is a second process and an IPC for the fetch log.
+  - **(b) Bind, then drop.** The agent starts as uid 0 with
+    `NET_BIND_SERVICE`, `SETUID` and `SETGID`, binds :69, then
+    `setresgid`/`setresuid` to 65532 (Go applies these to every thread),
+    which clears all capabilities, before it reads any secret. One process;
+    the pod's `runAsNonRoot` needs a per-container override.
+  - **(c) A file capability** on the binary (`cap_net_bind_service+ep`) with
+    `allowPrivilegeEscalation: true`, which no_new_privs would otherwise
+    block. Acceptable on distroless/static (no setuid binaries), but it
+    weakens a setting every other container keeps.
+
+  Rejected: setting `ip_unprivileged_port_start` for the pod (with
+  hostNetwork it is the node's sysctl, so it would lower it node-wide).
 - **RTP source address.** Asterisk binds RTP to 0.0.0.0 by default, so
   replies leave from whatever source the route picks. In kind that was the
   pod bridge's `10.244.0.1`, not the node IP advertised in SDP. The static

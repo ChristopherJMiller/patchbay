@@ -30,9 +30,9 @@ type fakephoneResult struct {
 // runFakephone runs fakephone with args as a one-shot Pod on the pod
 // network (not the host network: like a phone, it reaches the PBX at the
 // node's address from elsewhere), waits for it to finish, and returns its
-// logs. A pod that succeeded is deleted; a failed one is kept for the
-// diagnostics.
-func runFakephone(ctx context.Context, t *testing.T, name string, extraEnv []corev1.EnvVar, args ...string) fakephoneResult {
+// logs. wantSuccess is the outcome the caller expects: a pod that ends that
+// way is deleted, and one that does not is kept for the diagnostics.
+func runFakephone(ctx context.Context, t *testing.T, name string, wantSuccess bool, extraEnv []corev1.EnvVar, args ...string) fakephoneResult {
 	t.Helper()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -100,7 +100,7 @@ func runFakephone(ctx context.Context, t *testing.T, name string, extraEnv []cor
 	}
 	res := fakephoneResult{Pod: done, Logs: string(raw), Succeeded: done.Status.Phase == corev1.PodSucceeded}
 	t.Logf("fakephone pod %s %s (pod IP %s):\n%s", created.Name, done.Status.Phase, done.Status.PodIP, indent(res.Logs))
-	if res.Succeeded {
+	if res.Succeeded == wantSuccess {
 		_ = pods.Delete(context.WithoutCancel(ctx), created.Name, metav1.DeleteOptions{})
 	}
 	return res
@@ -131,16 +131,44 @@ func pbxPod(ctx context.Context, t *testing.T) *corev1.Pod {
 // (`asterisk -rx <command>`) and returns its output.
 func asterisk(ctx context.Context, t *testing.T, cfg *envconf.Config, command string) string {
 	t.Helper()
+	return execInPBX(ctx, t, cfg, "asterisk", "asterisk", "-rx", command)
+}
+
+// execInPBX runs a command in one of the PBX pod's containers and returns
+// its standard output.
+func execInPBX(ctx context.Context, t *testing.T, cfg *envconf.Config, container string, command ...string) string {
+	t.Helper()
 	pod := pbxPod(ctx, t)
 	r, err := resources.New(cfg.Client().RESTConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := r.ExecInPod(ctx, namespace, pod.Name, "asterisk", []string{"asterisk", "-rx", command}, &stdout, &stderr); err != nil {
-		t.Fatalf("asterisk -rx %q: %v\n%s%s", command, err, stdout.String(), stderr.String())
+	if err := r.ExecInPod(ctx, namespace, pod.Name, container, command, &stdout, &stderr); err != nil {
+		t.Fatalf("exec %q in %s: %v\n%s%s", command, container, err, stdout.String(), stderr.String())
 	}
 	return stdout.String()
+}
+
+// procStatus parses /proc/<pid>/status into its fields.
+func procStatus(status string) map[string]string {
+	out := map[string]string{}
+	for line := range strings.SplitSeq(status, "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok {
+			out[k] = strings.Join(strings.Fields(v), " ")
+		}
+	}
+	return out
+}
+
+// rootMountOptions returns the mount options of / from /proc/<pid>/mounts.
+func rootMountOptions(mounts string) []string {
+	for line := range strings.SplitSeq(mounts, "\n") {
+		if f := strings.Fields(line); len(f) >= 4 && f[1] == "/" {
+			return strings.Split(f[3], ",")
+		}
+	}
+	return nil
 }
 
 // mediaStats are the numbers fakephone's call reports.

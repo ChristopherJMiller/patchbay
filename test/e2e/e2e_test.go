@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -21,6 +25,7 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
+	"github.com/ChristopherJMiller/patchbay/internal/controller"
 )
 
 type ctxKey string
@@ -146,6 +151,33 @@ func TestPBXUp(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("Asterisk runs as uid 1000 with no capabilities on a read-only root", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// PID 1 of the asterisk container is Asterisk itself (the chart
+			// bypasses the image's root entrypoint), so its own /proc entry
+			// is what the kernel enforces, not just what the spec asks for.
+			st := procStatus(execInPBX(ctx, t, cfg, "asterisk", "cat", "/proc/1/status"))
+			if st["Name"] != "asterisk" {
+				t.Errorf("PID 1 is %q, not asterisk", st["Name"])
+			}
+			for field, want := range map[string]string{
+				"Uid":        "1000 1000 1000 1000",
+				"Gid":        "1000 1000 1000 1000",
+				"CapPrm":     "0000000000000000",
+				"CapEff":     "0000000000000000",
+				"CapBnd":     "0000000000000000",
+				"CapAmb":     "0000000000000000",
+				"NoNewPrivs": "1",
+			} {
+				if st[field] != want {
+					t.Errorf("asterisk %s = %q, want %q", field, st[field], want)
+				}
+			}
+			opts := rootMountOptions(execInPBX(ctx, t, cfg, "asterisk", "cat", "/proc/1/mounts"))
+			if !slices.Contains(opts, "ro") {
+				t.Errorf("asterisk's root filesystem is mounted %v, want ro", opts)
+			}
+			return ctx
+		}).
 		Assess("Asterisk 22 runs the static config", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			if v := asterisk(ctx, t, cfg, "core show version"); !strings.HasPrefix(v, "Asterisk 22.") {
 				t.Errorf("core show version: %q", v)
@@ -182,10 +214,10 @@ func TestPBXUp(t *testing.T) {
 		}).
 		Assess("the agent answers through its Service from the pod network", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			base := fmt.Sprintf("http://%s.%s.svc:%d", agentService, namespace, controlPort)
-			if r := runFakephone(ctx, t, "readyz", nil, "http", "get", base+agentapi.PathReadyz); !r.Succeeded {
+			if r := runFakephone(ctx, t, "readyz", true, nil, "http", "get", base+agentapi.PathReadyz); !r.Succeeded {
 				t.Errorf("GET %s from a pod failed", agentapi.PathReadyz)
 			}
-			if r := runFakephone(ctx, t, "noauth", nil,
+			if r := runFakephone(ctx, t, "noauth", true, nil,
 				"http", "get", "--expect-status", "401", base+agentapi.PathObservations); !r.Succeeded {
 				t.Errorf("GET %s without the token was not refused with 401", agentapi.PathObservations)
 			}
@@ -195,7 +227,7 @@ func TestPBXUp(t *testing.T) {
 					Key:                  "token",
 				},
 			}}}
-			r := runFakephone(ctx, t, "observations", token,
+			r := runFakephone(ctx, t, "observations", true, token,
 				"http", "get", "--header", "Authorization: Bearer $(AGENT_TOKEN)", base+agentapi.PathObservations)
 			if !r.Succeeded {
 				t.Fatalf("GET %s with the token failed", agentapi.PathObservations)
@@ -220,16 +252,49 @@ func TestPBXUp(t *testing.T) {
 	testenv.Test(t, f)
 }
 
+// TestController checks that the controller runs under the chart's RBAC:
+// with only the Lease verbs the Role grants, it wins leader election.
+func TestController(t *testing.T) {
+	f := features.New("controller").
+		Assess("holds its leader-election Lease", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			var lease *coordinationv1.Lease
+			err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+				l, err := h.cs.CoordinationV1().Leases(namespace).Get(ctx, controller.LeaderElectionID, metav1.GetOptions{})
+				if apierrors.IsNotFound(err) {
+					return false, nil
+				}
+				if err != nil {
+					return false, err
+				}
+				lease = l
+				return l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity != "", nil
+			})
+			if err != nil {
+				t.Fatalf("no holder of Lease %s/%s within a minute: %v (lease %+v)", namespace, controller.LeaderElectionID, err, lease)
+			}
+			t.Logf("Lease %s held by %s", controller.LeaderElectionID, *lease.Spec.HolderIdentity)
+			return ctx
+		}).
+		Feature()
+	testenv.Test(t, f)
+}
+
 // TestRegister registers fakephone, over TCP as the 79x5 does and over UDP,
-// and checks that Asterisk holds the pod's contact.
+// and checks that Asterisk demanded digest auth, holds the pod's contact,
+// and refuses a wrong password.
 func TestRegister(t *testing.T) {
 	f := features.New("REGISTER")
 	for _, transport := range []string{"tcp", "udp"} {
 		f = f.Assess("over "+transport, func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "register-"+transport, nil,
+			r := runFakephone(ctx, t, "register-"+transport, true, nil,
 				"register", "--transport", transport, "--expires", "300")
 			if !r.Succeeded {
 				t.Fatalf("fakephone register over %s failed", transport)
+			}
+			// An endpoint without auth would accept the first, unanswered
+			// REGISTER; fakephone reports whether it was challenged.
+			if !strings.Contains(r.Logs, "challenged=true") {
+				t.Errorf("Asterisk accepted REGISTER without a digest challenge")
 			}
 			want := fmt.Sprintf("sip:%s@%s:%d;transport=%s", sipUser, r.Pod.Status.PodIP, sipPort, transport)
 			if r.Pod.Status.PodIP == "" || !strings.Contains(r.Logs, "contact=<"+want+">") {
@@ -250,6 +315,25 @@ func TestRegister(t *testing.T) {
 			return ctx
 		})
 	}
+	f = f.Assess("a wrong password is refused and registers nothing", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		r := runFakephone(ctx, t, "register-wrong-password", false, nil,
+			"register", "--password", "not-the-password", "--expires", "300")
+		if r.Succeeded {
+			t.Fatal("REGISTER with a wrong password succeeded")
+		}
+		refused := strings.Contains(r.Logs, "REGISTER: 401") || strings.Contains(r.Logs, "REGISTER: 403")
+		if !refused || !strings.Contains(r.Logs, "challenged=true") {
+			t.Errorf("want a 401/403 after a digest challenge, got:\n%s", r.Logs)
+		}
+		ip := r.Pod.Status.PodIP
+		if ip == "" {
+			t.Fatal("the fakephone pod has no IP")
+		}
+		if db := asterisk(ctx, t, cfg, "database show registrar"); strings.Contains(db, "@"+ip+":") {
+			t.Errorf("Asterisk holds a contact for %s after a wrong password:\n%s", ip, db)
+		}
+		return ctx
+	})
 	testenv.Test(t, f.Feature())
 }
 
@@ -259,7 +343,7 @@ func TestRegister(t *testing.T) {
 func TestEchoCall(t *testing.T) {
 	f := features.New("echo call").
 		Assess("600 echoes a 1 kHz tone", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "call-echo", nil, "call", echoNumber, "--duration", "3s")
+			r := runFakephone(ctx, t, "call-echo", true, nil, "call", echoNumber, "--duration", "3s")
 			stats, ok := parseMedia(r.Logs)
 			if !r.Succeeded || !ok {
 				t.Fatalf("fakephone call %s failed", echoNumber)
@@ -276,7 +360,7 @@ func TestEchoCall(t *testing.T) {
 			return ctx
 		}).
 		Assess("an unrouted number is refused, and fakephone says so", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "call-unrouted", nil, "call", "699", "--expect-tone=false")
+			r := runFakephone(ctx, t, "call-unrouted", false, nil, "call", "699", "--expect-tone=false")
 			if r.Succeeded || !strings.Contains(r.Logs, "404") {
 				t.Fatalf("calling an unrouted number: succeeded=%v, want a 404 failure", r.Succeeded)
 			}

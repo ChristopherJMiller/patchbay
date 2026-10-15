@@ -96,6 +96,8 @@ jobs:
     # snapshot, then upload .e2e/ as an artifact.
     env:
       E2E_DIR: ${{ github.workspace }}/.e2e
+      # kubectl/helm discovery cache (the harness and Makefile use the same).
+      KUBECACHEDIR: ${{ github.workspace }}/.e2e/kube-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,6 +125,10 @@ jobs:
         # A step timeout counts as a failure, so the diagnostics steps still
         # run. A job timeout would cancel them.
         timeout-minutes: 35
+        # Keep the cluster, pass or fail, so the failure steps below can
+        # export node logs from it. The runner is thrown away afterwards.
+        env:
+          PATCHBAY_E2E_KEEP: "1"
         run: nix develop -c make e2e
 
       - name: Collect cluster diagnostics
@@ -148,6 +154,7 @@ jobs:
           path: |
             ${{ github.workspace }}/.e2e/
             !${{ github.workspace }}/.e2e/kubeconfig
+            !${{ github.workspace }}/.e2e/kube-cache/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

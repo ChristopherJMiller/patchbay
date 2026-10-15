@@ -129,6 +129,8 @@ clean: ## Remove build output.
 E2E_CLUSTER    := patchbay-e2e
 # The ONLY kubeconfig e2e uses. Never ~/.kube/config.
 E2E_KUBECONFIG := $(CURDIR)/.e2e/kubeconfig
+# kubectl and helm cache discovery here, not in the shared ~/.kube/cache.
+E2E_KUBECACHE  := $(CURDIR)/.e2e/kube-cache
 E2E_IMG        := ghcr.io/christopherjmiller/patchbay:e2e
 E2E_TOOLS_IMG  := ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e
 E2E_TIMEOUT    ?= 30m
@@ -140,11 +142,12 @@ ASTERISK_DIGEST  = $(shell yq '.pbx.asterisk.image.digest' $(CHART_VALUES))
 
 .PHONY: e2e
 e2e: e2e-images ## Run the e2e suite. PATCHBAY_E2E_REUSE=1 reuses the cluster; PATCHBAY_E2E_KEEP=1 keeps it.
-	KUBECONFIG=$(E2E_KUBECONFIG) go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -v ./test/e2e/
+	KUBECONFIG=$(E2E_KUBECONFIG) KUBECACHEDIR=$(E2E_KUBECACHE) \
+		go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -v ./test/e2e/
 
 .PHONY: e2e-up
 e2e-up: e2e-images ## Create (or reuse) the e2e cluster and install the chart, run no tests, keep it.
-	PATCHBAY_E2E_REUSE=1 PATCHBAY_E2E_KEEP=1 KUBECONFIG=$(E2E_KUBECONFIG) \
+	PATCHBAY_E2E_REUSE=1 PATCHBAY_E2E_KEEP=1 KUBECONFIG=$(E2E_KUBECONFIG) KUBECACHEDIR=$(E2E_KUBECACHE) \
 		go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -v -run '^$$' ./test/e2e/
 
 .PHONY: e2e-down
