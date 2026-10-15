@@ -1,7 +1,12 @@
 # BuildKit reads this instead of the root .dockerignore for this Dockerfile.
-# Only the module files and fakephone's own sources are needed.
+# The module files, fakephone's own sources, and api/ and internal/, which
+# it imports through internal/agent/scrape (the agent's page types); never
+# tests or their fixtures.
 *
 !go.mod
 !go.sum
+!api/
+!internal/
 !test/e2e/fakephone/
 **/*_test.go
+**/testdata/

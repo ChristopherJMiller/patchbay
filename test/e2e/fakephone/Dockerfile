@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 #
-# patchbay-e2e-tools: the e2e suite's simulated phone (fakephone), one static
+# patchbay-e2e-tools: the e2e suite's simulated phones (fakephone), one static
 # binary on distroless. Build from the repository root:
 #   docker build -f test/e2e/fakephone/Dockerfile \
 #     -t ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e .
@@ -13,10 +13,15 @@ WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-trimpath
 
 COPY go.mod go.sum ./
+# fakephone serves the agent's scraped pages built from internal/agent/scrape's
+# own types, which bring api/ and internal/ (Dockerfile.dockerignore keeps out
+# tests and testdata).
+COPY api/ api/
+COPY internal/ internal/
 COPY test/e2e/fakephone/ test/e2e/fakephone/
 
 ARG TARGETOS TARGETARCH
-# go build downloads only the modules fakephone imports.
+# go build compiles, and downloads the modules of, only what fakephone imports.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-s -w" -o /out/fakephone ./test/e2e/fakephone
@@ -24,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/patchbay" \
-      org.opencontainers.image.description="patchbay e2e tools: a simulated Cisco 79x5 (fakephone)" \
+      org.opencontainers.image.description="patchbay e2e tools: a simulated Cisco 79x5 and Linphone (fakephone)" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=build /out/fakephone /fakephone
