@@ -1,0 +1,74 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitsDisabled"
+  ],
+  "commitMessagePrefix": "deps:",
+  "ignorePaths": ["**/node_modules/**", "**/vendor/**"],
+  "postUpdateOptions": ["gomodTidy"],
+  "nix": {
+    "enabled": true,
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": ["* 0-3 1 * *"],
+      "commitMessageAction": "Update nixpkgs (flake.lock)"
+    }
+  },
+  "helm-values": {
+    "description": "Chart images are digest-pinned, so the customManager below owns them. helm-values cannot update a digest; it would move the tag and leave the digest stale.",
+    "enabled": false
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Digest-pinned images in the chart and the e2e harness. The forms are `<repo/name>:<tag>@sha256:<digest>`, or the keys `repository:`, `tag:` and `digest:` in that order (comment lines may sit between them), or `repository:` then `tag: <tag>@sha256:<digest>`. Official images need a namespace, as in `docker.io/library/<name>`. test/ is scanned because ignorePaths above replaces the preset list, which skips **/test/**: the e2e harness pulls these images too.",
+      "managerFilePatterns": ["/^charts/.+\\.ya?ml$/", "/^test/e2e/.+/", "/(^|/)Makefile$/"],
+      "matchStrings": [
+        "(?<depName>[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)+):(?<currentValue>[A-Za-z0-9_][A-Za-z0-9_.-]*)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "repository:[ \\t]*[\"']?(?<depName>[^\\s\"'#]+)[\"']?[ \\t]*(?:#[^\\n]*)?\\n(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*tag:[ \\t]*[\"']?(?<currentValue>[^\\s\"'@#]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "repository:[ \\t]*[\"']?(?<depName>[^\\s\"'#]+)[\"']?[ \\t]*(?:#[^\\n]*)?\\n(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*tag:[ \\t]*[\"']?(?<currentValue>[^\\s\"'@#]+)[\"']?[ \\t]*(?:#[^\\n]*)?\\n(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*digest:[ \\t]*[\"']?(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Wait 3 days after a release before proposing it, so a bad release can be yanked first.",
+      "matchManagers": ["gomod", "github-actions"],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "The Kubernetes libraries move together.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["k8s.io/**", "sigs.k8s.io/controller-runtime"],
+      "groupName": "kubernetes",
+      "prBodyNotes": ["Keep the k8s.io minor in step with nixpkgs' `kubernetes` (envtest's kube-apiserver; see flake.nix). A new minor here usually needs a flake.lock bump too."]
+    },
+    {
+      "description": "The Go minor comes from the flake (go_1_26 and GOTOOLCHAIN=local). The builder image follows patches only; a new Go minor changes flake.nix and the Dockerfile together, by hand.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["golang", "docker.io/library/golang"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "andrius/asterisk tags look like 22.11.0_debian-trixie. The suffix must match exactly, so -amd64 and -<sha> variants are never proposed.",
+      "matchPackageNames": ["andrius/asterisk", "docker.io/andrius/asterisk"],
+      "versioning": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)_(?<compatibility>[a-z0-9.-]+)$"
+    },
+    {
+      "description": "Stay on Asterisk 22 LTS. Moving to the next LTS is a design change, not a bump.",
+      "matchPackageNames": ["andrius/asterisk", "docker.io/andrius/asterisk"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Not Renovate's to move: our own image (released by CI), and kind node images (they must match the kind from the flake).",
+      "matchPackageNames": ["ghcr.io/christopherjmiller/patchbay", "kindest/node", "docker.io/kindest/node"],
+      "enabled": false
+    }
+  ]
+}
