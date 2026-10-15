@@ -287,10 +287,41 @@ func TestWaitNotify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(req.Body()) != body || fmt.Sprint(headerValues(req, "Subscription-State")) != "[active]" {
-		t.Fatalf("NOTIFY body %q, Subscription-State %v", req.Body(), headerValues(req, "Subscription-State"))
+	if string(req.Body()) != body || fmt.Sprint(subscriptionState(req)) != "[active]" {
+		t.Fatalf("NOTIFY body %q, Subscription-State %v", req.Body(), subscriptionState(req))
 	}
 	if _, err := p.waitNotify(ctx, "service-control", 100*time.Millisecond); err == nil {
 		t.Fatal("a second NOTIFY appeared from nowhere")
+	}
+}
+
+// TestSetAccount: after setAccount the phone registers, and names itself in
+// its Contact, as the new account (run mode, after a refetch).
+func TestSetAccount(t *testing.T) {
+	reg := startRegistrar(t, "phone-new", "not-a-secret-new")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	port := freePort(t)
+	p, err := newPhone(ctx, sipOptions{
+		Server: reg.addr, Transport: "tcp", User: "100", AuthUser: "phone-old", Password: "not-a-secret-old",
+		LocalIP: "127.0.0.1", SIPPort: port, UserAgent: "unit-test",
+	}, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	if res, _, err := p.register(ctx, 120); err != nil || res.StatusCode != sip.StatusForbidden {
+		t.Fatalf("the old account: %v %v", res, err)
+	}
+	acc := p.account()
+	acc.User, acc.AuthUser, acc.Password = "101", "phone-new", "not-a-secret-new"
+	p.setAccount(acc)
+	if res, _, err := p.register(ctx, 120); err != nil || res.StatusCode != sip.StatusOK {
+		t.Fatalf("the new account: %v %v", res, err)
+	}
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if want := fmt.Sprintf("<sip:101@127.0.0.1:%d;transport=tcp>", port); len(reg.contacts) != 1 || reg.contacts[0] != want {
+		t.Fatalf("registrar saw contacts %q, want [%q]", reg.contacts, want)
 	}
 }

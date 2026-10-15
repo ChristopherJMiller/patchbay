@@ -49,6 +49,14 @@ type account struct {
 	Password secret
 }
 
+// authUser is the digest username.
+func (a account) authUser() string {
+	if a.AuthUser != "" {
+		return a.AuthUser
+	}
+	return a.User
+}
+
 // deviceConfig is a parsed config document: what State shows (Public), and
 // the account it gives, whose password State never shows.
 type deviceConfig struct {

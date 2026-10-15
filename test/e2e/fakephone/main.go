@@ -30,6 +30,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -93,20 +94,41 @@ func (rf *rootFlags) logger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
-// sipLogger is logger for the SIP commands, which also set sipgo's
+// sipLogger is the logger for the SIP commands, which also set sipgo's
 // process-wide logger and debug switch (so only they touch them).
 func (rf *rootFlags) sipLogger() *slog.Logger {
-	log := rf.logger()
-	if rf.verbose {
-		sip.SIPDebug = true
-	}
-	// sipgo logs through its own default logger; keep it quiet unless -v.
-	sipLevel := slog.LevelWarn
-	if rf.verbose {
-		sipLevel = slog.LevelDebug
-	}
-	sip.SetDefaultLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: sipLevel})))
-	return log
+	setSIPLogging(os.Stderr, rf.verbose)
+	return rf.logger()
+}
+
+// sipLogging guards sipgo's process-wide logger and debug switch: sipgo
+// reads them from its own goroutines without a lock, so they are set once,
+// before the first SIP stack starts (a test sets them first, in TestMain).
+var sipLogging sync.Once
+
+// setSIPLogging points sipgo's logger at w, quiet unless verbose; only
+// the first call in a process has any effect.
+func setSIPLogging(w io.Writer, verbose bool) {
+	sipLogging.Do(func() {
+		level := slog.LevelWarn
+		if verbose {
+			sip.SIPDebugTracer(sipTracer{w})
+			sip.SIPDebug = true
+			level = slog.LevelDebug
+		}
+		sip.SetDefaultLogger(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})))
+	})
+}
+
+// sipTracer writes sipgo's message traces (-v) to w, where its log goes.
+type sipTracer struct{ w io.Writer }
+
+func (t sipTracer) SIPTraceRead(transport, laddr, raddr string, msg []byte) {
+	_, _ = fmt.Fprintf(t.w, "=== %s read from %s <- %s ===\n%s\n", transport, laddr, raddr, msg)
+}
+
+func (t sipTracer) SIPTraceWrite(transport, laddr, raddr string, msg []byte) {
+	_, _ = fmt.Fprintf(t.w, "=== %s write to %s -> %s ===\n%s\n", transport, laddr, raddr, msg)
 }
 
 // bindSIPFlags adds the flags every SIP subcommand shares.
@@ -175,10 +197,11 @@ print it, then (with --refetch) fetch that file over TFTP from
 			if h := res.Contact(); h != nil {
 				contact = h.Value()
 			}
-			log.Info("registered", "server", o.Server, "transport", p.transport,
-				"user", o.User, "authUser", p.authUser(), "challenged", challenged, "contact", contact)
+			acc := p.account()
+			log.Info("registered", "server", o.Server, "transport", acc.Transport,
+				"user", o.User, "authUser", acc.authUser(), "challenged", challenged, "contact", contact)
 			fmt.Fprintf(cmd.OutOrStdout(), "registered %s via %s challenged=%t contact=%s\n",
-				o.User, p.transport, challenged, contact)
+				o.User, acc.Transport, challenged, contact)
 			if waitNotify <= 0 {
 				return nil
 			}
@@ -188,7 +211,7 @@ print it, then (with --refetch) fetch that file over TFTP from
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "notify event=%s subscription-state=%q body=%q\n",
-				event, headerValues(req, "Subscription-State"), string(req.Body()))
+				event, subscriptionState(req), string(req.Body()))
 			if refetch == "" {
 				return nil
 			}
@@ -211,10 +234,11 @@ print it, then (with --refetch) fetch that file over TFTP from
 	return cmd
 }
 
-// headerValues lists every value of a header, in order.
-func headerValues(req *sip.Request, name string) []string {
+// subscriptionState lists every Subscription-State of a NOTIFY, in order
+// (Asterisk's res_pjsip_notify sends its own ahead of the one asked for).
+func subscriptionState(req *sip.Request) []string {
 	var out []string
-	for _, h := range req.GetHeaders(name) {
+	for _, h := range req.GetHeaders("Subscription-State") {
 		out = append(out, h.Value())
 	}
 	return out
@@ -235,13 +259,13 @@ func newCallCmd(rf *rootFlags) *cobra.Command {
 		Use:   "call <number>",
 		Short: "Call a number, send a tone, check what comes back, hang up",
 		Long: `Place a call (INVITE with digest auth, G.711 µ-law offer), wait for 200 OK,
-then send a --tone-hz tone for --duration while measuring the tone in the
-audio that comes back (Goertzel). With --expect-tone (the default, for the
-echo test) the call passes only if at least --min-tone-frames 20 ms packets
-carried the tone. With --expect-audio (an announcement) it passes only if at
-least that much of what came back was not silence, and at least --min-voice
-of it was not the SIT tone either (the prompt itself). Then BYE, unless the
-PBX hung up first.`,
+then send a --tone-hz tone for --duration while measuring the --expect-hz
+tone (default: --tone-hz, the echo) in the audio that comes back
+(Goertzel). With --expect-tone (the default) the call passes only if at
+least --min-tone-frames 20 ms packets carried it. With --expect-audio (an
+announcement) it passes only if at least that much of what came back was
+not silence, and at least --min-voice of it was not the SIT tone either
+(the prompt itself). Then BYE, unless the PBX hung up first.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log := rf.sipLogger()
@@ -290,7 +314,9 @@ PBX hung up first.`,
 	f := cmd.Flags()
 	f.DurationVar(&mo.Duration, "duration", 3*time.Second, "how long to send the tone")
 	f.DurationVar(&mo.Tail, "tail", 500*time.Millisecond, "how long to keep listening after the tone")
-	f.Float64Var(&mo.ToneHz, "tone-hz", 1000, "tone frequency")
+	f.Float64Var(&mo.ToneHz, "tone-hz", 1000, "the tone sent")
+	f.Float64Var(&mo.ExpectHz, "expect-hz", 0,
+		"the tone looked for in what comes back, which --min-tone-frames counts; 0 is --tone-hz (the echo)")
 	f.BoolVar(&expectTone, "expect-tone", true, "fail unless the tone comes back (the echo test)")
 	f.IntVar(&minToneFrames, "min-tone-frames", 50, "with --expect-tone: packets that must carry the tone")
 	f.DurationVar(&expectAudio, "expect-audio", 0, "fail unless at least this much non-silent audio comes back")
@@ -306,7 +332,7 @@ func checkMedia(res mediaResult, mo mediaOptions, expectTone bool, minToneFrames
 	case res.Received == 0:
 		return errors.New("no RTP came back")
 	case expectTone && res.ToneFrames < minToneFrames:
-		return fmt.Errorf("the %.0f Hz tone came back in %d packets, want at least %d", mo.ToneHz, res.ToneFrames, minToneFrames)
+		return fmt.Errorf("the %.0f Hz tone came back in %d packets, want at least %d", mo.expectHz(), res.ToneFrames, minToneFrames)
 	case time.Duration(res.Loud)*frame < expectAudio:
 		return fmt.Errorf("%s of non-silent audio came back, want at least %s", time.Duration(res.Loud)*frame, expectAudio)
 	case time.Duration(res.Voice)*frame < minVoice:

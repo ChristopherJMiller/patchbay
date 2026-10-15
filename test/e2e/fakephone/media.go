@@ -19,8 +19,11 @@ import (
 type mediaOptions struct {
 	// Duration is how long the tone is sent.
 	Duration time.Duration
-	// ToneHz is the frequency sent and looked for.
+	// ToneHz is the frequency sent.
 	ToneHz float64
+	// ExpectHz is the frequency looked for in what comes back; 0 is ToneHz
+	// (the echo).
+	ExpectHz float64
 	// Tail is how long to keep listening after the last packet is sent, for
 	// echoed audio still in flight.
 	Tail time.Duration
@@ -39,6 +42,14 @@ type mediaResult struct {
 	// FirstTone is how long after the first packet was sent the tone first
 	// came back: the echo path's latency. Zero if it never did.
 	FirstTone time.Duration
+}
+
+// expectHz is the frequency the receiver measures.
+func (o mediaOptions) expectHz() float64 {
+	if o.ExpectHz != 0 {
+		return o.ExpectHz
+	}
+	return o.ToneHz
 }
 
 func (r mediaResult) String() string {
@@ -65,7 +76,7 @@ func runMedia(ctx context.Context, conn *net.UDPConn, remote netip.AddrPort, opt
 	recvDone := make(chan error, 1)
 	var mu sync.Mutex // guards res's receive fields
 	go func() {
-		recvDone <- receive(conn, opts.ToneHz, start, &mu, &res)
+		recvDone <- receive(conn, opts.expectHz(), start, &mu, &res)
 	}()
 
 	sendErr := func() error {
