@@ -82,7 +82,7 @@ metadata: {name: desk}
 spec:
   model: cisco-7945
   mac: D0C78915E8C8
-  number: 100
+  number: "100"
   label: Desk
 status:                          # controller-written only
   state: Registered              # display summary; tools read conditions
@@ -94,21 +94,24 @@ status:                          # controller-written only
 ---
 kind: Softphone
 metadata: {name: chris-laptop}
-spec: {number: 150, label: "Chris (laptop)"}
+spec: {number: "150", label: "Chris (laptop)"}
 status:
   provisioningURL: http://192.168.0.240:8088/p/<one-time token>
   conditions: [Registered]
 ---
 kind: Person                     # dialling it rings all of that person's phones
 metadata: {name: chris}
-spec: {number: 301, name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
+spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
 ---
 kind: Stream                     # release B (§9)
 metadata: {name: king5}
-spec: {number: 705, name: KING 5, source: http://192.168.0.58:5004/auto/v5.1}
+spec: {number: "705", name: KING 5, source: http://192.168.0.58:5004/auto/v5.1}
 ```
 
 **Numbers.**
+- A number is a string of digits, quoted in YAML (`number: "100"`). A string
+  keeps leading zeros, and YAML 1.1 would read a bare `010` as octal 8. The API
+  server rejects a bare integer.
 - On every pass the controller builds the full number table from all
   resources. That build is a pure function.
 - If two resources claim a number, the older one (by `creationTimestamp`) keeps

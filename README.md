@@ -24,7 +24,7 @@ spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-lapt
 ```
 
 Numbers are strings: quote them (`number: "100"`). A bare `number: 100` is
-refused by the API server; see CLAUDE.md, "Deviations from the design".
+refused by the API server (design §4).
 
 It is scoped to the hardware in one house (Cisco CP-7945G/7965G/7975G desk
 phones on SIP firmware, and Linphone softphones), LAN only, with no outside

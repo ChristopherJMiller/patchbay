@@ -8,9 +8,8 @@ import (
 
 // Number is a dialable number: one or more ASCII digits, written as a string.
 // Quote it in YAML (`number: "100"`). A bare `number: 100` is rejected by the
-// API server ("must be of type string"), although design §4's examples write
-// it bare: that is a deliberate deviation (see CLAUDE.md). A string keeps
-// leading zeros, and avoids YAML 1.1 reading `number: 010` as octal 8.
+// API server ("must be of type string"). A string keeps leading zeros, and
+// avoids YAML 1.1 reading `number: 010` as octal 8 (design §4).
 //
 // The schema checks only that it is digits. Which range means what (1XX
 // devices, 3XX people, 7XX streams, ...) is the number plan, which lives in

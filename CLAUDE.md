@@ -46,11 +46,6 @@ phone all build on them.
 `docs/design.md` is a verbatim copy of the approved spec, so where the code
 departs from it, the departure is recorded here (and in the code's docs).
 
-- **Numbers are strings.** `number: "100"`, quoted. Design §4's examples
-  write `number: 100`, which the API server rejects ("must be of type
-  string"); a string keeps leading zeros and dodges YAML 1.1 reading `010`
-  as 8. Resources copied from the design need their numbers quoted. The spec
-  should be updated to match.
 - **Per-device config versions.** `compile.Bundle.DeviceVersions`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
