@@ -229,9 +229,6 @@ func TestRunLinphone(t *testing.T) {
 // which step; the JSON log has the failure; a finished exitWhenDone
 // script exits 0; no script is an error.
 func TestStepFailureExits(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs the test binary as fakephone")
-	}
 	run := func(scriptJSON string) (int, string, string) {
 		cmd := exec.CommandContext(context.Background(), os.Args[0], "run", "--local-ip", "127.0.0.1",
 			"--sip-port", strconv.Itoa(freePort(t)))

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -98,6 +99,17 @@ func TestParseSEP(t *testing.T) {
 				t.Errorf("parsed\n%+v\nwant\n%+v", got, want)
 			}
 		})
+	}
+
+	// The golden as rendered, its placeholder unresolved, is refused; so is
+	// a transport the 79x5 driver never renders (3).
+	desk := readGolden(t, filepath.Join(ciscoGoldens, "desk/tftp/SEPD0C78915E8C8.cnf.xml"))
+	if _, err := parseSEP(desk, "SEPD0C78915E8C8.cnf.xml"); err == nil || !errors.Is(err, errPlaceholder) {
+		t.Errorf("an unresolved password: %v", err)
+	}
+	tlp3 := strings.Replace(string(resolve(desk, password)), "<transportLayerProtocol>1<", "<transportLayerProtocol>3<", 1)
+	if _, err := parseSEP([]byte(tlp3), "SEPD0C78915E8C8.cnf.xml"); err == nil || !strings.Contains(err.Error(), "transportLayerProtocol \"3\"") {
+		t.Errorf("transportLayerProtocol 3: %v", err)
 	}
 }
 
