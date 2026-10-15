@@ -234,7 +234,7 @@ func (f *facts) unknown() drivers.Decision {
 			drivers.Condition(v1alpha1.ConditionReady, status, problem, msg),
 			drivers.Condition(v1alpha1.ConditionRegistered, status, problem, msg),
 		},
-		StatusPatch: cloneMemory(f.dev.Memory),
+		StatusPatch: f.dev.Memory.DeepCopy(),
 	}
 }
 
@@ -363,7 +363,7 @@ func noRuleMatched(f *facts) drivers.Decision {
 			drivers.Condition(v1alpha1.ConditionReady, metav1.ConditionUnknown, string(drivers.StateUnknown), msg),
 			drivers.Condition(v1alpha1.ConditionRegistered, metav1.ConditionUnknown, string(drivers.StateUnknown), msg),
 		},
-		StatusPatch: cloneMemory(f.dev.Memory),
+		StatusPatch: f.dev.Memory.DeepCopy(),
 	}
 }
 

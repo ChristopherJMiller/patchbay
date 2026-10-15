@@ -46,7 +46,7 @@ import (
 // that spent the token count again a poll later and rotate a second time,
 // or make the pre-reissue fetch count after a reissue.
 func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers.Profile) drivers.Memory {
-	m := cloneMemory(dev.Memory)
+	m := dev.Memory.DeepCopy()
 	d := obs.Device
 	if d == nil {
 		return m
@@ -55,7 +55,7 @@ func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers
 
 	if m.FirstSeen == nil && (len(d.Fetches) > 0 || reg != nil) {
 		first := floorSecond(now)
-		if f, ok := earliestFetch(d.Fetches); ok {
+		if f, ok := drivers.EarliestFetch(d.Fetches); ok {
 			first = floorSecond(f.At)
 		}
 		m.FirstSeen = &first
@@ -63,12 +63,12 @@ func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers
 
 	if reg != nil && reg.Address != "" {
 		m.Address = reg.Address
-	} else if f, ok := latestFetch(d.Fetches, func(f agentapi.Fetch) bool { return f.Source != "" }); ok &&
+	} else if f, ok := drivers.LatestFetch(d.Fetches, func(f agentapi.Fetch) bool { return f.Source != "" }); ok &&
 		(m.LastRegistered == nil || f.At.After(m.LastRegistered.Time)) {
 		m.Address = f.Source
 	}
 
-	if f, ok := latestFetch(d.Fetches, func(f agentapi.Fetch) bool { return isConfigFetch(dev.ID, f, m) }); ok {
+	if f, ok := drivers.LatestFetch(d.Fetches, func(f agentapi.Fetch) bool { return isConfigFetch(dev.ID, f, m) }); ok {
 		at := floorSecond(f.At)
 		last := m.LastConfigFetch
 		if last == nil || at.After(last.At.Time) || (at.Equal(&last.At) && f.Version != last.Version) {
@@ -102,8 +102,8 @@ func isConfigFetch(id string, f agentapi.Fetch, m drivers.Memory) bool {
 }
 
 // liveRegistration returns the device's registration when it is a live
-// contact: not expired (drivers.RegistrationLive), and not failing qualify when the profile qualifies
-// at all. Otherwise nil.
+// contact: not expired (drivers.RegistrationLive), and not failing qualify
+// when the profile qualifies at all. Otherwise nil.
 func liveRegistration(d *agentapi.DeviceObservations, now time.Time, p drivers.Profile) *agentapi.Registration {
 	if d == nil || d.Registration == nil {
 		return nil
@@ -123,54 +123,8 @@ func fetchedAfter(m drivers.Memory, t time.Time) bool {
 	return m.LastConfigFetch != nil && m.LastConfigFetch.At.After(t)
 }
 
-func earliestFetch(fs []agentapi.Fetch) (agentapi.Fetch, bool) {
-	var out agentapi.Fetch
-	found := false
-	for _, f := range fs {
-		if !found || f.At.Before(out.At) {
-			out, found = f, true
-		}
-	}
-	return out, found
-}
+// floorSecond and ceilSecond are drivers.FloorSecond and CeilSecond as the
+// metav1.Time status stores.
+func floorSecond(t time.Time) metav1.Time { return metav1.NewTime(drivers.FloorSecond(t)) }
 
-// latestFetch returns the latest fetch that keep accepts; of several at the
-// same time, the last in the log (which is oldest first).
-func latestFetch(fs []agentapi.Fetch, keep func(agentapi.Fetch) bool) (agentapi.Fetch, bool) {
-	var out agentapi.Fetch
-	found := false
-	for _, f := range fs {
-		if keep(f) && (!found || !f.At.Before(out.At)) {
-			out, found = f, true
-		}
-	}
-	return out, found
-}
-
-func floorSecond(t time.Time) metav1.Time {
-	return metav1.NewTime(t.UTC().Truncate(time.Second))
-}
-
-func ceilSecond(t time.Time) metav1.Time {
-	t = t.UTC()
-	f := t.Truncate(time.Second)
-	if f.Before(t) {
-		f = f.Add(time.Second)
-	}
-	return metav1.NewTime(f)
-}
-
-// cloneMemory deep-copies a memory, so a Decision never shares pointers
-// with the Device it came from.
-func cloneMemory(m drivers.Memory) drivers.Memory {
-	return drivers.Memory{
-		FirstSeen:        m.FirstSeen.DeepCopy(),
-		Firmware:         m.Firmware,
-		Address:          m.Address,
-		LastConfigFetch:  m.LastConfigFetch.DeepCopy(),
-		LastRegistered:   m.LastRegistered.DeepCopy(),
-		UpgradeStartedAt: m.UpgradeStartedAt.DeepCopy(),
-		LastAction:       m.LastAction.DeepCopy(),
-		HandledRequest:   m.HandledRequest,
-	}
-}
+func ceilSecond(t time.Time) metav1.Time { return metav1.NewTime(drivers.CeilSecond(t)) }

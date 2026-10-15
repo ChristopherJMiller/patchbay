@@ -155,7 +155,7 @@ func (d *Driver) newInput(dev drivers.Device, obs drivers.Observations, s driver
 	}
 	sgn := ConfigFileName(dev.MAC) + ".sgn"
 	for _, f := range in.d.Fetches {
-		at := floorSecond(f.At)
+		at := drivers.FloorSecond(f.At)
 		if f.Result == agentapi.FetchNotFound && loadFiles[f.File] && !at.Before(since) {
 			in.fwRequested = true
 		}
@@ -327,7 +327,7 @@ func (in *input) unknown() drivers.Decision {
 			drivers.Condition(v1alpha1.ConditionReady, status, reason, msg),
 			drivers.Condition(v1alpha1.ConditionRegistered, status, reason, msg),
 		},
-		StatusPatch: copyMemory(in.dev.Memory),
+		StatusPatch: in.dev.Memory.DeepCopy(),
 	}
 }
 
@@ -369,15 +369,15 @@ func (in *input) upgrading() drivers.Decision {
 	if m.UpgradeStartedAt == nil {
 		// Only the firmware-fetch clause matches without UpgradeStartedAt,
 		// so there are fetches; the earliest of the last 20 min is the start.
-		start := floorSecond(in.now)
+		start := drivers.FloorSecond(in.now)
 		var fetches []agentapi.Fetch
 		if in.d != nil {
 			fetches = in.d.Fetches
 		}
 		for _, f := range fetches {
 			if f.Result == agentapi.FetchServed && isFirmwareFile(f.File) &&
-				in.now.Sub(f.At) <= upgradeStuckAfter && floorSecond(f.At).Before(start) {
-				start = floorSecond(f.At)
+				in.now.Sub(f.At) <= upgradeStuckAfter && drivers.FloorSecond(f.At).Before(start) {
+				start = drivers.FloorSecond(f.At)
 			}
 		}
 		m.UpgradeStartedAt = timePtr(start)
@@ -502,7 +502,7 @@ func (in *input) noRuleMatched() drivers.Decision {
 		Conditions: []metav1.Condition{
 			drivers.Condition(v1alpha1.ConditionReady, metav1.ConditionUnknown, reasonNoRuleMatched, "no rule matched"),
 		},
-		StatusPatch: copyMemory(in.dev.Memory),
+		StatusPatch: in.dev.Memory.DeepCopy(),
 	}
 }
 
@@ -552,7 +552,7 @@ func (in *input) resyncedV() bool {
 // resync records a resync to the current config version in m and returns it.
 func (in *input) resync(m *drivers.Memory, attempts int32) []drivers.Action {
 	v := in.dev.ConfigVersion
-	m.LastAction = &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: v, At: metav1.NewTime(ceilSecond(in.now)), Attempts: attempts}
+	m.LastAction = &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: v, At: metav1.NewTime(drivers.CeilSecond(in.now)), Attempts: attempts}
 	return []drivers.Action{{Kind: v1alpha1.ActionResync, Version: v}}
 }
 

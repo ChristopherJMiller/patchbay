@@ -22,6 +22,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
 
 var (
@@ -622,5 +623,25 @@ func TestDeviceLeavingTheIndexLosesItsHistory(t *testing.T) {
 	f.idx = in.Compile(t).Index()
 	if d := f.device(front); d != nil {
 		t.Errorf("front with a new MAC kept the old phone's history: %+v", d)
+	}
+}
+
+// TestMACFilesAreTheDriversNames: the store attributes a fetch by the file
+// names the 79x5 driver renders and watches for (its config file, and the
+// signed one a phone with an old trust list asks for), so the two cannot
+// drift apart unnoticed.
+func TestMACFilesAreTheDriversNames(t *testing.T) {
+	f := newFixture(t)
+	for _, file := range []string{cisco79x5.ConfigFileName(deskMAC), cisco79x5.ConfigFileName(deskMAC) + ".sgn"} {
+		f.store.RecordFetch(sensor.FetchEvent{
+			Transport: api.TransportTFTP, File: file, Result: api.FetchNotFound, At: t0, Source: strangeIP,
+		})
+	}
+	var got []string
+	for _, fe := range f.fetchesOf(desk) {
+		got = append(got, fe.File)
+	}
+	if want := []string{cisco79x5.ConfigFileName(deskMAC), cisco79x5.ConfigFileName(deskMAC) + ".sgn"}; !slices.Equal(got, want) {
+		t.Errorf("desk's fetches %v, want %v: the store does not know the driver's file names", got, want)
 	}
 }

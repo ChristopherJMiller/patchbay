@@ -45,9 +45,9 @@ const registeredResolution = time.Minute
 // marks that later fetches are compared with (LastRegistered here, a
 // resync's LastAction.At in the rows) round up, so nothing that happened
 // before a mark can look newer than it once the mark is stored. The agent's
-// times are compared with memory at whole seconds too (floorSecond).
+// times are compared with memory at whole seconds too (drivers.FloorSecond).
 func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers.Profile) drivers.Memory {
-	m := copyMemory(dev.Memory)
+	m := dev.Memory.DeepCopy()
 	d := obs.Device
 	if d == nil {
 		return m
@@ -55,24 +55,24 @@ func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers
 	live := liveContact(d, now, p)
 
 	if m.FirstSeen == nil {
-		if f, ok := earliestFetch(d.Fetches); ok {
-			m.FirstSeen = timePtr(floorSecond(f.At))
+		if f, ok := drivers.EarliestFetch(d.Fetches); ok {
+			m.FirstSeen = timePtr(drivers.FloorSecond(f.At))
 		} else if live {
-			m.FirstSeen = timePtr(floorSecond(now))
+			m.FirstSeen = timePtr(drivers.FloorSecond(now))
 		}
 	}
 
 	if live && d.Registration.Address != "" {
 		m.Address = d.Registration.Address
-	} else if f, ok := latestFetch(d.Fetches, nil); ok && f.Source != "" {
+	} else if f, ok := drivers.LatestFetch(d.Fetches, nil); ok && f.Source != "" {
 		m.Address = f.Source
 	}
 
 	cfg := ConfigFileName(dev.MAC)
-	if f, ok := latestFetch(d.Fetches, func(f agentapi.Fetch) bool {
+	if f, ok := drivers.LatestFetch(d.Fetches, func(f agentapi.Fetch) bool {
 		return f.File == cfg && f.Result == agentapi.FetchServed && f.Version != ""
 	}); ok {
-		at := floorSecond(f.At)
+		at := drivers.FloorSecond(f.At)
 		last := m.LastConfigFetch
 		if last == nil || at.After(last.At.Time) || (at.Equal(last.At.Time) && f.Version != last.Version) {
 			m.LastConfigFetch = &v1alpha1.ConfigFetch{Version: f.Version, At: metav1.NewTime(at)}
@@ -102,7 +102,7 @@ func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers
 	if live && (m.LastRegistered == nil ||
 		now.Sub(m.LastRegistered.Time) >= registeredResolution ||
 		fetchedAfter(m, m.LastRegistered.Time)) {
-		m.LastRegistered = timePtr(ceilSecond(now))
+		m.LastRegistered = timePtr(drivers.CeilSecond(now))
 	}
 	return m
 }
@@ -120,7 +120,7 @@ func freshScrape(w *agentapi.WebScrape, m drivers.Memory, lastFw time.Time) *age
 	if f := m.LastConfigFetch; f != nil && f.At.After(since) {
 		since = f.At.Time
 	}
-	if floorSecond(w.At).Before(since) {
+	if drivers.FloorSecond(w.At).Before(since) {
 		return nil
 	}
 	return w
@@ -132,7 +132,7 @@ func lastFirmwareFetch(fs []agentapi.Fetch) time.Time {
 	var out time.Time
 	for _, f := range fs {
 		if f.Result == agentapi.FetchServed && isFirmwareFile(f.File) {
-			if at := floorSecond(f.At); at.After(out) {
+			if at := drivers.FloorSecond(f.At); at.After(out) {
 				out = at
 			}
 		}
@@ -193,60 +193,7 @@ func runsLoad(reported string, load drivers.FirmwareLoad) bool {
 	return false
 }
 
-func earliestFetch(fs []agentapi.Fetch) (agentapi.Fetch, bool) {
-	var out agentapi.Fetch
-	for i, f := range fs {
-		if i == 0 || f.At.Before(out.At) {
-			out = f
-		}
-	}
-	return out, len(fs) > 0
-}
-
-// latestFetch returns the latest fetch that keep accepts (any, if keep is
-// nil); of several at the same time, the last in the log (oldest first).
-func latestFetch(fs []agentapi.Fetch, keep func(agentapi.Fetch) bool) (agentapi.Fetch, bool) {
-	var out agentapi.Fetch
-	found := false
-	for _, f := range fs {
-		if (keep == nil || keep(f)) && (!found || !f.At.Before(out.At)) {
-			out, found = f, true
-		}
-	}
-	return out, found
-}
-
-// floorSecond is t rounded down to a whole second, in UTC: an observed
-// event as status will store it.
-func floorSecond(t time.Time) time.Time {
-	return t.UTC().Truncate(time.Second)
-}
-
-// ceilSecond is t rounded up to a whole second, in UTC: a mark that nothing
-// before t may look newer than once stored.
-func ceilSecond(t time.Time) time.Time {
-	f := floorSecond(t)
-	if f.Before(t) {
-		f = f.Add(time.Second)
-	}
-	return f
-}
-
 func timePtr(t time.Time) *metav1.Time {
 	mt := metav1.NewTime(t)
 	return &mt
-}
-
-// copyMemory deep-copies memory, so a Decision never aliases the device's.
-func copyMemory(m drivers.Memory) drivers.Memory {
-	return drivers.Memory{
-		FirstSeen:        m.FirstSeen.DeepCopy(),
-		Firmware:         m.Firmware,
-		Address:          m.Address,
-		LastConfigFetch:  m.LastConfigFetch.DeepCopy(),
-		LastRegistered:   m.LastRegistered.DeepCopy(),
-		UpgradeStartedAt: m.UpgradeStartedAt.DeepCopy(),
-		LastAction:       m.LastAction.DeepCopy(),
-		HandledRequest:   m.HandledRequest,
-	}
 }
