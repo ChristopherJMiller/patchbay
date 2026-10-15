@@ -370,6 +370,27 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 	return b, nil
 }
 
+// CheckDrivers checks the settings against every registered driver that
+// refuses some install-wide settings (drivers.SettingsChecker): the
+// controller runs it at start, with Validate, so a value no device could
+// be rendered with (a time zone the 79x5 has no name for) stops it, rather
+// than fail every compile once the first such device exists.
+func (s Settings) CheckDrivers(reg *drivers.Registry) error {
+	if reg == nil {
+		return errors.New("settings: no driver registry")
+	}
+	ctx := renderContext(s)
+	var errs []error
+	for _, d := range reg.Drivers() {
+		if c, ok := d.(drivers.SettingsChecker); ok {
+			if err := c.CheckSettings(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("settings: %w", err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // renderContext is what every device's Render gets but its password.
 func renderContext(s Settings) drivers.RenderContext {
 	base := fmt.Sprintf("http://%s:%d", s.PBXAddress, s.DeviceHTTPPort)

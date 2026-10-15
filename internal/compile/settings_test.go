@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
 )
 
 func TestSettingsValidate(t *testing.T) {
@@ -63,5 +64,27 @@ func TestSettingsValidate(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: Validate() = %v, want it to say %q", tc.name, err, tc.want)
 		}
+	}
+}
+
+// TestCheckDrivers: settings every registered driver can render with pass;
+// a time zone the 79x5 cannot name is refused at controller start
+// (otherwise the first Phone makes every compile fail, and the install
+// freezes with only a CompileFailed Event to say why).
+func TestCheckDrivers(t *testing.T) {
+	reg, err := builtin.Registry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := houseSettings()
+	if err := s.CheckDrivers(reg); err != nil {
+		t.Errorf("the house's settings: %v", err)
+	}
+	s.Timezone = "America/Vancouver"
+	if err := s.CheckDrivers(reg); err == nil || !strings.Contains(err.Error(), "cisco79x5") || !strings.Contains(err.Error(), "America/Vancouver") {
+		t.Errorf("America/Vancouver: %v, want cisco79x5's refusal", err)
+	}
+	if err := s.CheckDrivers(nil); err == nil {
+		t.Error("no registry: accepted")
 	}
 }

@@ -78,6 +78,9 @@ replica decides at a time when --leader-elect is set.`,
 		if err != nil {
 			return fmt.Errorf("controller: %w", err)
 		}
+		if err := s.CheckDrivers(reg); err != nil {
+			return fmt.Errorf("controller: %s: %w", opts.SettingsFile, err)
+		}
 		cfg, err := g.restConfig()
 		if err != nil {
 			return err

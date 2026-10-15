@@ -123,8 +123,9 @@ func TestControllerRequiresNamespaceAndFullname(t *testing.T) {
 }
 
 // TestControllerReadsItsSettings: the settings file is read and checked
-// before any kubeconfig: a missing file, settings that do not parse, and
-// settings of another install each stop it, naming why.
+// before any kubeconfig: a missing file, settings that do not parse,
+// settings of another install, and settings a driver cannot render with
+// (drivers.SettingsChecker) each stop it, naming why.
 func TestControllerReadsItsSettings(t *testing.T) {
 	dir := t.TempDir()
 	good, err := os.ReadFile(filepath.Join("..", "..", "internal", "controller", "settings", "testdata", "chart-defaults.json"))
@@ -144,6 +145,8 @@ func TestControllerReadsItsSettings(t *testing.T) {
 		{"missing", filepath.Join(dir, "nothing.json"), "patchbay", "nothing.json"},
 		{"not settings", write("bad.json", `{"pbxAddress": "192.0.2.10", "surprise": 1}`), "patchbay", "surprise"},
 		{"another install's", write("other.json", string(good)), "other", "other-ami"},
+		{"a time zone the 79x5 cannot name", write("tz.json", strings.Replace(string(good), `"timezone": "UTC"`, `"timezone": "America/Vancouver"`, 1)),
+			"patchbay", "America/Vancouver"},
 		{"good, then the kubeconfig", write("good.json", string(good)), "patchbay", "kubeconfig"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -56,7 +56,8 @@ var (
 //
 // Everything that decides or writes runs only on the leader: the
 // reconcilers and the poller. s is the install's settings (settings.Load,
-// then install.CheckSettings); reg the driver registry
+// then install.CheckSettings; Setup checks it against reg too,
+// compile.Settings.CheckDrivers); reg the driver registry
 // (builtin.Registry()).
 func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Registry) error {
 	names := install.NewNames(opts.Fullname)
@@ -66,14 +67,17 @@ func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Regi
 	if err := install.CheckSettings(s, names); err != nil {
 		return fmt.Errorf("controller: settings: %w", err)
 	}
+	if reg == nil {
+		return errors.New("controller: no driver registry")
+	}
+	if err := s.CheckDrivers(reg); err != nil {
+		return fmt.Errorf("controller: %w", err)
+	}
 	if opts.Namespace == "" {
 		return errors.New("controller: namespace is required")
 	}
 	if opts.AgentURL == "" {
 		opts.AgentURL = install.AgentURL(names, opts.Namespace, agentapi.DefaultPort)
-	}
-	if reg == nil {
-		return errors.New("controller: no driver registry")
 	}
 	registerer := opts.Registerer
 	if registerer == nil {

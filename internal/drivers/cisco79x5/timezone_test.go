@@ -2,10 +2,12 @@ package cisco79x5_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 	_ "time/tzdata" // the zone database from the binary, not the host
 
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
 
@@ -107,5 +109,20 @@ func TestWindowsTimeZone(t *testing.T) {
 		if got, ok := cisco79x5.WindowsTimeZone(unknown); ok || got != "" {
 			t.Errorf("WindowsTimeZone(%q) = %q, %v; want \"\", false", unknown, got, ok)
 		}
+	}
+}
+
+// TestCheckSettings: the install-wide time zone is checked when the
+// controller starts, not when the first Phone is compiled: a zone the
+// 79x5 has no name for is refused with the zones it does take.
+func TestCheckSettings(t *testing.T) {
+	d := cisco79x5.New()
+	var _ drivers.SettingsChecker = d
+	if err := d.CheckSettings(drivers.RenderContext{Timezone: "America/Los_Angeles"}); err != nil {
+		t.Errorf("America/Los_Angeles: %v", err)
+	}
+	err := d.CheckSettings(drivers.RenderContext{Timezone: "America/Vancouver"})
+	if err == nil || !strings.Contains(err.Error(), "America/Vancouver") || !strings.Contains(err.Error(), "America/New_York") {
+		t.Errorf("America/Vancouver: %v, want a refusal naming it and the zones the 79x5 takes", err)
 	}
 }

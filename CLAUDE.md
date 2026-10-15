@@ -182,6 +182,11 @@ departs from it, the departure is recorded here (and in the code's docs).
   from its values, the controller reads the mounted file once at start
   (strict JSON, `install.CheckSettings`), and a `checksum/settings`
   annotation rolls the controller when one changes. No watch, no RBAC.
+  The controller also checks them against every driver that refuses some
+  install-wide values (`drivers.SettingsChecker`,
+  `compile.Settings.CheckDrivers`): a time zone the 79x5 has no name for
+  stops it at start, naming the zones it takes, instead of failing every
+  compile once the first Phone exists.
 - **The controller mints the agent token** (§4) into `<fullname>-agent-token`;
   the chart's override and its "create it first" note are gone. The PBX
   pod's Secret volume is not optional, so the pod waits in

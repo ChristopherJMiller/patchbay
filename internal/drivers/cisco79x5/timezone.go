@@ -1,5 +1,14 @@
 package cisco79x5
 
+import (
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+)
+
 // windowsTimeZones maps IANA zone names to the Windows-style names the 79x5
 // takes in dateTimeSetting/timeZone. Every value is in the time-zone list of
 // https://usecallmanager.nz/sepmac-cnf-xml.html (checked 2026-10-15); a name
@@ -58,4 +67,19 @@ var windowsTimeZones = map[string]string{
 func WindowsTimeZone(iana string) (string, bool) {
 	name, ok := windowsTimeZones[iana]
 	return name, ok
+}
+
+// CheckSettings refuses a time zone WindowsTimeZone cannot map
+// (drivers.SettingsChecker), listing the ones it can.
+func (d *Driver) CheckSettings(ctx drivers.RenderContext) error {
+	if _, ok := WindowsTimeZone(ctx.Timezone); !ok {
+		return fmt.Errorf("cisco79x5: the 79x5 has no time zone for %q; use one of %s",
+			ctx.Timezone, strings.Join(TimeZones(), ", "))
+	}
+	return nil
+}
+
+// TimeZones lists the IANA zone names WindowsTimeZone maps, sorted.
+func TimeZones() []string {
+	return slices.Sorted(maps.Keys(windowsTimeZones))
 }

@@ -25,7 +25,12 @@ fullnameOverride: ""
 # reads at start and compiles every phone's config from. Changing one
 # restarts the controller (a checksum annotation), which recompiles.
 
-# The time zone phones show, as an IANA name (America/Los_Angeles).
+# The time zone phones show, as an IANA name. The Cisco 79x5 takes only
+# zones it has a name for: America/Los_Angeles, America/Denver,
+# America/Phoenix, America/Chicago, America/New_York, America/Anchorage,
+# Pacific/Honolulu, Europe/London and UTC (and their tzdata aliases, such
+# as US/Pacific). The controller refuses to start with any other, naming
+# them (cisco79x5.TimeZones).
 timezone: UTC
 # The NTP server phones use, as an IP address: the voice VLAN's gateway.
 ntpServer: 192.168.20.1

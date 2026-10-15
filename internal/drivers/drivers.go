@@ -738,6 +738,17 @@ func ValidateProfile(model string, p Profile) error {
 // ErrUnknownModel is returned for a model no driver serves.
 var ErrUnknownModel = errors.New("drivers: no driver for model")
 
+// SettingsChecker is a Driver that cannot render with some install-wide
+// settings (the 79x5 has names for only some time zones). The controller
+// checks every registered driver at start (compile.Settings.CheckDrivers),
+// so a setting no device of the driver could be rendered with stops it
+// with a clear message, rather than fail every compile once the first such
+// device exists. ctx is the RenderContext every device gets, without a
+// password.
+type SettingsChecker interface {
+	CheckSettings(ctx RenderContext) error
+}
+
 // ErrInvalidSpec is what Render's error wraps when the device's spec breaks
 // one of the driver's rules (see Driver.Render). Compile leaves such a
 // device out of the bundle instead of failing.
