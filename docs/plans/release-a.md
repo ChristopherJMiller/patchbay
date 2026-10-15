@@ -3485,6 +3485,14 @@ than stated (3). What changed, and what pins it:
 | 9 | (minor) Cache lag was a reconcile error: the bundle reconciler's create (AlreadyExists) and update (Conflict) from a stale copy, the Person/Stream status writes (Conflict), each an ERROR, counted, backed off | a requeue after 1 s with a V(1) line (`bundle.StaleRetry`); other API errors are still returned. The device reconcilers keep their stale-cache guard (6.2.11), and a real conflict there is still an error | `TestCacheLagIsNotAnError`, numbers `TestStatusWriteError` |
 | 10 | (nit) `go test -count=2 ./internal/controller/` failed: controller-runtime's process-wide controller-name check | the package's tests turn it off (`export_test.go`); the binary keeps it | `go test -count=2` |
 
+Verified after the fixes (this workstation, images cached): `make e2e` from
+scratch 15/15 in 607 s wall (`go test` 586 s; TestPhoneLifecycle 376 s,
+TestDeskLoop 123 s, TestRollback 78 s, TestProvisioningOneTime 17 s), no
+cluster before or after. Then the reused-cluster case of finding 8:
+`make e2e-up`, and `TestPhoneLifecycle` alone twice on that cluster with
+`PATCHBAY_E2E_REUSE=1` (the agent not restarted between): both passed
+(362 s each).
+
 ---
 
 ## 7. Agent ↔ controller interfaces
