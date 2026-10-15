@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 )
@@ -112,17 +110,20 @@ func NewManifest(reg *drivers.Registry) (*Manifest, error) {
 	return m, nil
 }
 
-// plainName refuses anything but a single, printable file name.
+// plainName refuses anything but a single file name of printable ASCII
+// without spaces: what a phone asks for over TFTP, and all the file server
+// ever looks up (it reports any other name, quoted, as not found).
 func plainName(s string) error {
 	switch {
 	case s == "" || s == "." || s == "..":
 		return errors.New("empty, \".\" or \"..\"")
 	case strings.ContainsAny(s, "/\\"):
 		return errors.New("holds a slash")
-	case !utf8.ValidString(s):
-		return errors.New("not UTF-8")
-	case strings.ContainsFunc(s, unicode.IsControl):
-		return errors.New("holds a control character")
+	}
+	for i := range len(s) {
+		if c := s[i]; c <= ' ' || c > '~' {
+			return errors.New("holds a byte that is not printable ASCII")
+		}
 	}
 	return nil
 }

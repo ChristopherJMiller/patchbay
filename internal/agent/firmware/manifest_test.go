@@ -143,6 +143,9 @@ func TestNewManifestRefuses(t *testing.T) {
 		"a load name with a newline":      {one(load("a\n", file("a\n", "x.sbn", false)))},
 		"a file name with a NUL":          {one(load("L", file("L", "x\x00", false)))},
 		"a file name with a control":      {one(load("L", file("L", "x\x7f", false)))},
+		"a file name with a space":        {one(load("L", file("L", "x y", false)))},
+		"a file name not ASCII":           {one(load("L", file("L", "caf\u00e9", false)))},
+		"a load name not ASCII":           {one(load("caf\u00e9", file("caf\u00e9", "x.sbn", false)))},
 	} {
 		reg, err := drivers.NewRegistry(ds...)
 		if err != nil {
