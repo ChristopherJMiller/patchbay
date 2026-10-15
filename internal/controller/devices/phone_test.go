@@ -403,9 +403,15 @@ func TestApplyFailedControllerHalf(t *testing.T) {
 			deskEvent(corev1.EventTypeWarning, "ApplyFailed", "Decide",
 				"config version "+broken[:12]+" was not applied: "+agentError))
 
-		f.at(time.Minute + 5*time.Second)
+		// A minute on, its registration is remembered anew (a status write)
+		// while the version is still refused: no second ApplyFailed.
+		writes := f.statusWrites.Load()
+		f.at(time.Minute + 15*time.Second)
 		f.see(ring)
 		f.reconcilePhone("desk")
+		if n := f.statusWrites.Load() - writes; n != 1 {
+			t.Errorf("%d status writes; want one (lastRegistered advanced)", n)
+		}
 		if e := f.rec.take(); len(e) != 0 {
 			t.Errorf("deciding again: events %v; want none", e)
 		}
