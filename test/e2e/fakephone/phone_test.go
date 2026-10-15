@@ -29,14 +29,29 @@ type registrar struct {
 	userAgts []string
 }
 
+// freePort is a loopback port free in both UDP and TCP at the time of the
+// call: a phone binds SIP on both, and a port free in TCP may be held in
+// UDP by another test binary (TFTP, RTP and AMI fakes run in parallel
+// under make test), which failed runs with EADDRINUSE. It binds UDP on
+// :0, then TCP on the same port, and tries again while that is taken.
 func freePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var lc net.ListenConfig
+	for range 50 {
+		udp, err := lc.ListenPacket(context.Background(), "udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := udp.LocalAddr().(*net.UDPAddr).Port
+		tcp, err := lc.Listen(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		_ = udp.Close()
+		if err == nil {
+			_ = tcp.Close()
+			return port
+		}
 	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port
+	t.Fatal("no loopback port free in both UDP and TCP in 50 tries")
+	return 0
 }
 
 func startRegistrar(t *testing.T, user, password string) *registrar {

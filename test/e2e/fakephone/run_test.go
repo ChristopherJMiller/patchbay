@@ -281,8 +281,18 @@ func TestRegisterExpectRefused(t *testing.T) {
 	if old.Status != 401 || old.PasswordSHA256 != sha("not-a-secret-stale") || !s.Registered {
 		t.Fatalf("refused register %+v registered=%t", old, s.Registered)
 	}
-	regs := pbx.registerLog()
-	if regs[len(regs)-1].CallID == pbx.okRegisters()[0].CallID {
+	// The refused one is the last REGISTER refused with credentials: the
+	// refresher may have sent another of the registration's since.
+	var refused *pbxRegister
+	for _, r := range pbx.registerLog() {
+		if r.Status == 401 && r.AuthUser != "" {
+			refused = &r
+		}
+	}
+	if refused == nil {
+		t.Fatal("the PBX refused no REGISTER that carried credentials")
+	}
+	if refused.CallID == pbx.okRegisters()[0].CallID {
 		t.Error("the refused REGISTER reused the registration's Call-ID")
 	}
 

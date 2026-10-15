@@ -64,11 +64,19 @@ func startRun(t *testing.T, sc script.Script, opts runOptions) *runHarness {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.stop = cancel
 	go func() { h.errc <- runScript(ctx, sc, opts) }()
+	// Started runs before the first step, so when the run has already ended
+	// (a step that fails at once) started holds the runner too: take it,
+	// and keep the error for wait.
 	select {
 	case h.r = <-started:
 	case err := <-h.errc:
-		cancel()
-		t.Fatalf("run did not start: %v", err)
+		select {
+		case h.r = <-started:
+			h.errc <- err
+		default:
+			cancel()
+			t.Fatalf("run did not start: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("run did not start within 5s")

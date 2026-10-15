@@ -165,16 +165,19 @@ func startPhone(ctx context.Context, cfg phoneConfig, log *slog.Logger) (*phone,
 	})
 	srv.OnNotify(func(req *sip.Request, tx sip.ServerTransaction) {
 		p.log.Debug("NOTIFY", "event", eventName(req), "body", string(req.Body()))
-		p.respond(req, tx, sip.StatusOK, "OK")
+		// Recorded before it is answered: a sender that waits for the
+		// answer before its next NOTIFY (a REFER's 100 Trying, then 200 OK)
+		// then finds them recorded in order. Neither handler blocks.
 		if cfg.OnNotify != nil {
 			cfg.OnNotify(req)
-			return
+		} else {
+			select {
+			case p.notifies <- req:
+			default:
+				p.log.Warn("NOTIFY dropped: nobody is waiting")
+			}
 		}
-		select {
-		case p.notifies <- req:
-		default:
-			p.log.Warn("NOTIFY dropped: nobody is waiting")
-		}
+		p.respond(req, tx, sip.StatusOK, "OK")
 	})
 
 	listen := net.JoinHostPort(cfg.LocalIP.String(), strconv.Itoa(cfg.SIPPort))

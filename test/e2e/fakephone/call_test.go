@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCallExpectTone: `call --expect-hz` counts the far phone's tone, not
@@ -40,12 +41,16 @@ func TestCallExpectTone(t *testing.T) {
 	if _, err := run("--expect-hz", "800"); err == nil || !strings.Contains(err.Error(), "the 800 Hz tone") {
 		t.Fatalf("expecting 800 Hz from a 600 Hz phone: %v", err)
 	}
+	// The fake counts a BYE after answering it, so the last one may still
+	// be on its way into the count when the call returns.
+	waitFor(t, 5*time.Second, "3 BYEs at the PBX", func() bool {
+		pbx.mu.Lock()
+		defer pbx.mu.Unlock()
+		return pbx.byes == 3
+	})
 	pbx.mu.Lock()
 	defer pbx.mu.Unlock()
 	if len(pbx.invites) != 3 || pbx.invites[0].Number != "600" || pbx.invites[0].AuthUser != "phone-kitchen" {
 		t.Errorf("the PBX saw %+v", pbx.invites)
-	}
-	if pbx.byes != 3 {
-		t.Errorf("the PBX saw %d BYEs, want 3", pbx.byes)
 	}
 }
