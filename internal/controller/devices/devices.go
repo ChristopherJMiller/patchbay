@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -37,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -119,17 +121,18 @@ func (c Config) validate() error {
 // engine is what the Phone and Softphone reconcilers share: everything but
 // reading the resource and writing its kind's status.
 type engine struct {
-	cfg  Config
-	now  func() time.Time
-	rand io.Reader
-	log  logr.Logger
+	writes *writes
+	cfg    Config
+	now    func() time.Time
+	rand   io.Reader
+	log    logr.Logger
 }
 
 func newEngine(cfg Config, controller string) (engine, error) {
 	if err := cfg.validate(); err != nil {
 		return engine{}, err
 	}
-	e := engine{cfg: cfg, now: cfg.Now, rand: cfg.Rand, log: cfg.Log.WithName(controller)}
+	e := engine{cfg: cfg, now: cfg.Now, rand: cfg.Rand, log: cfg.Log.WithName(controller), writes: &writes{before: map[types.NamespacedName]string{}}}
 	if e.now == nil {
 		e.now = time.Now
 	}
@@ -431,4 +434,73 @@ func short(v string) string {
 		return v[:12]
 	}
 	return v
+}
+
+// staleRetry is how soon a device is decided again when the cache still
+// serves the copy this reconciler wrote the status of (writes).
+const staleRetry = 250 * time.Millisecond
+
+// writes guards against deciding on a cached copy older than the
+// reconciler's own last status write. The manager's client reads from an
+// informer cache, which learns of a write a moment after it succeeds; a
+// reconcile in that moment (an event queued during the one that wrote)
+// would decide on the old status and repeat an action the write recorded,
+// such as a resync. For each resource it remembers the resourceVersion it
+// read before its last successful status write: a cached copy with exactly
+// that version predates the write, so the reconcile waits for the cache
+// (staleRetry) instead of deciding. Equality only: resourceVersions are
+// opaque.
+type writes struct {
+	mu     sync.Mutex
+	before map[types.NamespacedName]string
+}
+
+// stale reports whether the copy read (its resourceVersion) predates this
+// reconciler's last status write of the resource; a newer copy clears the
+// mark.
+func (w *writes) stale(key types.NamespacedName, resourceVersion string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	before, ok := w.before[key]
+	if !ok {
+		return false
+	}
+	if before == resourceVersion {
+		return true
+	}
+	delete(w.before, key)
+	return false
+}
+
+// wrote records a successful status write of a copy read at
+// resourceVersion.
+func (w *writes) wrote(key types.NamespacedName, resourceVersion string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.before[key] = resourceVersion
+}
+
+// forget drops a deleted resource.
+func (w *writes) forget(key types.NamespacedName) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.before, key)
+}
+
+// read gets the resource for a reconcile. ok is false when there is
+// nothing to decide now: it is gone, or the cache has not caught up with
+// the last status write (then res says when to look again).
+func (e *engine) read(ctx context.Context, key types.NamespacedName, obj client.Object) (res ctrl.Result, ok bool, err error) {
+	if err := e.cfg.Client.Get(ctx, key, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			e.writes.forget(key)
+			return ctrl.Result{}, false, nil
+		}
+		return ctrl.Result{}, false, err
+	}
+	if e.writes.stale(key, obj.GetResourceVersion()) {
+		e.log.V(1).Info("not deciding: the cache has not seen the last status write yet", "name", key.Name)
+		return ctrl.Result{RequeueAfter: staleRetry}, false, nil
+	}
+	return ctrl.Result{}, true, nil
 }

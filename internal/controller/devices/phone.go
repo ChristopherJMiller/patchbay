@@ -5,7 +5,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
@@ -29,9 +28,10 @@ func NewPhoneReconciler(cfg Config) (*PhoneReconciler, error) {
 // (docs/plans/release-a.md §6.2.6, W3.5).
 func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var p v1alpha1.Phone
-	if err := r.cfg.Client.Get(ctx, req.NamespacedName, &p); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	if res, ok, err := r.read(ctx, req.NamespacedName, &p); !ok {
+		return res, err
 	}
+	read := p.ResourceVersion
 	dev := drivers.PhoneDevice(&p)
 	v, ok, err := r.observe(ctx, dev.ID)
 	if err != nil || !ok {
@@ -56,6 +56,7 @@ func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if err := r.cfg.Client.Status().Update(ctx, &p); err != nil {
 			return ctrl.Result{}, statusWriteError("Phone", p.Name, err)
 		}
+		r.writes.wrote(req.NamespacedName, read)
 		r.written(&p, dev, d, v1alpha1.ActionResync, v1alpha1.AnnotationResyncRequested, v.compiled.Index.Version,
 			summary{before.State, before.HandledRequest, before.Conditions},
 			summary{after.State, after.HandledRequest, after.Conditions})

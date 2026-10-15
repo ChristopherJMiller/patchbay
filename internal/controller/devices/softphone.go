@@ -5,7 +5,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
@@ -38,9 +37,10 @@ func NewSoftphoneReconciler(cfg Config) (*SoftphoneReconciler, error) {
 // bundle reconciler has compiled it.
 func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var s v1alpha1.Softphone
-	if err := r.cfg.Client.Get(ctx, req.NamespacedName, &s); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	if res, ok, err := r.read(ctx, req.NamespacedName, &s); !ok {
+		return res, err
 	}
+	read := s.ResourceVersion
 	dev := drivers.SoftphoneDevice(&s)
 	v, ok, err := r.observe(ctx, dev.ID)
 	if err != nil || !ok {
@@ -70,6 +70,7 @@ func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if err := r.cfg.Client.Status().Update(ctx, &s); err != nil {
 			return ctrl.Result{}, statusWriteError("Softphone", s.Name, err)
 		}
+		r.writes.wrote(req.NamespacedName, read)
 		r.written(&s, dev, d, v1alpha1.ActionRotateToken, v1alpha1.AnnotationReissueRequested, v.compiled.Index.Version,
 			summary{before.State, before.HandledRequest, before.Conditions},
 			summary{after.State, after.HandledRequest, after.Conditions})

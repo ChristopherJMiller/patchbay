@@ -522,3 +522,38 @@ func TestStateChangedEvent(t *testing.T) {
 			"None -> Unseen: connect it to a VLAN 20 switch port; it will request SEP"+deskMAC+".cnf.xml from "+pbxAddr),
 		deskEvent(corev1.EventTypeNormal, "StateChanged", "Decide", "Unseen -> Registering: waiting for it to register"))
 }
+
+// TestStaleCacheAfterWrite: a reconcile that reads a cached copy older
+// than the reconciler's own last status write (the informer has not seen it
+// yet) decides nothing and looks again shortly, so the resync that write
+// recorded is not sent twice.
+func TestStaleCacheAfterWrite(t *testing.T) {
+	f := newFixture(t)
+	ring := registeredDesk(t, f)
+	relabel(t, f)
+	stale := f.phone("desk") // what a lagging cache holds after the next write
+	f.at(time.Minute)
+	f.see(ring)
+	f.reconcilePhone("desk")
+	if calls := f.actor.take(); len(calls) != 1 {
+		t.Fatalf("actions %v; want one resync", calls)
+	}
+
+	f.stalePhone.Store(stale)
+	writes := f.statusWrites.Load()
+	f.at(time.Minute + time.Second)
+	f.see(ring)
+	res := f.reconcilePhone("desk")
+	if calls := f.actor.take(); len(calls) != 0 {
+		t.Errorf("deciding on the stale copy sent %v; want nothing", calls)
+	}
+	if res.RequeueAfter <= 0 || res.RequeueAfter > time.Second || f.statusWrites.Load() != writes {
+		t.Errorf("requeue after %v, %d status writes; want a short requeue and none", res.RequeueAfter, f.statusWrites.Load()-writes)
+	}
+
+	f.stalePhone.Store(nil)
+	f.reconcilePhone("desk")
+	if calls := f.actor.take(); len(calls) != 0 {
+		t.Errorf("the fresh copy sent %v; want nothing (resynced a second ago)", calls)
+	}
+}

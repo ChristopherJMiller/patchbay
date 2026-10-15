@@ -214,6 +214,9 @@ type fixture struct {
 	failSecrets  atomic.Bool
 	statusErr    atomic.Pointer[error]
 	failList     atomic.Bool
+	// stalePhone, when set, is what Gets of that Phone return: a cache
+	// that has not seen the latest write.
+	stalePhone atomic.Pointer[v1alpha1.Phone]
 
 	holder *agentview.Holder
 	actor  *fakeActor
@@ -266,6 +269,15 @@ func newFixture(t *testing.T, opts ...func(*fixture)) *fixture {
 				return *e
 			}
 			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if p, ok := obj.(*v1alpha1.Phone); ok {
+				if stale := f.stalePhone.Load(); stale != nil && stale.Name == key.Name {
+					stale.DeepCopyInto(p)
+					return nil
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
 		},
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			if f.failList.Load() {
