@@ -20,6 +20,10 @@ import (
 // isolate points $KUBECONFIG at a file that does not exist and $HOME at an
 // empty temporary directory, so client-go's default loading rules can never
 // reach a real kubeconfig (plan 6.2.3 rule 7). It returns the directory.
+//
+// $KUBECONFIG must stay non-empty: client-go computes ~/.kube/config
+// (clientcmd.RecommendedHomeFile) from $HOME once, at package init, so
+// only $KUBECONFIG keeps NewEnv("") away from the real file.
 func isolate(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -46,6 +50,11 @@ func TestNewEnvNeverFallsBack(t *testing.T) {
 	// error, not the in-cluster config.
 	if _, err := cli.NewEnv("", cli.ClientFlags{}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "no kubeconfig") {
 		t.Errorf(`NewEnv("") = %v, want "no kubeconfig found"`, err)
+	}
+	// $KUBECONFIG naming the temporary directory itself: an error too.
+	t.Setenv("KUBECONFIG", dir)
+	if _, err := cli.NewEnv("", cli.ClientFlags{}, io.Discard, io.Discard); err == nil {
+		t.Error(`NewEnv("") with $KUBECONFIG a directory: no error`)
 	}
 	// Loading never writes under $HOME (client-go's ~/.kube migration).
 	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
