@@ -1,0 +1,9 @@
+# Release B: dialling 705 plays live HDHomeRun audio.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Stream
+metadata:
+  name: king5
+spec:
+  number: "705"
+  name: KING 5
+  source: http://192.168.0.58:5004/auto/v5.1

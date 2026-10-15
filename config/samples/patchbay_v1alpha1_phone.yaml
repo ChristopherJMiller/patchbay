@@ -1,0 +1,10 @@
+# The Desk phone (design §4). MAC is 12 hex digits, any case.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Phone
+metadata:
+  name: desk
+spec:
+  model: cisco-7945
+  mac: D0C78915E8C8
+  number: "100"
+  label: Desk

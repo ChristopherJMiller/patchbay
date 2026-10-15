@@ -1,0 +1,6 @@
+# kubectl apply -k config/samples -n <pbx namespace>
+resources:
+  - patchbay_v1alpha1_phone.yaml
+  - patchbay_v1alpha1_softphone.yaml
+  - patchbay_v1alpha1_person.yaml
+  - patchbay_v1alpha1_stream.yaml

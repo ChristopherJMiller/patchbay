@@ -1,0 +1,10 @@
+apiVersion: v2
+name: patchbay
+description: A Kubernetes-native PBX - Asterisk 22 plus the patchbay controller and agent.
+type: application
+# Placeholder until the chart stage: today the chart carries only the CRDs.
+version: 0.0.0
+appVersion: dev
+home: https://github.com/ChristopherJMiller/patchbay
+sources:
+  - https://github.com/ChristopherJMiller/patchbay

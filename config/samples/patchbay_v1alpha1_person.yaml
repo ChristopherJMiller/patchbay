@@ -1,0 +1,11 @@
+# Dialling 301 rings every device listed in rings.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Person
+metadata:
+  name: chris
+spec:
+  number: "301"
+  name: Chris
+  rings:
+    - phone: desk
+    - softphone: chris-laptop

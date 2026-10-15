@@ -1,0 +1,8 @@
+# A Linphone softphone, provisioned by `patchbay softphone qr chris-laptop`.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Softphone
+metadata:
+  name: chris-laptop
+spec:
+  number: "150"
+  label: Chris (laptop)
