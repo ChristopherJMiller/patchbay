@@ -82,6 +82,9 @@ The CLI uses `--kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`
 (never the in-cluster config), and reaches the agent through a
 port-forward. A phone's `status.humanAction` says, in words, the one thing
 a person must do next (connect it, stage firmware, factory-reset it).
+When something is wrong, [docs/operations.md](docs/operations.md) goes from
+what you see (in `patchbay status`, `kubectl get phones`, the Events and
+the metrics) to its cause and what to do.
 
 ## Development
 
@@ -124,7 +127,7 @@ test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5 
 test/chart/            the rendered chart checked against the Go layout contracts
 hack/                  check-hygiene.sh, gen-sounds.sh
 config/samples/        one example of each resource
-docs/                  the design and the research behind it
+docs/                  the design, the runbook (operations.md), and the research behind it
 ```
 
 ## Firmware
