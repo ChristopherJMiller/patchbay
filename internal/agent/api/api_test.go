@@ -28,10 +28,11 @@ func TestObservationsRoundTrip(t *testing.T) {
 	in := api.Observations{
 		GeneratedAt: at,
 		Agent: api.AgentStatus{
-			StartedAt: at, AppliedVersion: "7c1e", AsteriskUp: true, AsteriskVersion: "22.6.0",
+			StartedAt: at, AppliedVersion: "7c1e", LastApplyVersion: "9f00", LastApplyError: "verify: endpoint phone-desk missing",
+			LastApplyAt: &at, AsteriskUp: true, AsteriskVersion: "22.6.0",
 		},
 		Devices: []api.DeviceObservations{{
-			Device: "desk",
+			Device: "phone-desk",
 			MAC:    "D0C78915E8C8",
 			Fetches: []api.Fetch{{
 				File: "SEPD0C78915E8C8.cnf.xml", Transport: api.TransportTFTP,
@@ -46,13 +47,15 @@ func TestObservationsRoundTrip(t *testing.T) {
 				At: at, Address: "192.168.20.100",
 				DeviceInformation:    &api.DeviceInformation{AppLoadID: "SIP45.9-4-2SR4-3S"},
 				NetworkConfiguration: &api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"},
+				DeviceLog:            []string{"Registered 100"},
 			},
+			Calls: 1,
 		}},
 		UnknownDevices: []api.UnknownDevice{{
 			MAC: "D0C78915EBB5", File: "SEPD0C78915EBB5.cnf.xml", Source: "192.168.20.101",
 			FirstSeen: at, LastSeen: at,
 		}},
-		Firmware: api.FirmwareStore{Files: []api.FirmwareFileStatus{{Name: "term45.default.loads", Present: true}}},
+		Firmware: api.FirmwareStore{Files: []api.FirmwareFileStatus{{Load: "SIP45.9-4-2SR4-3S", Name: "term45.default.loads", Present: true}}},
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -64,5 +67,27 @@ func TestObservationsRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in, out) {
 		t.Fatalf("round trip changed the document:\n in %+v\nout %+v", in, out)
+	}
+}
+
+func TestFirmwarePath(t *testing.T) {
+	if got, want := api.FirmwarePath("SIP45.9-4-2SR4-3S", "apps45.9-4-2SR4-3.sbn"),
+		"/v1/firmware/SIP45.9-4-2SR4-3S/apps45.9-4-2SR4-3.sbn"; got != want {
+		t.Fatalf("FirmwarePath = %q, want %q", got, want)
+	}
+}
+
+func TestFirmwareUploadResponseJSON(t *testing.T) {
+	got, err := json.Marshal(api.FirmwareUploadResponse{
+		Load: "SIP45.9-4-2SR4-3S", Name: "term45.default.loads", Size: 673,
+		Error: "the manifest has no SHA-256 for term45.default.loads yet",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"load":"SIP45.9-4-2SR4-3S","name":"term45.default.loads","size":673,"stored":false,` +
+		`"error":"the manifest has no SHA-256 for term45.default.loads yet"}`
+	if string(got) != want {
+		t.Fatalf("got %s\nwant %s", got, want)
 	}
 }

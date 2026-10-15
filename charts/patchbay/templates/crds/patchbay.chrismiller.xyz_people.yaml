@@ -56,9 +56,13 @@ spec:
               description: PersonSpec is the intended state of a person's number.
               properties:
                 name:
-                  description: Name is the person's display and caller ID name.
+                  description: |-
+                    Name is the person's display and caller ID name. No control
+                    characters (line breaks included); anything else is escaped wherever
+                    it is rendered.
                   maxLength: 64
                   minLength: 1
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
                   type: string
                 number:
                   description: |-

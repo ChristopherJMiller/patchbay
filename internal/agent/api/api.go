@@ -27,6 +27,21 @@ const (
 	// PathActionRestart is POST with an ActionRequest: reboot a phone
 	// (Cisco service-control, action=reset).
 	PathActionRestart = "/v1/actions/restart"
+	// PathFirmware is the firmware upload endpoint's prefix: PUT
+	// FirmwarePath(load, name) with the file's bytes as the body (and a
+	// Content-Length of at most MaxFirmwareFileSize) stores one file of a
+	// manifest load on the firmware volume, after the agent has checked its
+	// SHA-256 against the manifest compiled into the agent. `patchbay
+	// firmware load` reaches it through pods/portforward. The answer is a
+	// FirmwareUploadResponse with:
+	//   - 201 Created: verified and stored;
+	//   - 200 OK: already stored with that digest (uploads are idempotent);
+	//   - 404 Not Found: no such load, or no such file in it;
+	//   - 412 Precondition Failed: the manifest's digest is SHA256Pending,
+	//     so nothing can verify the file and nothing is stored;
+	//   - 413 Content Too Large: over MaxFirmwareFileSize;
+	//   - 422 Unprocessable Content: the digest differs; nothing is stored.
+	PathFirmware = "/v1/firmware"
 	// PathHealthz answers 200 while the agent process is alive. No token.
 	PathHealthz = "/healthz"
 	// PathReadyz answers 200 once the agent has applied a config version.
@@ -34,6 +49,23 @@ const (
 	// after valid config exists. No token.
 	PathReadyz = "/readyz"
 )
+
+// FirmwarePath is the upload path of one file of one load, e.g.
+// /v1/firmware/SIP45.9-4-2SR4-3S/apps45.9-4-2SR4-3.sbn. Load and file names
+// are manifest names, which never contain a slash.
+func FirmwarePath(load, name string) string {
+	return PathFirmware + "/" + load + "/" + name
+}
+
+// MaxFirmwareFileSize is the largest firmware file the agent accepts. The
+// largest 79x5 file is about 4.6 MB.
+const MaxFirmwareFileSize = 32 << 20
+
+// ProvisioningPathPrefix is where device HTTP (:8088) serves a softphone's
+// provisioning document: ProvisioningPathPrefix + <one-time token>. The
+// controller builds status.provisioningURL from it; the agent serves the
+// document only to the current token, once.
+const ProvisioningPathPrefix = "/p/"
 
 // DefaultPort is the agent's control API port on the PBX node.
 const DefaultPort = 9440
@@ -88,8 +120,13 @@ type AgentStatus struct {
 	// TFTP/HTTP and loaded by Asterisk). Empty before the first apply.
 	AppliedVersion string `json:"appliedVersion,omitempty"`
 
-	// LastApplyError is why the most recent apply was refused or rolled
-	// back. Empty when the latest version applied cleanly.
+	// LastApplyVersion is the bundle version the most recent apply
+	// attempted, whether it succeeded or not. With LastApplyError it tells
+	// the controller which version was refused.
+	LastApplyVersion string `json:"lastApplyVersion,omitempty"`
+
+	// LastApplyError is why the most recent apply (of LastApplyVersion) was
+	// refused or rolled back. Empty when it applied cleanly.
 	LastApplyError string `json:"lastApplyError,omitempty"`
 
 	// LastApplyAt is when the agent last attempted an apply.
@@ -124,6 +161,10 @@ type DeviceObservations struct {
 	// Web is the latest scrape of the phone's own web pages (sensor 3).
 	// Nil for softphones and for phones not scraped yet.
 	Web *WebScrape `json:"web,omitempty"`
+
+	// Calls is how many channels are up on the device's endpoint now (AMI).
+	// A phone in a call is never resynced: a resync can drop the call.
+	Calls int `json:"calls,omitempty"`
 }
 
 // Transport is how a file was fetched.
@@ -157,7 +198,10 @@ const (
 
 // Fetch is one entry of the fetch log.
 type Fetch struct {
-	// File is the requested path, as the device asked for it.
+	// File is the requested path, as the device asked for it, except for a
+	// softphone's provisioning document: that request carries the one-time
+	// token, so File is the document's bundle path
+	// (provisioning/<device ID>.xml) and the token is never recorded.
 	File string `json:"file"`
 
 	// Transport is how it was requested.
@@ -324,7 +368,30 @@ type ActionResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// Error is the body of any non-2xx answer from the control API.
+// FirmwareUploadResponse is the body the agent answers a firmware upload
+// with (see PathFirmware for the status codes).
+type FirmwareUploadResponse struct {
+	// Load and Name are the manifest load and file the upload was for.
+	Load string `json:"load"`
+	Name string `json:"name"`
+
+	// SHA256 is the lower-case hex digest of the bytes received.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Size is how many bytes were received.
+	Size int64 `json:"size"`
+
+	// Stored is true when the file is on the firmware volume with the
+	// manifest's digest after this request.
+	Stored bool `json:"stored"`
+
+	// Error says why it was not stored.
+	Error string `json:"error,omitempty"`
+}
+
+// Error is the body of any non-2xx answer from the control API, except a
+// firmware upload that got past authentication: that is always answered
+// with a FirmwareUploadResponse.
 type Error struct {
 	// Error is a human-readable message.
 	Error string `json:"error"`

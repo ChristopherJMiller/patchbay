@@ -85,7 +85,10 @@ spec:
                     name. Defaults to the resource name when empty. The driver derives
                     the phone's short screen label from it (for the 79x5: spaces removed,
                     at most 12 characters, with a warning condition when that changes it).
+                    No control characters (line breaks included); anything else, quotes,
+                    ampersands and semicolons too, is escaped wherever it is rendered.
                   maxLength: 64
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
                   type: string
                 mac:
                   description: |-
@@ -122,7 +125,7 @@ spec:
                   description: |-
                     Conditions: Ready, FirmwareAvailable, FirmwareCurrent, Provisioned,
                     Registered, ConfigCurrent, and Unsupported / NumberConflict /
-                    MACConflict when they apply.
+                    MACConflict when they apply, and the LabelShortened warning.
                   items:
                     description: Condition contains details for one aspect of the current state of this API Resource.
                     properties:

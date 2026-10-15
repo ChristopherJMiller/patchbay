@@ -25,10 +25,13 @@ type PersonSpec struct {
 	// +required
 	Number Number `json:"number"`
 
-	// Name is the person's display and caller ID name.
+	// Name is the person's display and caller ID name. No control
+	// characters (line breaks included); anything else is escaped wherever
+	// it is rendered.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F-\x9F]*$`
 	Name string `json:"name"`
 
 	// Rings lists the devices that ring, all at once, when Number is

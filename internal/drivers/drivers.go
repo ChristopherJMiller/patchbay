@@ -42,9 +42,23 @@ type Driver interface {
 	Profile(model string) (p Profile, ok bool)
 
 	// Render produces the device's provisioning files (for the 79x5,
-	// tftp/SEP<MAC>.cnf.xml; for a softphone, provisioning/<id>.xml). Pure.
-	// Secret values never appear in the output, only the placeholders ctx
-	// carries.
+	// tftp/SEP<MAC>.cnf.xml and the shared tftp/dialplan.xml; for a
+	// softphone, provisioning/<id>.xml). Pure. Secret values never appear in
+	// the output, only the placeholders ctx carries.
+	//
+	// Render returns an error wrapping ErrInvalidSpec exactly when the spec
+	// breaks one of the driver's own rules, the ones Decide reports as
+	// Invalid (an unknown model, a target load not in Firmware() for the
+	// model, a feature the backend cannot deliver); Compile then leaves the
+	// device out of the bundle and Decide says why. Conflicts and the number
+	// plan are not the driver's: Compile resolves them before it calls
+	// Render. Any other error is a bug, and fails the whole Compile.
+	//
+	// Compile calls Render twice per device: first with dev.ConfigVersion
+	// empty, then, once it has hashed that output into the device's version,
+	// with dev.ConfigVersion set. A driver uses dev.ConfigVersion only as an
+	// opaque stamp the device compares to notice a change (the 79x5's
+	// versionStamp); the two outputs differ nowhere else.
 	Render(dev Device, ctx RenderContext) (Files, error)
 
 	// Decide is one step of the device's state machine: from the device
@@ -55,11 +69,17 @@ type Driver interface {
 	//
 	// Rules every driver keeps, whatever its table:
 	//   - a spec that breaks a driver rule is Invalid: an unknown model, a
-	//     feature the backend cannot deliver, NumberConflict or MACConflict,
-	//     and a target load (dev.Firmware) that is not a load in Firmware();
+	//     feature the backend cannot deliver, NumberConflict, MACConflict or
+	//     NumberOutOfPlan, and a target load (dev.Firmware, or the model's
+	//     default) that is not a load in Firmware() for the model;
+	//   - when obs.AgentProblem reports a problem the device is Unknown: no
+	//     actions, memory unchanged, last known state kept;
 	//   - a human request (dev.Request differs from
 	//     dev.Memory.HandledRequest) is answered at most once: the Decision
-	//     that acts on it sets StatusPatch.HandledRequest to dev.Request.
+	//     that acts on it sets StatusPatch.HandledRequest to dev.Request;
+	//   - timeouts fire at the limit: "after 5 min" matches once
+	//     now - start >= 5m, and "within 3 min" means now - t < 3m. A
+	//     Decision waiting on a timeout sets RequeueAfter to the time left.
 	Decide(dev Device, obs Observations, s DecideSettings, now time.Time) Decision
 
 	// Firmware is the driver's firmware manifest: the loads it can stage,
@@ -88,24 +108,28 @@ const (
 
 // Device is everything a driver is told about one device: the resource's
 // intent, its memory (status as last written), and what the controller
-// computed for it on this pass. The controller builds it; drivers never read
-// resources.
+// computed for it on this pass. PhoneDevice and SoftphoneDevice build the
+// resource-derived part, so Compile and the controller build it the same
+// way; drivers never read resources.
 type Device struct {
 	// Kind and Name identify the resource.
 	Kind DeviceKind
 	Name string
 
-	// ID is the device's ID in the compiled bundle (its PJSIP endpoint);
+	// ID is the device's ID in the compiled bundle: DeviceID(Kind, Name).
+	// It names the device's PJSIP endpoint and is its SIP auth username;
 	// agent observations and actions use it.
 	ID string
 
-	// Model is spec.model for phones, "softphone" for softphones.
+	// Model is spec.model for phones, ModelSoftphone for softphones.
 	Model string
 
 	// MAC is the hardware address, upper case. Empty for softphones.
 	MAC string
 
-	// Number is the device's own extension.
+	// Number is the device's own extension. It is also the user part of its
+	// SIP address (the 79x5's line name, Linphone's username) and the name of
+	// its PJSIP AOR, so a REGISTER's To user finds it.
 	Number string
 
 	// Label is spec.label, or the resource name when that is empty.
@@ -116,9 +140,11 @@ type Device struct {
 	// device Invalid.
 	Firmware string
 
-	// ConfigVersion is this device's compiled config version (see
-	// compile.Bundle.DeviceVersions). Compared with
-	// Memory.LastConfigFetch.Version to tell ConfigStale.
+	// ConfigVersion is this device's compiled config version
+	// (compile.Bundle.Devices[ID].Version). Compared with
+	// Memory.LastConfigFetch.Version to tell ConfigStale. Empty when the
+	// device is not in the bundle (Invalid), and on Compile's first Render
+	// pass (see Driver.Render).
 	ConfigVersion string
 
 	// NumberConflict is true when an older resource holds this number.
@@ -127,6 +153,17 @@ type Device struct {
 	// MACConflict is true when an older Phone has the same MAC. Always false
 	// for softphones.
 	MACConflict bool
+
+	// NumberOutOfPlan is true when Number is not in the number plan's device
+	// range, or is a built-in or reserved number (design §4). Such a device
+	// is not routed, like a conflicted one.
+	NumberOutOfPlan bool
+
+	// ClaimMessage says, for people, why the number or MAC is not this
+	// device's when NumberConflict, MACConflict or NumberOutOfPlan is set
+	// (e.g. "number 100 is held by Phone kitchen, which is older"). Decide
+	// uses it as the condition message. Empty otherwise.
+	ClaimMessage string
 
 	// Request is the value of the device kind's request annotation
 	// (v1alpha1.AnnotationResyncRequested on a Phone,
@@ -184,6 +221,12 @@ type Observations struct {
 	// Firmware is the firmware store (sensor 4): which files of which loads
 	// are staged with a matching SHA-256.
 	Firmware agentapi.FirmwareStore
+
+	// CompiledVersion is the bundle version the controller compiled last
+	// and wrote to the pbx-config ConfigMap. With Agent.AppliedVersion and
+	// Agent.LastApplyVersion it tells whether this device's current config
+	// is live yet (ConfigLive) or was refused (ApplyFailure).
+	CompiledVersion string
 }
 
 // Decision is the result of one Decide step (design §8.1).
@@ -192,9 +235,15 @@ type Decision struct {
 	// status.state (Memory has no state; dev.LastState is read-only).
 	State State
 
-	// Conditions to set on the resource. The controller fills in
-	// ObservedGeneration and LastTransitionTime (via meta.SetStatusCondition)
-	// so Decide stays pure; it sets Type, Status, Reason and Message.
+	// Conditions to set on the resource, in a fixed order per driver. The
+	// controller fills in ObservedGeneration and LastTransitionTime (via
+	// meta.SetStatusCondition) so Decide stays pure; it sets Type, Status,
+	// Reason and Message (Condition builds one).
+	//
+	// A condition type not listed keeps its current value. Every row lists
+	// every condition type the driver owns, so nothing goes stale, except
+	// Unknown, which lists only Ready and Registered and leaves the rest as
+	// last known.
 	Conditions []metav1.Condition
 
 	// Actions to take, in order. Empty when there is nothing to do.
@@ -262,12 +311,18 @@ type DecideSettings struct {
 	Signalling Signalling
 
 	// StaleAfter is how old Observations.PolledAt may be before the
-	// observations count as stale and the device is Unknown.
+	// observations count as stale and the device is Unknown: stale once
+	// now - PolledAt > StaleAfter.
 	StaleAfter time.Duration
+
+	// PBXAddress is the address devices fetch config from and register to
+	// (192.168.0.240), for human-action text such as Unseen's.
+	PBXAddress string
 }
 
 // RenderContext is what Render needs beyond the device: install-wide
-// settings, already resolved by the compiler.
+// settings, already resolved by the compiler. The driver's own profile
+// (endpoint options, label limits, default load) is not repeated here.
 type RenderContext struct {
 	// PBXAddress is the address devices register to and fetch from, e.g.
 	// 192.168.0.240.
@@ -280,29 +335,32 @@ type RenderContext struct {
 	// http://192.168.0.240:8088 (directory, services, provisioning).
 	DeviceHTTPURL string
 
+	// DirectoryURL is the URL of the compiled directory
+	// (http://192.168.0.240:8088/directory.xml): the 79x5's directoryURL.
+	DirectoryURL string
+
 	// NTPServer is the time server as an IP address (the 79x5 cannot
 	// resolve names here).
 	NTPServer string
 
 	// Timezone is an IANA zone name, e.g. America/Los_Angeles. Drivers map
-	// it to whatever their devices want.
+	// it to whatever their devices want; a zone a driver cannot map is a
+	// Render error (not ErrInvalidSpec: it is install-wide).
 	Timezone string
 
 	// Signalling is the install-wide signalling backend (design §8.5).
 	Signalling Signalling
 
-	// DialPatterns are the number plan's complete-number patterns (e.g.
-	// "1XX", "600"), from which a driver renders its dial template so
-	// complete numbers dial at once.
+	// DialPatterns are the number plan's complete-number patterns, in
+	// Asterisk notation (digits, X for any digit, a trailing "." for one or
+	// more digits; "*" and "#" are literal), e.g. "1XX", "600", "9.". A
+	// driver renders its dial template from them so complete numbers dial
+	// at once.
 	DialPatterns []string
 
 	// SIPPassword is the placeholder for the device's SIP password
 	// (@@secret:<name>/<key>@@), never the password itself.
 	SIPPassword string
-
-	// ProvisioningToken is the placeholder for a softphone's one-time
-	// provisioning token. Empty for phones.
-	ProvisioningToken string
 }
 
 // Signalling is the PBX's SIP signalling backend (design §8.5).
@@ -372,6 +430,10 @@ type Profile struct {
 	// Provisioning is how the device is configured.
 	Provisioning Provisioning
 
+	// Endpoint is what the model needs on the Asterisk side; the compiler
+	// renders it into pjsip.conf.
+	Endpoint EndpointOptions
+
 	// Features says, per signalling backend, what works. A feature absent
 	// from a backend's map is Unsupported.
 	Features map[Signalling]map[Feature]Support
@@ -402,7 +464,8 @@ type Hardware struct {
 	// RingtoneFormat describes the ringtone encoding, e.g. "raw u-law 8 kHz
 	// mono, at most 2 s".
 	RingtoneFormat string
-	// Codecs are the codecs the device offers Asterisk, in preference order.
+	// Codecs are the codecs the device can do, in its preference order (for
+	// `patchbay models`). What Asterisk allows is Endpoint.Codecs.
 	Codecs []string
 }
 
@@ -426,6 +489,11 @@ type Provisioning struct {
 	LineLabelMax int
 	// Password is the policy for the generated SIP password.
 	Password PasswordPolicy
+	// ResyncByNotify is whether the device re-reads its config when the
+	// agent sends it a resync (Cisco service-control NOTIFY, action=restart).
+	// A bench question for the 79x5 (design §8.6); when false, ConfigStale
+	// asks a human at once instead of sending resyncs.
+	ResyncByNotify bool
 }
 
 // PasswordPolicy is how a driver's generated SIP passwords look.
@@ -434,6 +502,29 @@ type PasswordPolicy struct {
 	Length int
 	// Alphabet the characters are drawn from.
 	Alphabet string
+}
+
+// Alphanumeric is the alphabet of both release A password policies.
+const Alphanumeric = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+// Validate checks that a policy can generate a password: at least 8
+// characters, from an alphabet of at least 10 distinct ASCII letters or
+// digits (anything else could need escaping in a device's config).
+func (p PasswordPolicy) Validate() error {
+	if p.Length < 8 {
+		return fmt.Errorf("password policy: length %d is under 8", p.Length)
+	}
+	seen := map[rune]bool{}
+	for _, r := range p.Alphabet {
+		if !strings.ContainsRune(Alphanumeric, r) {
+			return fmt.Errorf("password policy: %q is not an ASCII letter or digit", r)
+		}
+		seen[r] = true
+	}
+	if len(seen) < 10 {
+		return fmt.Errorf("password policy: alphabet has %d distinct characters, want at least 10", len(seen))
+	}
+	return nil
 }
 
 // FirmwareLoad is one load in a driver's firmware manifest: everything a
@@ -451,10 +542,13 @@ type FirmwareLoad struct {
 	// loadInformation names it, e.g. SIP45.9-4-2SR4-3S. It is what
 	// Phone.spec.firmware selects.
 	Name string
+	// Source says where the load's files come from, for human-action text
+	// only, e.g. "Cisco's cmterm-7945_7965-sip.9-4-2SR4-3.zip".
+	Source string
 	// Models are the models that can run this load.
 	Models []string
 	// Files are the files of the load. FirmwareAvailable means every one of
-	// them is staged with its SHA-256.
+	// them is staged with its SHA-256 (Missing returns none).
 	Files []FirmwareFile
 }
 
@@ -462,13 +556,57 @@ type FirmwareLoad struct {
 type FirmwareFile struct {
 	// Name is the file name devices request, e.g. apps45.9-4-2SR4-3.sbn.
 	Name string
-	// SHA256 is the lower-case hex digest the file must have.
+	// SHA256 is the lower-case hex digest the file must have, or
+	// SHA256Pending while the genuine digest is not known yet.
 	SHA256 string
-	// Size in bytes, for progress and sanity checks.
+	// Size in bytes, as Cisco's zip lists it. Advisory (progress, messages):
+	// verification is by SHA-256 alone.
 	Size int64
 	// Shared marks a file whose name several loads carry with different
 	// contents (Cisco's term*.default.loads). See FirmwareLoad.
 	Shared bool
+}
+
+// SHA256Pending stands in a manifest for a digest nobody has taken from the
+// genuine file yet. A pending file is never verified, so it is never
+// accepted by `patchbay firmware load` or the agent's upload endpoint, never
+// served, and never counts as staged: a load with a pending file is never
+// FirmwareAvailable. Replacing it with the real digest (one line per file)
+// is the only change needed once the file is in hand.
+const SHA256Pending = "pending"
+
+// Pending reports whether the file's digest is not known yet.
+func (f FirmwareFile) Pending() bool { return f.SHA256 == SHA256Pending }
+
+// PendingFiles lists the files of the load whose digest is not known yet,
+// in manifest order. Empty when every digest is pinned.
+func (l FirmwareLoad) PendingFiles() []string {
+	var out []string
+	for _, f := range l.Files {
+		if f.Pending() {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}
+
+// Missing lists the files of the load that the firmware store does not hold
+// with the pinned digest (a pending file is always missing), in manifest
+// order. The load is FirmwareAvailable exactly when Missing is empty.
+func (l FirmwareLoad) Missing(store agentapi.FirmwareStore) []string {
+	present := map[string]bool{}
+	for _, s := range store.Files {
+		if s.Load == l.Name && s.Present {
+			present[s.Name] = true
+		}
+	}
+	var out []string
+	for _, f := range l.Files {
+		if f.Pending() || !present[f.Name] {
+			out = append(out, f.Name)
+		}
+	}
+	return out
 }
 
 // LoadByName returns the load called name from a manifest.
@@ -487,7 +625,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //   - every load has a unique, non-empty name, at least one model and at
 //     least one file;
 //   - every file has a plain file name (no slash), a lower-case hex SHA-256
-//     and a positive size, and appears once per load;
+//     or SHA256Pending, and a positive size, and appears once per load;
 //   - a file name appears in more than one load only if it is Shared in
 //     every load that carries it, because TFTP serves files by name.
 func ValidateFirmware(loads []FirmwareLoad) error {
@@ -518,8 +656,9 @@ func ValidateFirmware(loads []FirmwareLoad) error {
 				errs = append(errs, fmt.Errorf("firmware: load %s lists %s twice", l.Name, f.Name))
 			}
 			inLoad[f.Name] = true
-			if !sha256Hex.MatchString(f.SHA256) {
-				errs = append(errs, fmt.Errorf("firmware: load %s: %s: SHA-256 must be 64 lower-case hex digits", l.Name, f.Name))
+			if !f.Pending() && !sha256Hex.MatchString(f.SHA256) {
+				errs = append(errs, fmt.Errorf("firmware: load %s: %s: SHA-256 must be 64 lower-case hex digits or %q",
+					l.Name, f.Name, SHA256Pending))
 			}
 			if f.Size <= 0 {
 				errs = append(errs, fmt.Errorf("firmware: load %s: %s: size must be positive", l.Name, f.Name))
@@ -549,8 +688,8 @@ type Registry struct {
 }
 
 // NewRegistry builds a registry. It fails if two drivers claim one model, a
-// driver claims none, or a driver's firmware manifest breaks
-// ValidateFirmware.
+// driver claims none, a driver's firmware manifest breaks ValidateFirmware,
+// or a model's profile breaks ValidateProfile.
 func NewRegistry(ds ...Driver) (*Registry, error) {
 	r := &Registry{byModel: map[string]Driver{}}
 	for _, d := range ds {
@@ -565,6 +704,13 @@ func NewRegistry(ds ...Driver) (*Registry, error) {
 			if other, dup := r.byModel[m]; dup {
 				return nil, fmt.Errorf("drivers: model %q claimed by both %s and %s", m, other.Name(), d.Name())
 			}
+			p, ok := d.Profile(m)
+			if !ok {
+				return nil, fmt.Errorf("drivers: %s lists model %q but has no profile for it", d.Name(), m)
+			}
+			if err := ValidateProfile(m, p); err != nil {
+				return nil, fmt.Errorf("drivers: %s: %w", d.Name(), err)
+			}
 			r.byModel[m] = d
 		}
 		r.drivers = append(r.drivers, d)
@@ -572,8 +718,30 @@ func NewRegistry(ds ...Driver) (*Registry, error) {
 	return r, nil
 }
 
+// ValidateProfile checks what the compiler and the controller rely on in a
+// model's profile: it names the model, its endpoint options are valid and
+// its password policy can generate a password.
+func ValidateProfile(model string, p Profile) error {
+	var errs []error
+	if p.Model != model {
+		errs = append(errs, fmt.Errorf("profile for %q names model %q", model, p.Model))
+	}
+	if err := p.Endpoint.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("profile %s: %w", model, err))
+	}
+	if err := p.Provisioning.Password.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("profile %s: %w", model, err))
+	}
+	return errors.Join(errs...)
+}
+
 // ErrUnknownModel is returned for a model no driver serves.
 var ErrUnknownModel = errors.New("drivers: no driver for model")
+
+// ErrInvalidSpec is what Render's error wraps when the device's spec breaks
+// one of the driver's rules (see Driver.Render). Compile leaves such a
+// device out of the bundle instead of failing.
+var ErrInvalidSpec = errors.New("drivers: invalid spec")
 
 // ForModel returns the driver serving model.
 func (r *Registry) ForModel(model string) (Driver, error) {
@@ -581,6 +749,11 @@ func (r *Registry) ForModel(model string) (Driver, error) {
 		return d, nil
 	}
 	return nil, fmt.Errorf("%w %q", ErrUnknownModel, model)
+}
+
+// Drivers lists the registered drivers in the order NewRegistry got them.
+func (r *Registry) Drivers() []Driver {
+	return slices.Clone(r.drivers)
 }
 
 // Models lists every registered model, sorted.

@@ -34,10 +34,12 @@ resources (Phone, Softphone, Person, Stream)
 - Secrets never appear in compiled files, only `@@secret:<name>/<key>@@`
   placeholders that the agent resolves.
 
-Contracts: `internal/compile` (Bundle, Inputs, Settings, and in `layout.go`
-the bundle's four trees and the live directory the agent swaps),
-`internal/drivers` (Driver, Device, Memory, Observations, DecideSettings,
-Decision, Profile, FirmwareLoad) and `internal/agent/api` (the control API's
+Contracts: `internal/compile` (Bundle with its device index, Inputs,
+Settings, device Secret names; in `layout.go` the bundle's four trees, the
+live directory the agent swaps and the sound prompts; in `configmap.go` the
+pbx-config ConfigMap encoding), `internal/drivers` (Driver, Device and the
+DeviceID format, Memory, Observations, DecideSettings, Decision, Profile with
+EndpointOptions, FirmwareLoad) and `internal/agent/api` (the control API's
 JSON). Change them deliberately: the controller, agent, drivers and e2e fake
 phone all build on them.
 
@@ -46,9 +48,23 @@ phone all build on them.
 `docs/design.md` is a verbatim copy of the approved spec, so where the code
 departs from it, the departure is recorded here (and in the code's docs).
 
-- **Per-device config versions.** `compile.Bundle.DeviceVersions`, so
+- **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
+- **SIP identity** (§4 leaves it open): a device's PJSIP endpoint and auth
+  username is its ID (`phone-desk`, `drivers.DeviceID`), its SIP user and
+  AOR are its number (`100`), and endpoints are identified by auth username.
+  The ID survives renumbering; the line name stays the plain number the 79x5
+  expects.
+- **PBX down**: §7 says `Registered=False`, §8.3's Unknown row says
+  `Registered=Unknown`. With Asterisk down the device is certainly not
+  registered, so it is `False`, reason `PBXDown`; an unreachable agent is
+  `Unknown`, reason `AgentUnreachable`.
+- **Firmware digests can be pending** (`drivers.SHA256Pending`) until taken
+  from Cisco's zip: a pending file is never accepted, served or counted as
+  staged.
+- **Labels and names reject control characters** in the schema, because
+  they are rendered into device XML and Asterisk config.
 - **Softphone status has memory too** (`observed`, `lastAction`,
   `humanAction`), which §8.4's Offline and rotateToken need.
 - **Bundle trees.** §5 says TFTP and HTTP "serve from the same live

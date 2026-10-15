@@ -60,8 +60,10 @@ spec:
                 label:
                   description: |-
                     Label is the softphone's display and caller ID name. Defaults to the
-                    resource name when empty.
+                    resource name when empty. No control characters (line breaks
+                    included); anything else is escaped wherever it is rendered.
                   maxLength: 64
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
                   type: string
                 number:
                   description: |-

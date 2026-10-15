@@ -158,6 +158,17 @@ func TestSchemaRejects(t *testing.T) {
 		{"MAC too short", phone("short", func(s *v1alpha1.PhoneSpec) { s.MAC = "D0C78915E8C" }), "spec.mac"},
 		{"unknown model", phone("model", func(s *v1alpha1.PhoneSpec) { s.Model = "cisco-7940" }), "spec.model"},
 		{"firmware with a space", phone("fwspace", func(s *v1alpha1.PhoneSpec) { s.Firmware = "SIP45 9" }), "spec.firmware"},
+		// Labels and names end up in device XML and Asterisk config: a line
+		// break could inject a config line, so control characters never get in.
+		{"label with a line break", phone("newline", func(s *v1alpha1.PhoneSpec) { s.Label = "Desk\n[evil]" }), "spec.label"},
+		{"label with a tab", phone("tab", func(s *v1alpha1.PhoneSpec) { s.Label = "Desk\tA" }), "spec.label"},
+		{"label with a C1 control", phone("c1", func(s *v1alpha1.PhoneSpec) { s.Label = "Desk\u0085" }), "spec.label"},
+		{"softphone label with a NUL", &v1alpha1.Softphone{ObjectMeta: om("nul"),
+			Spec: v1alpha1.SoftphoneSpec{Number: "150", Label: "a\x00b"}}, "spec.label"},
+		{"person name with a carriage return", &v1alpha1.Person{ObjectMeta: om("cr"), Spec: v1alpha1.PersonSpec{
+			Number: "301", Name: "Chris\r", Rings: []v1alpha1.RingTarget{{Phone: "desk"}}}}, "spec.name"},
+		{"stream name with a line break", &v1alpha1.Stream{ObjectMeta: om("lf"), Spec: v1alpha1.StreamSpec{
+			Number: "705", Name: "KING\n5", Source: "http://192.168.0.58:5004/auto/v5.1"}}, "spec.name"},
 		{"stream source not a URL", stream("nourl", "king 5"), "source must be an absolute URL"},
 		{"stream source relative", stream("relative", "/auto/v5.1"), "source must be an absolute URL"},
 		// design §4 writes `number: 100`; the schema wants a string (CLAUDE.md,
@@ -176,6 +187,27 @@ func TestSchemaRejects(t *testing.T) {
 				t.Fatalf("error %q does not mention %q", err, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// TestSchemaAcceptsPunctuation is the other half of the control-character
+// rule: quotes, ampersands, semicolons, angle brackets and non-ASCII text are
+// valid labels, and escaping them is the compiler's job, not the schema's.
+func TestSchemaAcceptsPunctuation(t *testing.T) {
+	needEnvtest(t)
+	ctx := context.Background()
+	ns := newNamespace(t)
+	label := `R&D; "Lab" <1> Küche`
+	p := &v1alpha1.Phone{
+		ObjectMeta: metav1.ObjectMeta{Name: "lab", Namespace: ns},
+		Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "D0C78915E8C8", Number: "100", Label: label},
+	}
+	if err := testClient.Create(ctx, p); err != nil {
+		t.Fatalf("create Phone with label %q: %v", label, err)
+	}
+	var got v1alpha1.Phone
+	if err := testClient.Get(ctx, client.ObjectKeyFromObject(p), &got); err != nil || got.Spec.Label != label {
+		t.Fatalf("label round trip: %q, %v", got.Spec.Label, err)
 	}
 }
 

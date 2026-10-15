@@ -82,6 +82,12 @@ const (
 	// Phones with one MAC would render the same SEP<MAC>.cnf.xml, so only the
 	// oldest is rendered; the newer one is Invalid and gets no files.
 	ConditionMACConflict = "MACConflict"
+	// ConditionLabelShortened is a warning, True when a device shows its
+	// label shortened: a 79x5's screen label (phoneLabel) has no spaces and
+	// at most 12 characters, and its line label and caller ID name at most
+	// 30. The message shows what the device displays. It never makes a
+	// device Invalid.
+	ConditionLabelShortened = "LabelShortened"
 )
 
 // Request annotations: how a human asks the controller for something
@@ -113,9 +119,16 @@ const (
 	// ReasonApplyFailed means the agent refused or rolled back the latest
 	// config version; the previous version stays live.
 	ReasonApplyFailed = "ApplyFailed"
+	// ReasonApplyPending means the latest config version is compiled but the
+	// agent does not serve it yet (usually for seconds).
+	ReasonApplyPending = "ApplyPending"
 	// ReasonOffline means a softphone that was registered has no contact
 	// now. Mobile apps sleep; it is not an error.
 	ReasonOffline = "Offline"
+	// ReasonNumberNotInPlan means the resource's number is outside its
+	// kind's range of the number plan, or is a built-in or reserved number.
+	// The resource is not routed.
+	ReasonNumberNotInPlan = "NumberNotInPlan"
 )
 
 // ActionKind names something done to a device. Only the controller decides

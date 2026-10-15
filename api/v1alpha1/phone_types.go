@@ -41,8 +41,11 @@ type PhoneSpec struct {
 	// name. Defaults to the resource name when empty. The driver derives
 	// the phone's short screen label from it (for the 79x5: spaces removed,
 	// at most 12 characters, with a warning condition when that changes it).
+	// No control characters (line breaks included); anything else, quotes,
+	// ampersands and semicolons too, is escaped wherever it is rendered.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F-\x9F]*$`
 	Label string `json:"label,omitempty"`
 
 	// Firmware is the load the phone should run, by the name the phone
@@ -103,7 +106,7 @@ type PhoneStatus struct {
 
 	// Conditions: Ready, FirmwareAvailable, FirmwareCurrent, Provisioned,
 	// Registered, ConfigCurrent, and Unsupported / NumberConflict /
-	// MACConflict when they apply.
+	// MACConflict when they apply, and the LabelShortened warning.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

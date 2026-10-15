@@ -12,9 +12,11 @@ type SoftphoneSpec struct {
 	Number Number `json:"number"`
 
 	// Label is the softphone's display and caller ID name. Defaults to the
-	// resource name when empty.
+	// resource name when empty. No control characters (line breaks
+	// included); anything else is escaped wherever it is rendered.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F-\x9F]*$`
 	Label string `json:"label,omitempty"`
 }
 

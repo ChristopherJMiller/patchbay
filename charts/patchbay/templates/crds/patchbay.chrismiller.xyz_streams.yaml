@@ -64,9 +64,13 @@ spec:
                 (release B, design §9).
               properties:
                 name:
-                  description: Name is the stream's display and caller ID name.
+                  description: |-
+                    Name is the stream's display and caller ID name. No control
+                    characters (line breaks included); anything else is escaped wherever
+                    it is rendered.
                   maxLength: 64
                   minLength: 1
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
                   type: string
                 number:
                   description: |-
