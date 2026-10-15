@@ -1,0 +1,32 @@
+Agent: v0.3.0, Asterisk up (22.6.0), config 0123456789ab applied, last apply of fedcba987654 failed: verify: endpoint phone-kitchen is missing
+
+Phone desk (100): Registered
+Phone garage (102): Pending
+Phone kitchen (101): NeedsFirmware
+  Ready=False NeedsFirmware: stage the load
+  FirmwareAvailable=False NotStaged: missing: a.sbn
+  FirmwareCurrent=False OtherLoad: runs SCCP45.9-4-2SR4-3S
+  Registered=Unknown AgentUnreachable
+  LabelShortened=True Shortened: the screen shows KitchenPhon
+    the line shows Kitchen Phone
+  SomethingNew=True Novel: a condition this CLI does not know
+  human action: Run patchbay firmware load <zip> with Cisco's zip.
+
+Softphone laptop (150): Issued
+  Ready=False Issued: scan the QR code in Linphone
+  Provisioned=False NotFetched
+  ConfigCurrent=False ApplyPending
+  human action: Scan the QR code from patchbay softphone qr laptop in Linphone.
+  provisioning: patchbay softphone qr laptop
+Softphone tablet (150): Invalid
+  Ready=False NumberConflict: number 150 is held by Softphone laptop, which is older
+  NumberConflict=True NumberConflict: number 150 is held by Softphone laptop, which is older
+
+Person chris (301): Ready
+
+Stream radio (700): Unavailable
+  Ready=False NoStreamBridge: release A has no stream bridge
+
+Unknown phones:
+  0200E2E10001 from 192.168.20.30, first seen 2026-10-15T09:27:00Z, last seen 2026-10-15T09:27:00Z, asked for SEP0200E2E10001.cnf.xml
+  D0C78915EBB5 from 192.168.20.31, first seen 2026-10-15T09:20:00Z, last seen 2026-10-15T09:29:55Z, asked for SEPD0C78915EBB5.cnf.xml
