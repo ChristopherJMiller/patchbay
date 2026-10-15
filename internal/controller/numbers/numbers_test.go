@@ -536,3 +536,27 @@ func TestConfigValidated(t *testing.T) {
 		t.Error("Setup accepted an empty Config")
 	}
 }
+
+// TestLongNoteBounded: a Person whose sixteen ring targets have long names
+// has a Ready message longer than events.k8s.io's 1024-byte note; its
+// StateChanged note is cut to fit, so the API server does not refuse it.
+func TestLongNoteBounded(t *testing.T) {
+	f := newFixture(t)
+	var targets []string
+	for i := range 16 {
+		targets = append(targets, fmt.Sprintf("phone %s-%02d", strings.Repeat("x", 200), i))
+	}
+	f.newPerson("chris", "301", targets...)
+	f.compile()
+	p := f.person("chris")
+	if c := meta.FindStatusCondition(p.Status.Conditions, v1alpha1.ConditionReady); c == nil || len(c.Message) <= install.MaxEventNote {
+		t.Fatalf("Ready %+v; want a message longer than an Event note", c)
+	}
+	e := f.rec.take()
+	if len(e) != 1 || !strings.Contains(e[0], "None -> Unavailable") {
+		t.Fatalf("events %q; want one None -> Unavailable", e)
+	}
+	if _, note, _ := strings.Cut(e[0], " Decide: "); len(note) > install.MaxEventNote || !strings.HasSuffix(note, "…") {
+		t.Errorf("StateChanged note of %d bytes; want it cut to at most %d", len(note), install.MaxEventNote)
+	}
+}

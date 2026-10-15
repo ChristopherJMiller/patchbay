@@ -60,7 +60,7 @@ func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	after.ObservedGeneration = s.Generation
 	setConditions(&after.Conditions, d.Conditions, s.Generation, now)
 	memory(dev, d, failed).ToSoftphoneStatus(after)
-	after.HumanAction = d.HumanAction
+	after.HumanAction = humanAction(d)
 	after.ProvisioningURL = url
 
 	if !equality.Semantic.DeepEqual(before, after) {

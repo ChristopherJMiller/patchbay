@@ -37,7 +37,6 @@ import (
 	"fmt"
 	"maps"
 	"time"
-	"unicode/utf8"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -69,9 +68,6 @@ const ControllerName = "bundle"
 // CompileRetryAfter is when a reconcile whose compile failed runs again
 // without a change.
 const CompileRetryAfter = 5 * time.Minute
-
-// maxNote is the longest Event note written: events.k8s.io allows 1 kB.
-const maxNote = 1000
 
 // Config configures the Reconciler.
 type Config struct {
@@ -201,7 +197,7 @@ func (r *Reconciler) compileFailed(ctx context.Context, cause error) (ctrl.Resul
 	r.cfg.Log.Error(cause, "compiling the bundle failed; the previous bundle stays")
 	if target := r.eventTarget(ctx); target != nil {
 		r.cfg.Recorder.Eventf(target, nil, corev1.EventTypeWarning, install.EventReasonCompileFailed, install.EventActionCompile,
-			"%s", truncate(cause.Error(), maxNote))
+			"%s", install.EventNote(cause.Error()))
 	}
 	return ctrl.Result{RequeueAfter: CompileRetryAfter}, nil
 }
@@ -361,17 +357,4 @@ func short(v string) string {
 		return v[:12]
 	}
 	return v
-}
-
-// truncate shortens s to at most n bytes, on a rune boundary.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	const ellipsis = "…"
-	cut := n - len(ellipsis)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + ellipsis
 }

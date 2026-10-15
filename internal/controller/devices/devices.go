@@ -300,9 +300,13 @@ func statusWriteError(kind, name string, err error) error {
 }
 
 // memory is the status memory to write: the Decision's, except that a
-// failed action keeps the previous lastAction and handledRequest (6.2.1).
+// failed action keeps the previous lastAction and handledRequest (6.2.1),
+// and that the values observed from the device (the load ID its web page
+// reports, its address) are bounded (install.Text, MaxStatusValue).
 func memory(dev drivers.Device, d drivers.Decision, failed bool) drivers.Memory {
 	m := d.StatusPatch
+	m.Firmware = install.Text(m.Firmware, install.MaxStatusValue)
+	m.Address = install.Text(m.Address, install.MaxStatusValue)
 	if failed {
 		m.LastAction = dev.Memory.LastAction.DeepCopy()
 		m.HandledRequest = dev.Memory.HandledRequest
@@ -323,11 +327,14 @@ func result(d drivers.Decision, failed bool) ctrl.Result {
 
 // setConditions sets the Decision's conditions (§6.2.6 step 8): each gets
 // the resource's generation and now, in whole seconds, as its transition
-// time, which meta.SetStatusCondition keeps unless the status changes. A
-// condition type the Decision does not list keeps its value.
+// time, which meta.SetStatusCondition keeps unless the status changes, and
+// a message bounded by install.Text (it can quote a device's web page or
+// SIP user agent, or the agent's apply error). A condition type the
+// Decision does not list keeps its value.
 func setConditions(conditions *[]metav1.Condition, from []metav1.Condition, generation int64, now time.Time) {
 	at := metav1.NewTime(now.UTC().Truncate(time.Second))
 	for _, c := range from {
+		c.Message = install.Text(c.Message, install.MaxStatusMessage)
 		c.ObservedGeneration = generation
 		c.LastTransitionTime = at
 		meta.SetStatusCondition(conditions, c)
@@ -387,9 +394,16 @@ func holds(actions []drivers.Action, kind v1alpha1.ActionKind) bool {
 }
 
 // event records an Event regarding obj. The note is passed as an argument,
-// never as the format, so a '%' in an agent's message stays as it is.
+// never as the format, so a '%' in an agent's message stays as it is, and
+// bounded (install.EventNote), so the API server never refuses it.
 func (e *engine) event(obj runtime.Object, eventType, reason, action, note string) {
-	e.cfg.Recorder.Eventf(obj, nil, eventType, reason, action, "%s", note)
+	e.cfg.Recorder.Eventf(obj, nil, eventType, reason, action, "%s", install.EventNote(note))
+}
+
+// humanAction is the Decision's human action as status holds it: bounded
+// like a condition message.
+func humanAction(d drivers.Decision) string {
+	return install.Text(d.HumanAction, install.MaxStatusMessage)
 }
 
 // eventAction is the Event action of a device action.

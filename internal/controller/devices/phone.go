@@ -49,7 +49,7 @@ func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	after.ObservedGeneration = p.Generation
 	setConditions(&after.Conditions, d.Conditions, p.Generation, now)
 	memory(dev, d, failed).ToPhoneStatus(after)
-	after.HumanAction = d.HumanAction
+	after.HumanAction = humanAction(d)
 
 	if !equality.Semantic.DeepEqual(before, after) {
 		p.Status = *after

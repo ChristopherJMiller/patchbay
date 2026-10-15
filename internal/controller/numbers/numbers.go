@@ -211,6 +211,8 @@ func (b *base) apply(state *string, observed *int64, conditions *[]metav1.Condit
 }
 
 // written emits StateChanged after a status write that changed the state.
+// Its note is bounded (install.EventNote): sixteen long ring targets make
+// a Ready message longer than events.k8s.io's 1024 bytes.
 func (b *base) written(obj runtime.Object, before, after string, v verdict) {
 	if before == after {
 		return
@@ -219,7 +221,7 @@ func (b *base) written(obj runtime.Object, before, after string, v verdict) {
 		before = "None"
 	}
 	b.cfg.Recorder.Eventf(obj, nil, corev1.EventTypeNormal, install.EventReasonStateChanged, install.EventActionDecide,
-		"%s", fmt.Sprintf("%s -> %s: %s", before, after, v.ready.Message))
+		"%s", install.EventNote(fmt.Sprintf("%s -> %s: %s", before, after, v.ready.Message)))
 }
 
 // statusChanged reports whether a status differs from its copy.
