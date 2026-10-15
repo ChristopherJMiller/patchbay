@@ -156,6 +156,28 @@ func (h *harness) deleteAndWait(ctx context.Context, t *testing.T, obj client.Ob
 	}
 }
 
+// deleteLeftovers deletes every Phone whose name starts with one of the
+// prefixes, or is one without its trailing "-" (an older run's fixed
+// name), and waits until each is gone: the Phones an interrupted run of a
+// test with random names left on a reused cluster.
+func (h *harness) deleteLeftovers(ctx context.Context, t *testing.T, prefixes ...string) {
+	t.Helper()
+	var l v1alpha1.PhoneList
+	if err := h.kube.List(ctx, &l, client.InNamespace(namespace)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range l.Items {
+		name := l.Items[i].Name
+		for _, p := range prefixes {
+			if strings.HasPrefix(name, p) || name == strings.TrimSuffix(p, "-") {
+				t.Logf("deleting Phone %s, left by an earlier run", name)
+				h.deleteAndWait(ctx, t, &l.Items[i])
+				break
+			}
+		}
+	}
+}
+
 // waitForCRDs waits until the API server serves the chart's CRDs, so the
 // site resources can be created right after helm returns.
 func (h *harness) waitForCRDs(ctx context.Context) error {
@@ -226,6 +248,28 @@ func (h *harness) readCompiled(ctx context.Context) (compiledBundle, error) {
 		return compiledBundle{}, err
 	}
 	return compiledBundle{Bundle: b, values: values, projected: sec.Data}, nil
+}
+
+// waitCompiled waits until the bundle the controller compiled last holds
+// device id. Call it before waitApplied for a resource just created:
+// until the bundle reconciler has written it, pbx-config is the previous
+// bundle, applied long ago, and waitApplied would return at once.
+func (h *harness) waitCompiled(ctx context.Context, t *testing.T, id string, timeout time.Duration) {
+	t.Helper()
+	why := ""
+	err := wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, timeout, true, func(ctx context.Context) (bool, error) {
+		c, err := h.readCompiled(ctx)
+		if err != nil {
+			why = err.Error()
+			return false, nil //nolint:nilerr // between the two writes: keep polling
+		}
+		_, ok := c.Devices[id]
+		why = fmt.Sprintf("bundle %.12s does not hold %s", c.Version, id)
+		return ok, nil
+	})
+	if err != nil {
+		t.Fatalf("%s was not compiled: %v (%s)", id, err, why)
+	}
 }
 
 // waitApplied waits until the agent has applied and verified the bundle

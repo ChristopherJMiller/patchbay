@@ -31,9 +31,14 @@ else. Tests read the compiled bundle back from the cluster
 (`patchbay-pbx-config` with the `patchbay-pbx-secrets` of the same version),
 never from a copy of their own.
 
-A test that needs more devices creates its own (`lifecycle` 111, `reset`
-112, `discovered` 113), deleting any a previous run left first, and deletes
-them at the end.
+A test that needs more devices creates its own (`lifecycle-<hex>` 111,
+`reset-<hex>` 112, `discovered` 113), deleting any a previous run left
+first, and deletes them at the end. `TestPhoneLifecycle`'s names are random
+per run: the agent keeps a device's fetch log by its ID after the device
+leaves the bundle, so a Phone recreated under a fixed name on a reused
+cluster would start with the last run's fetches (plan §11). A test that
+creates a device waits until the compiled bundle holds it before it waits
+for that bundle to be applied.
 
 ## Two kinds of fakephone pod
 

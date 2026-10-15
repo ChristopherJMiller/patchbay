@@ -87,7 +87,10 @@ func TestDiscovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			tr := h.track(ctx, outer, "Phone", discoveredName)
-			// The Phone must be compiled before the phone asks again.
+			// The Phone must be compiled, and that bundle applied, before the
+			// phone asks again: waitApplied alone could see the previous
+			// bundle, applied long ago.
+			h.waitCompiled(ctx, t, drivers.DeviceID(drivers.KindPhone, discoveredName), time.Minute)
 			h.waitApplied(ctx, t, time.Minute)
 			if _, ok := h.compiled(ctx, t).Devices[drivers.DeviceID(drivers.KindPhone, discoveredName)]; !ok {
 				t.Fatalf("Phone %s is not compiled", discoveredName)

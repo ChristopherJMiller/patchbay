@@ -24,12 +24,16 @@ import (
 	"github.com/ChristopherJMiller/patchbay/test/e2e/fakephone/script"
 )
 
-// The two phones of TestPhoneLifecycle, each on the e2e load.
+// The two phones of TestPhoneLifecycle, each on the e2e load. Their names
+// are these prefixes and a random suffix per run: the agent keeps a
+// device's fetch log by its ID (kind-name) after the device leaves the
+// bundle, so a Phone recreated under a run's name on a reused cluster would
+// start with that run's fetches, never Unseen (plan §11).
 const (
-	lifecycleName   = "lifecycle"
+	lifecyclePrefix = "lifecycle-"
 	lifecycleMAC    = "0200E2E00011"
 	lifecycleNumber = "111"
-	resetName       = "reset"
+	resetPrefix     = "reset-"
 	resetMAC        = "0200E2E00012"
 	resetNumber     = "112"
 
@@ -85,9 +89,15 @@ func TestPhoneLifecycle(t *testing.T) {
 		lifecyclePod, resetPod string
 	}
 	var p phones
+	suffix, err := randomHex(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleName, resetName := lifecyclePrefix+suffix, resetPrefix+suffix
 
 	f := features.New("phone lifecycle").
 		Setup(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			h.deleteLeftovers(ctx, t, lifecyclePrefix, resetPrefix)
 			h.wipeE2ELoad(ctx, t, load)
 			return ctx
 		}).
@@ -100,6 +110,10 @@ func TestPhoneLifecycle(t *testing.T) {
 					Label: "Reset", Firmware: load.Name},
 			})
 			p.reset = h.track(ctx, outer, "Phone", resetName)
+			// It asks for its .sgn once, and only a fetch the agent can
+			// attribute to an applied device counts: wait for the bundle that
+			// holds it, not just the one applied now.
+			h.waitCompiled(ctx, t, drivers.DeviceID(drivers.KindPhone, resetName), time.Minute)
 			h.waitApplied(ctx, t, time.Minute)
 			p.resetPod = h.startPhone(ctx, t, outer, resetName, script.Script{
 				Mode: script.ModeCisco, Server: h.nodeIP, MAC: resetMAC,
