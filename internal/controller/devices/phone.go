@@ -31,7 +31,6 @@ func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if res, ok, err := r.read(ctx, req.NamespacedName, &p); !ok {
 		return res, err
 	}
-	read := p.ResourceVersion
 	dev := drivers.PhoneDevice(&p)
 	v, ok, err := r.observe(ctx, dev.ID)
 	if err != nil || !ok {
@@ -41,19 +40,19 @@ func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if !ok {
 		return ctrl.Result{}, nil
 	}
-	failed := r.act(ctx, &p, dev, d.Actions)
+	acted := r.act(ctx, &p, dev, d.Actions)
 
 	before := p.Status.DeepCopy()
 	after := p.Status.DeepCopy()
 	after.State = string(d.State)
 	after.ObservedGeneration = p.Generation
-	setConditions(&after.Conditions, d.Conditions, p.Generation, now)
-	memory(dev, d, failed).ToPhoneStatus(after)
+	setConditions(&after.Conditions, conditions(d, acted), p.Generation, now)
+	memory(dev, d, acted.failed()).ToPhoneStatus(after)
 	after.HumanAction = humanAction(d)
 
 	if !equality.Semantic.DeepEqual(before, after) {
-		p.Status = *after
-		if err := r.cfg.Client.Status().Update(ctx, &p); err != nil {
+		read, err := r.writeStatus(ctx, &p, func() { p.Status = *after }, acted.sent)
+		if err != nil {
 			return ctrl.Result{}, statusWriteError("Phone", p.Name, err)
 		}
 		r.writes.wrote(req.NamespacedName, read)
@@ -61,5 +60,5 @@ func (r *PhoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			summary{before.State, before.HandledRequest, before.Conditions},
 			summary{after.State, after.HandledRequest, after.Conditions})
 	}
-	return result(d, failed), nil
+	return result(d, acted.failed()), nil
 }

@@ -251,7 +251,7 @@ func TestSoftphoneRotateFails(t *testing.T) {
 			wantEvents(t, events,
 				laptopEvent(corev1.EventTypeWarning, "ActionFailed", "RotateToken", "rotateToken not sent: "+tc.reason),
 				laptopEvent(corev1.EventTypeNormal, "StateChanged", "Decide",
-					"Issued -> Provisioned: Linphone fetched its settings, which spends its one-time URL; minting a new one"))
+					"Issued -> Provisioned: rotateToken not sent: "+tc.reason+"; trying again"))
 			noLeak(t, f, events, old)
 		})
 	}

@@ -7,7 +7,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
@@ -307,10 +312,16 @@ func TestResyncFailureKeepsLastAction(t *testing.T) {
 			if res.RequeueAfter != devices.ActionRetryAfter {
 				t.Errorf("requeue after %v; want %v", res.RequeueAfter, devices.ActionRetryAfter)
 			}
+			// Ready says the resync did not go out, not "resync sent".
+			notSent := "resync for version " + v2[:12] + " not sent: " + tc.reason + "; trying again"
+			if c := meta.FindStatusCondition(st.Conditions, v1alpha1.ConditionReady); c == nil || c.Message != notSent ||
+				c.Reason != cisco79x5.ReasonConfigStale {
+				t.Errorf("Ready %+v; want ConfigStale %q", c, notSent)
+			}
 			wantEvents(t, f.rec.take(),
 				deskEvent(corev1.EventTypeWarning, "ActionFailed", "Resync",
 					"resync for version "+v2[:12]+" not sent: "+tc.reason),
-				deskEvent(corev1.EventTypeNormal, "StateChanged", "Decide", "Registered -> ConfigStale: resync sent on request"))
+				deskEvent(corev1.EventTypeNormal, "StateChanged", "Decide", "Registered -> ConfigStale: "+notSent))
 
 			f.actor.answer(agentapi.ActionResponse{Sent: true}, nil)
 			f.at(time.Minute + 30*time.Second)
@@ -555,5 +566,37 @@ func TestStaleCacheAfterWrite(t *testing.T) {
 	f.reconcilePhone("desk")
 	if calls := f.actor.take(); len(calls) != 0 {
 		t.Errorf("the fresh copy sent %v; want nothing (resynced a second ago)", calls)
+	}
+}
+
+// TestSentActionRecordedDespiteConflict: an action goes out before the
+// status write that records it, so a write that meets a Conflict (someone
+// edited the Phone meanwhile) is retried on a fresh copy rather than
+// returned: returned, the next reconcile would decide on the old memory
+// and send the resync again (W3 open item).
+func TestSentActionRecordedDespiteConflict(t *testing.T) {
+	f := newFixture(t)
+	ring := registeredDesk(t, f)
+	v2 := relabel(t, f)
+	f.at(time.Minute)
+	f.see(ring)
+	conflict := error(apierrors.NewConflict(schema.GroupResource{Group: v1alpha1.GroupVersion.Group, Resource: "phones"},
+		"desk", errors.New("injected")))
+	f.statusErrOnce.Store(true)
+	f.statusErr.Store(&conflict)
+	if _, err := f.phones.Reconcile(f.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: f.ns, Name: "desk"}}); err != nil {
+		t.Fatalf("reconcile: %v; want the record written on a second try", err)
+	}
+	if calls := f.actor.take(); len(calls) != 1 {
+		t.Fatalf("actions %v; want one resync", calls)
+	}
+	if st := f.phone("desk").Status; st.LastAction == nil || st.LastAction.Version != v2 {
+		t.Fatalf("lastAction %+v; want the resync of %s recorded", st.LastAction, v2)
+	}
+	f.at(time.Minute + 10*time.Second)
+	f.see(ring)
+	f.reconcilePhone("desk")
+	if calls := f.actor.take(); len(calls) != 0 {
+		t.Errorf("the resync was sent again: %v", calls)
 	}
 }

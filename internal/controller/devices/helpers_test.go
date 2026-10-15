@@ -213,7 +213,9 @@ type fixture struct {
 	statusWrites atomic.Int64
 	failSecrets  atomic.Bool
 	statusErr    atomic.Pointer[error]
-	failList     atomic.Bool
+	// statusErrOnce makes statusErr fail one status write, then clear.
+	statusErrOnce atomic.Bool
+	failList      atomic.Bool
 	// stalePhone, when set, is what Gets of that Phone return: a cache
 	// that has not seen the latest write.
 	stalePhone atomic.Pointer[v1alpha1.Phone]
@@ -266,6 +268,9 @@ func newFixture(t *testing.T, opts ...func(*fixture)) *fixture {
 		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 			f.statusWrites.Add(1)
 			if e := f.statusErr.Load(); e != nil {
+				if f.statusErrOnce.Load() {
+					f.statusErr.Store(nil)
+				}
 				return *e
 			}
 			return c.SubResource(sub).Update(ctx, obj, opts...)

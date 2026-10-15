@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"time"
 
@@ -40,6 +41,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -213,22 +215,82 @@ func (e *engine) decide(dev *drivers.Device, v view) (d drivers.Decision, now ti
 	return drv.Decide(*dev, v.snap.For(dev.ID, v.compiled.Index.Version), install.DecideSettings(e.cfg.Settings), now), now, true
 }
 
-// act takes the Decision's actions in order (§6.2.6 step 7) and reports
-// whether one failed. It stops at the first failure: the rest of the
-// Decision's actions are not attempted, and the caller keeps the previous
-// lastAction and handledRequest (6.2.1).
-func (e *engine) act(ctx context.Context, obj runtime.Object, dev drivers.Device, actions []drivers.Action) (failed bool) {
+// acted is what act did: whether an action went out (its record must
+// then be written: writeStatus), and the note of the one that did not, or
+// "".
+type acted struct {
+	sent    bool
+	failure string
+}
+
+func (a acted) failed() bool { return a.failure != "" }
+
+// act takes the Decision's actions in order (§6.2.6 step 7). It stops at
+// the first failure: the rest of the Decision's actions are not attempted,
+// and the caller keeps the previous lastAction and handledRequest (6.2.1)
+// and says so in Ready (failedConditions).
+func (e *engine) act(ctx context.Context, obj runtime.Object, dev drivers.Device, actions []drivers.Action) acted {
+	var out acted
 	for _, a := range actions {
 		failure := e.send(ctx, dev, a)
 		if failure != "" {
 			e.log.Info("action not sent", "device", dev.ID, "action", a.Kind, "version", a.Version, "reason", failure)
-			e.event(obj, corev1.EventTypeWarning, install.EventReasonActionFailed, eventAction(a.Kind), failedNote(a, failure))
-			return true
+			out.failure = failedNote(a, failure)
+			e.event(obj, corev1.EventTypeWarning, install.EventReasonActionFailed, eventAction(a.Kind), out.failure)
+			return out
 		}
+		out.sent = true
 		e.log.Info("action sent", "device", dev.ID, "action", a.Kind, "version", a.Version)
 		e.event(obj, corev1.EventTypeNormal, install.EventReasonActionSent, eventAction(a.Kind), sentNote(a))
 	}
-	return false
+	return out
+}
+
+// failedConditions are the Decision's conditions after an action did not
+// go out: Ready keeps its status and reason, but its message, which
+// described the action as taken ("resync sent"), says what failed instead.
+func failedConditions(from []metav1.Condition, failure string) []metav1.Condition {
+	out := slices.Clone(from)
+	for i := range out {
+		if out[i].Type == v1alpha1.ConditionReady {
+			out[i].Message = failure + "; trying again"
+		}
+	}
+	return out
+}
+
+// conditions are the conditions to write for d after act.
+func conditions(d drivers.Decision, a acted) []metav1.Condition {
+	if a.failed() {
+		return failedConditions(d.Conditions, a.failure)
+	}
+	return d.Conditions
+}
+
+// writeStatus writes obj's status (set puts the computed status on it)
+// and returns the resourceVersion of the copy it wrote over. An action
+// that went out is recorded only by this write, so after one (sent) a
+// Conflict, someone having changed the resource meanwhile, is retried on a
+// fresh copy: returned, the next reconcile would decide on the old memory
+// and send the action again. Without one, a Conflict is returned and the
+// resource decided again.
+func (e *engine) writeStatus(ctx context.Context, obj client.Object, set func(), sent bool) (string, error) {
+	read := obj.GetResourceVersion()
+	set()
+	err := e.cfg.Client.Status().Update(ctx, obj)
+	if err == nil || !sent || !apierrors.IsConflict(err) {
+		return read, err
+	}
+	e.log.V(1).Info("an action went out; writing its record again on a fresh copy", "name", obj.GetName())
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if err := e.cfg.Client.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			return err
+		}
+		read = obj.GetResourceVersion()
+		set()
+		return e.cfg.Client.Status().Update(ctx, obj)
+	})
+	return read, err
 }
 
 // send takes one action; it returns why it did not go out, or "".

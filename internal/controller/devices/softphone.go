@@ -38,7 +38,6 @@ func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if res, ok, err := r.read(ctx, req.NamespacedName, &s); !ok {
 		return res, err
 	}
-	read := s.ResourceVersion
 	dev := drivers.SoftphoneDevice(&s)
 	v, ok, err := r.observe(ctx, dev.ID)
 	if err != nil || !ok {
@@ -52,20 +51,20 @@ func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	failed := r.act(ctx, &s, dev, d.Actions)
+	acted := r.act(ctx, &s, dev, d.Actions)
 
 	before := s.Status.DeepCopy()
 	after := s.Status.DeepCopy()
 	after.State = string(d.State)
 	after.ObservedGeneration = s.Generation
-	setConditions(&after.Conditions, d.Conditions, s.Generation, now)
-	memory(dev, d, failed).ToSoftphoneStatus(after)
+	setConditions(&after.Conditions, conditions(d, acted), s.Generation, now)
+	memory(dev, d, acted.failed()).ToSoftphoneStatus(after)
 	after.HumanAction = humanAction(d)
 	after.ProvisioningURL = url
 
 	if !equality.Semantic.DeepEqual(before, after) {
-		s.Status = *after
-		if err := r.cfg.Client.Status().Update(ctx, &s); err != nil {
+		read, err := r.writeStatus(ctx, &s, func() { s.Status = *after }, acted.sent)
+		if err != nil {
 			return ctrl.Result{}, statusWriteError("Softphone", s.Name, err)
 		}
 		r.writes.wrote(req.NamespacedName, read)
@@ -73,7 +72,7 @@ func (r *SoftphoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			summary{before.State, before.HandledRequest, before.Conditions},
 			summary{after.State, after.HandledRequest, after.Conditions})
 	}
-	return result(d, failed), nil
+	return result(d, acted.failed()), nil
 }
 
 // provisioningURL is what status.provisioningURL shows. The URL is a live
