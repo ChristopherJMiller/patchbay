@@ -33,6 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -94,9 +95,15 @@ type harness struct {
 	cs       *kubernetes.Clientset
 	rest     *rest.Config
 
-	bundle     *e2eBundle // the compiled install the agent applies
-	agentToken string     // the control API token
-	agentFwd   agentForward
+	bundle *e2eBundle // the compiled install the agent applies
+	// On a reused cluster, the PBX pod found at install and its
+	// containers' restarts so far: a previous run's TestProvisioningOneTime
+	// restarts the agent on purpose, and the pod survives an unchanged
+	// chart. TestPBXUp allows those, and only those.
+	priorPBX      types.UID
+	priorRestarts map[string]int32
+	agentToken    string // the control API token
+	agentFwd      agentForward
 
 	// stoppedDiagnosed is set once diagnostics were saved after the suite
 	// was stopped (interrupt or budget); later failures are only fallout.
@@ -385,6 +392,12 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 		return ctx, fmt.Errorf("deleting old fakephone pods: %w", err)
 	}
 
+	if h.reuse {
+		if err := h.notePriorPBX(ctx); err != nil {
+			return ctx, err
+		}
+	}
+
 	// The controller will mint the agent token (design §4). Until it does,
 	// the harness stands in for it. An existing token is kept, so a reused
 	// cluster does not restart the PBX for nothing.
@@ -441,6 +454,28 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 		"--values", filepath.Join("test", "e2e", "values.yaml"),
 		"--values", runtimeFile)
 	return ctx, err
+}
+
+// notePriorPBX records the running PBX pod of a reused cluster, if any,
+// and its containers' restart counts (harness.priorRestarts).
+func (h *harness) notePriorPBX(ctx context.Context) error {
+	list, err := h.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/instance=" + release + ",app.kubernetes.io/component=pbx",
+	})
+	if err != nil {
+		return fmt.Errorf("listing the PBX pod: %w", err)
+	}
+	for _, p := range list.Items {
+		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		h.priorPBX, h.priorRestarts = p.UID, map[string]int32{}
+		for _, s := range append(p.Status.InitContainerStatuses, p.Status.ContainerStatuses...) {
+			h.priorRestarts[s.Name] = s.RestartCount
+		}
+		log.Printf("reusing PBX pod %s; restarts so far %v", p.Name, h.priorRestarts)
+	}
+	return nil
 }
 
 // waitForRollout waits until both Deployments have fully rolled out, the

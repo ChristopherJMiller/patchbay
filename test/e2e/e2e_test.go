@@ -166,8 +166,13 @@ func TestPBXUp(t *testing.T) {
 				if !s.Ready || s.State.Running == nil {
 					t.Errorf("container %s: ready=%v state=%+v", s.Name, s.Ready, s.State)
 				}
-				if s.RestartCount > 0 {
-					t.Errorf("container %s restarted %d times", s.Name, s.RestartCount)
+				// A reused cluster's pod may carry a previous run's restarts.
+				var before int32
+				if pod.UID == h.priorPBX {
+					before = h.priorRestarts[s.Name]
+				}
+				if s.RestartCount > before {
+					t.Errorf("container %s restarted %d times (%d before this run)", s.Name, s.RestartCount, before)
 				}
 			}
 			return ctx
