@@ -47,6 +47,38 @@ func event(file string) sensor.FetchEvent {
 	return sensor.FetchEvent{Transport: api.TransportTFTP, File: file, Result: api.FetchServed, At: t0, Source: "192.168.20.5"}
 }
 
+// socketPath is a fresh path for the fetch socket. A unix socket path must
+// stay under about 108 bytes, and t.TempDir() embeds the test's name: under
+// a deep TMPDIR (CI's nix develop) the bind fails. So use a short directory
+// of our own, as the fileserver's tests do.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "obs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "fetches.sock")
+}
+
+// serve runs the fetch socket until ctx ends; the channel gets its error.
+func serve(ctx context.Context, path string, rec *recorder) <-chan error {
+	errc := make(chan error, 1)
+	go func() { errc <- observe.ServeFetchSocket(ctx, path, rec, logr.Discard()) }()
+	return errc
+}
+
+// noSocket fails the test, with the server's error if it has stopped.
+func noSocket(t *testing.T, errc <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errc:
+		t.Fatalf("no socket: ServeFetchSocket returned %v", err)
+	default:
+		t.Fatal("no socket (ServeFetchSocket still running)")
+	}
+}
+
 func dial(t *testing.T, path string) net.Conn {
 	t.Helper()
 	c, err := (&net.Dialer{}).DialContext(context.Background(), "unix", path)
@@ -76,8 +108,7 @@ func waitFiles(t *testing.T, r *recorder, want ...string) {
 }
 
 func TestFetchSocket(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fetches.sock")
+	path := socketPath(t)
 	// A stale socket from a previous agent.
 	stale, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", path)
 	if err != nil {
@@ -164,7 +195,7 @@ func TestFetchSocket(t *testing.T) {
 var intaketestVersion = strings.Repeat("a", 64)
 
 func TestFetchSocketRefusesAFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fetches.sock")
+	path := socketPath(t)
 	if err := os.WriteFile(path, []byte("not a socket"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -183,18 +214,18 @@ func TestFetchSocketRefusesAFile(t *testing.T) {
 // TestFetchSocketLimitsConnections: connections beyond the limit are
 // closed at once; the others keep working.
 func TestFetchSocketLimitsConnections(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fetches.sock")
+	path := socketPath(t)
 	rec := &recorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = observe.ServeFetchSocket(ctx, path, rec, logr.Discard()) }()
+	errc := serve(ctx, path, rec)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Lstat(path); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("no socket")
+			noSocket(t, errc)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -220,11 +251,11 @@ func TestFetchSocketLimitsConnections(t *testing.T) {
 // compromised file server claiming a softphone's provisioning fetch, or
 // one carrying a token) is dropped; the connection stays.
 func TestFetchSocketDropsWhatTheFileServerCannotServe(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fetches.sock")
+	path := socketPath(t)
 	rec := &recorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _ = observe.ServeFetchSocket(ctx, path, rec, logr.Discard()) }()
+	errc := serve(ctx, path, rec)
 	var c net.Conn
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -233,7 +264,7 @@ func TestFetchSocketDropsWhatTheFileServerCannotServe(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("no socket")
+			noSocket(t, errc)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
