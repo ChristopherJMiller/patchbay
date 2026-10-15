@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/ami/amitest"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/apply"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/intake"
@@ -38,7 +40,10 @@ var (
 
 // asterisk simulates Asterisk behind the fake AMI: a reload of res_pjsip.so
 // or pbx_config.so reads the version the current link names, as the real
-// one reads its config through the link.
+// one reads its config through the link. Its endpoints are the sections
+// of type endpoint in that version's pjsip.conf, as the real one's are,
+// not the index's devices: verify must expect exactly what the compiled
+// files define.
 type asterisk struct {
 	t    *testing.T
 	live string
@@ -76,7 +81,7 @@ func (a *asterisk) current() (string, compile.Index) {
 }
 
 func (a *asterisk) reload(module string) error {
-	v, idx := a.current()
+	v, _ := a.current()
 	if v == "" {
 		return nil // no config yet
 	}
@@ -89,8 +94,8 @@ func (a *asterisk) reload(module string) error {
 	switch module {
 	case "res_pjsip.so":
 		var eps []string
-		for id, d := range idx.Devices {
-			if d.Version != "" && id != a.drop[v] {
+		for _, id := range a.endpoints(v) {
+			if id != a.drop[v] {
 				eps = append(eps, id)
 			}
 		}
@@ -102,6 +107,27 @@ func (a *asterisk) reload(module string) error {
 		a.ami.SetContexts(compile.DevicesContext, compile.UnavailableContext, "patchbay-people")
 	}
 	return nil
+}
+
+// endpoints are the names of the sections of type endpoint in version v's
+// pjsip.conf.
+func (a *asterisk) endpoints(v string) []string {
+	raw, err := os.ReadFile(filepath.Join(a.live, "v"+v, "asterisk", "pjsip.conf"))
+	if err != nil {
+		a.t.Errorf("Asterisk cannot read pjsip.conf: %v", err)
+		return nil
+	}
+	var out []string
+	section := ""
+	for line := range strings.Lines(string(raw)) {
+		line = strings.TrimSpace(line)
+		if name, ok := strings.CutPrefix(line, "["); ok {
+			section = strings.TrimSuffix(name, "]")
+		} else if line == "type = endpoint" {
+			out = append(out, section)
+		}
+	}
+	return out
 }
 
 // boot starts Asterisk on the live version and brings AMI up.
@@ -966,4 +992,32 @@ func TestRefusesAnotherBoot(t *testing.T) {
 	if err := e.apply(next); err == nil || !strings.Contains(err.Error(), "modules.conf") {
 		t.Errorf("Apply with another modules.conf = %v, want a refusal", err)
 	}
+}
+
+// TestVerifyIgnoresUnrenderedDevices: a device in the index that is not
+// rendered (a 7975, Invalid until its load is in the manifest; or a number
+// or MAC conflict) has no PJSIP endpoint, and verify does not expect one:
+// otherwise every bundle holding such a device would fail verification and
+// roll back, and no change would ever apply.
+func TestVerifyIgnoresUnrenderedDevices(t *testing.T) {
+	e := newEnv(t)
+	e.ast.boot()
+	in := intaketest.House()
+	in.Phones = append(in.Phones, v1alpha1.Phone{
+		ObjectMeta: metav1.ObjectMeta{Name: "lobby", CreationTimestamp: metav1.Now()},
+		Spec:       v1alpha1.PhoneSpec{Model: "cisco-7975", MAC: "D0C78915A001", Number: "110", Label: "Lobby"},
+	})
+	in.Secrets[compile.PasswordRef(drivers.DeviceID(drivers.KindPhone, "lobby"))] = []byte("not-a-secret-lobby-0001")
+	r := in.Resolved(t)
+	lobby, ok := r.Bundle.Devices[drivers.DeviceID(drivers.KindPhone, "lobby")]
+	if !ok || lobby.Version != "" {
+		t.Fatalf("lobby in the index: %+v, %v; want it there, unrendered", lobby, ok)
+	}
+	e.mustApply(r)
+	if st := e.a.Status(); !st.Verified || st.AppliedVersion != r.Bundle.Version {
+		t.Errorf("Status = %+v, want the version verified", st)
+	}
+	// And the next version applies too.
+	in.Phones[0].Spec.Label = "Desk Two"
+	e.mustApply(in.Resolved(t))
 }
