@@ -23,6 +23,9 @@ metadata: {name: chris}
 spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
 ```
 
+Numbers are strings: quote them (`number: "100"`). A bare `number: 100` is
+refused by the API server; see CLAUDE.md, "Deviations from the design".
+
 It is scoped to the hardware in one house (Cisco CP-7945G/7965G/7975G desk
 phones on SIP firmware, and Linphone softphones), LAN only, with no outside
 line. The design, including the per-device state machines, is
@@ -57,6 +60,7 @@ make lint                      # golangci-lint (with exhaustive) + helm lint
 make build                     # bin/patchbay
 make image                     # ghcr.io/christopherjmiller/patchbay:dev
 make e2e                       # kind + the chart + real Asterisk + a simulated phone
+make check-hygiene             # no binaries, firmware or secrets in git (CI runs it)
 ```
 
 The e2e suite, its knobs and how to debug it: [docs/e2e.md](docs/e2e.md).

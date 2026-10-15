@@ -34,10 +34,42 @@ resources (Phone, Softphone, Person, Stream)
 - Secrets never appear in compiled files, only `@@secret:<name>/<key>@@`
   placeholders that the agent resolves.
 
-Contracts: `internal/compile` (Bundle, Inputs, Settings), `internal/drivers`
-(Driver, Device, Memory, Observations, Decision, Profile) and
-`internal/agent/api` (the control API's JSON). Change them deliberately: the
-controller, agent, drivers and e2e fake phone all build on them.
+Contracts: `internal/compile` (Bundle, Inputs, Settings, and in `layout.go`
+the bundle's four trees and the live directory the agent swaps),
+`internal/drivers` (Driver, Device, Memory, Observations, DecideSettings,
+Decision, Profile, FirmwareLoad) and `internal/agent/api` (the control API's
+JSON). Change them deliberately: the controller, agent, drivers and e2e fake
+phone all build on them.
+
+## Deviations from the design
+
+`docs/design.md` is a verbatim copy of the approved spec, so where the code
+departs from it, the departure is recorded here (and in the code's docs).
+
+- **Numbers are strings.** `number: "100"`, quoted. Design §4's examples
+  write `number: 100`, which the API server rejects ("must be of type
+  string"); a string keeps leading zeros and dodges YAML 1.1 reading `010`
+  as 8. Resources copied from the design need their numbers quoted. The spec
+  should be updated to match.
+- **Per-device config versions.** `compile.Bundle.DeviceVersions`, so
+  ConfigStale (§8.3) compares each phone with its own compiled version, not
+  one install-wide version.
+- **Softphone status has memory too** (`observed`, `lastAction`,
+  `humanAction`), which §8.4's Offline and rotateToken need.
+- **Bundle trees.** §5 says TFTP and HTTP "serve from the same live
+  directory". They serve only their own tree (`tftp/`, `http/`); Asterisk's
+  `asterisk/` tree, which holds every password once resolved, is never
+  served.
+- **Request annotations** (`patchbay.chrismiller.xyz/resync-requested`,
+  `.../reissue-requested`) are acted on once per value, recorded in
+  `status.handledRequest`, so the controller never edits metadata.
+- **MACConflict**: two Phones with one MAC; oldest wins, like numbers.
+- **Decide** takes `DecideSettings` (signalling backend, staleness), as
+  §8.1's signature has settings; §4's sketch omits them.
+- **Firmware manifests are grouped by load** (`[]FirmwareLoad`), because two
+  loads both carry `term45.default.loads`; §4's sketch has a flat list.
+- **e2e runs Kubernetes 1.33** (the target cluster's minor) and the chart
+  requires >= 1.33.
 
 ## Commands
 
@@ -55,6 +87,7 @@ make tools-versions
 make e2e          # kind + chart + real Asterisk + fakephone; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
+make check-hygiene # no tracked binaries, big files, firmware types or secrets
 ```
 
 The CRDs are generated into `charts/patchbay/templates/crds/` and carry
