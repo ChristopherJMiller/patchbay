@@ -4,4 +4,4 @@
 #
 # The golden MD5 login Key of the agent's AMI test: md5("1234567890" +
 # "s3cr3t-ami-password"), both fake values in the same test.
-dd3cbc8f105bfa0775f8840bed5a2471b697cd4e:internal/agent/ami/conn_test.go:generic-api-key:35
+94b5dd47fab4cca137cb8ff0ded7205ccae5b641:internal/agent/ami/conn_test.go:generic-api-key:35
