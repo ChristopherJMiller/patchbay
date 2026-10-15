@@ -442,6 +442,11 @@ spec:
 ---
 # The agent's control API, for the controller (and `patchbay` via the API
 # server). The pod is on the host network, so its endpoint is the node IP.
+# It publishes the pod whether or not it is Ready: the pod is NotReady
+# whenever Asterisk is down (its readiness probe), and the agent must still
+# answer then, so devices show PBXDown rather than AgentUnreachable. The
+# control API needs a token; the agent not listening yet is an unreachable
+# agent, as it should be.
 apiVersion: v1
 kind: Service
 metadata:
@@ -452,6 +457,7 @@ metadata:
     app.kubernetes.io/component: pbx
 spec:
   type: ClusterIP
+  publishNotReadyAddresses: true
   selector:
     {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "pbx") | nindent 4 }}
   ports:

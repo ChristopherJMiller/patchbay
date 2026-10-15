@@ -439,3 +439,15 @@ func TestChartAgentProbesUseLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestChartAgentServicePublishesNotReady: the controller reaches the agent
+// only through the agent Service, and the PBX pod is NotReady whenever
+// Asterisk is down (its readiness probe), so the Service publishes the pod
+// regardless: the agent then still answers, and devices show PBXDown, not
+// AgentUnreachable (design §7).
+func TestChartAgentServicePublishesNotReady(t *testing.T) {
+	svc := get[corev1.Service](t, render(t), "Service", release+"-agent")
+	if !svc.Spec.PublishNotReadyAddresses {
+		t.Error("the agent Service does not publish not-ready addresses: an Asterisk outage would read as AgentUnreachable")
+	}
+}

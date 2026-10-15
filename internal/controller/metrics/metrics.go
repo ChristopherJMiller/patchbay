@@ -8,10 +8,12 @@
 //	patchbay_compile_failures_total       reconciles whose compile or bundle encoding failed
 //	patchbay_observation_age_seconds      how old the last good observations are
 //	patchbay_agent_reachable              1 when the latest poll of the agent succeeded, else 0
+//	patchbay_asterisk_up                  1 when the agent's AMI session to Asterisk was up at the latest poll, else 0
 //
 // patchbay_registered_endpoints and patchbay_observation_age_seconds are
 // absent until the first successful poll, patchbay_agent_reachable until
-// the first poll attempt has ended, and patchbay_config_version_info until
+// the first poll attempt has ended, patchbay_asterisk_up while the latest poll
+// failed (patchbay_agent_reachable says so), and patchbay_config_version_info until
 // the bundle reconciler has a version in place. Labels carry kinds, states
 // and bundle versions, never a secret.
 //
@@ -42,6 +44,7 @@ const (
 	NameCompileFailures     = "patchbay_compile_failures_total"
 	NameObservationAge      = "patchbay_observation_age_seconds"
 	NameAgentReachable      = "patchbay_agent_reachable"
+	NameAsteriskUp          = "patchbay_asterisk_up"
 )
 
 // StatePending is patchbay_devices' state label for a device whose status
@@ -239,18 +242,24 @@ var (
 		"Seconds since the last good observations of the agent were fetched.", nil, nil)
 	reachableDesc = prometheus.NewDesc(NameAgentReachable,
 		"1 when the latest poll of the agent's observations succeeded, else 0.", nil, nil)
+	asteriskUpDesc = prometheus.NewDesc(NameAsteriskUp,
+		"1 when the agent's AMI session to Asterisk was up at the latest poll, else 0 (absent while the agent cannot be reached).", nil, nil)
 )
 
 func (c *observerCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- registeredDesc
 	ch <- ageDesc
 	ch <- reachableDesc
+	ch <- asteriskUpDesc
 }
 
 func (c *observerCollector) Collect(ch chan<- prometheus.Metric) {
 	s := c.observer.Snapshot()
 	if s.Started() {
 		ch <- prometheus.MustNewConstMetric(reachableDesc, prometheus.GaugeValue, boolValue(s.AgentReachable))
+	}
+	if s.AgentReachable {
+		ch <- prometheus.MustNewConstMetric(asteriskUpDesc, prometheus.GaugeValue, boolValue(s.Document.Agent.AsteriskUp))
 	}
 	if s.PolledAt.IsZero() {
 		return

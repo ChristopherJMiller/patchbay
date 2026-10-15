@@ -98,7 +98,7 @@ func TestEveryMetric(t *testing.T) {
 	holder := &agentview.Holder{}
 	holder.Set(agentview.Snapshot{
 		Document: agentapi.Observations{
-			Agent: agentapi.AgentStatus{LastApplyVersion: "v2", LastApplyError: "verify: no", LastApplyAt: &applyAt},
+			Agent: agentapi.AgentStatus{AsteriskUp: true, LastApplyVersion: "v2", LastApplyError: "verify: no", LastApplyAt: &applyAt},
 			Devices: []agentapi.DeviceObservations{
 				{Device: "phone-desk", Registration: &agentapi.Registration{Contact: "sip:100@x"}},
 				{Device: "phone-kitchen", Registration: &agentapi.Registration{Contact: "sip:101@x"}},
@@ -132,6 +132,7 @@ func TestEveryMetric(t *testing.T) {
 		`patchbay_compile_failures_total`:                   "1",
 		`patchbay_observation_age_seconds`:                  "7",
 		`patchbay_agent_reachable`:                          "1",
+		`patchbay_asterisk_up`:                              "1",
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -156,6 +157,20 @@ func TestEveryMetric(t *testing.T) {
 	if got[metrics.NameAgentReachable] != "0" || got[metrics.NameObservationAge] != "17" {
 		t.Errorf("after a failed poll: reachable %q, age %q; want 0 and 17", got[metrics.NameAgentReachable], got[metrics.NameObservationAge])
 	}
+	// What the agent last said of Asterisk is not repeated while it cannot
+	// be asked.
+	if s := series(got, metrics.NameAsteriskUp); len(s) != 0 {
+		t.Errorf("asterisk_up present while the agent is unreachable: %v", s)
+	}
+
+	// Reachable again, Asterisk down (the PBXDown case): 0.
+	s.AgentReachable = true
+	s.Document.Agent.AsteriskUp = false
+	s.Polls++
+	holder.Set(s)
+	if got = scrape(t, reg); got[metrics.NameAsteriskUp] != "0" {
+		t.Errorf("asterisk_up = %q with Asterisk down, want 0", got[metrics.NameAsteriskUp])
+	}
 }
 
 func TestAbsentBeforeFirstPoll(t *testing.T) {
@@ -165,7 +180,7 @@ func TestAbsentBeforeFirstPoll(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := scrape(t, reg)
-	for _, name := range []string{metrics.NameAgentReachable, metrics.NameObservationAge, metrics.NameRegisteredEndpoints, metrics.NameConfigVersionInfo, metrics.NameDevices} {
+	for _, name := range []string{metrics.NameAgentReachable, metrics.NameAsteriskUp, metrics.NameObservationAge, metrics.NameRegisteredEndpoints, metrics.NameConfigVersionInfo, metrics.NameDevices} {
 		if s := series(got, name); len(s) != 0 {
 			t.Errorf("%s present before any poll: %v", name, s)
 		}

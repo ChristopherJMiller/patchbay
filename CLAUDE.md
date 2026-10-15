@@ -214,8 +214,14 @@ departs from it, the departure is recorded here (and in the code's docs).
   status` prints no control character.
 - **The CLI never uses the in-cluster config**: `--kubeconfig`, else
   `$KUBECONFIG`, else `~/.kube/config`.
-- **Two more metrics** than §10 lists: `patchbay_compile_failures_total`
-  and `patchbay_agent_reachable` (the "agent unreachable" alert).
+- **Three more metrics** than §10 lists: `patchbay_compile_failures_total`,
+  `patchbay_agent_reachable` (the "agent unreachable" alert) and
+  `patchbay_asterisk_up` (the "PBX down" alert; absent while the agent
+  cannot be reached).
+- **The agent Service publishes not-ready addresses**: the PBX pod is
+  NotReady whenever Asterisk is, and the controller reaches the agent only
+  through that Service, so without it an Asterisk outage read as
+  `AgentUnreachable` instead of §7's `PBXDown` (e2e `TestPBXDown`).
 - **The control API caps its connections** (64, 16 per source) like device
   HTTP and :6970, but the node's loopback (127.0.0.1, ::1) is outside the
   total: the agent's probes set `host: 127.0.0.1`, so LAN hosts holding
