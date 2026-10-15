@@ -73,11 +73,44 @@ func TestFold(t *testing.T) {
 	unreachable.Qualify = agentapi.QualifyUnreachable
 	action := &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: vNow, At: *mt(ago(time.Minute)), Attempts: 1}
 
+	// scrapeAt is a successful scrape at `at` reporting versionID.
+	scrapeAt := func(at time.Time, versionID string) *agentapi.WebScrape {
+		w := web(versionID, "")
+		w.At = at
+		return w
+	}
+	// upgraded is a phone that fetched its config 12 minutes ago, downloaded
+	// the SIP load 10 to 6 minutes ago and fetched its config again 20 s
+	// ago, with w as its latest scrape and a live contact.
+	upgraded := func(w *agentapi.WebScrape) *agentapi.DeviceObservations {
+		return &agentapi.DeviceObservations{
+			Fetches: []agentapi.Fetch{
+				sepFetch(ago(12*time.Minute), vNow), fwFetch("SIP45.9-4-2SR4-3S.loads", ago(10*time.Minute)),
+				fwFetch("apps45.9-4-2SR4-3.sbn", ago(6*time.Minute)), sepFetch(ago(20*time.Second), vNow),
+			},
+			Registration: contact(t0.Add(5 * time.Minute)),
+			Web:          w,
+		}
+	}
+	beforeUpgrade := drivers.Memory{
+		FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sccp45,
+		LastConfigFetch: cfgFetch(vNow, ago(12*time.Minute)), UpgradeStartedAt: mt(ago(10 * time.Minute)),
+	}
+	afterUpgrade := func(firmware string) drivers.Memory {
+		return drivers.Memory{
+			FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: firmware,
+			LastConfigFetch: cfgFetch(vNow, ago(20*time.Second)), LastRegistered: mt(t0),
+			UpgradeStartedAt: mt(ago(10 * time.Minute)),
+		}
+	}
+	sub := func(d time.Duration) time.Time { return ago(d).Add(300 * time.Millisecond) }
+
 	for _, c := range []struct {
 		name string
 		mem  drivers.Memory
 		d    *agentapi.DeviceObservations
 		p    drivers.Profile
+		now  time.Time // zero: t0
 		want drivers.Memory
 	}{
 		{
@@ -169,7 +202,7 @@ func TestFold(t *testing.T) {
 		{
 			name: "last config fetch: an older fetch never replaces a newer memory",
 			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastConfigFetch: &v1alpha1.ConfigFetch{Version: vNow, At: *mt(ago(time.Minute))}},
-			d:    seen(sepFetch(ago(5*time.Minute), vOld), sepFetch(ago(time.Minute), vOld)),
+			d:    seen(sepFetch(ago(5*time.Minute), vOld), sepFetch(ago(time.Minute+time.Second), vOld)),
 			want: drivers.Memory{
 				FirstSeen: mt(ago(time.Hour)), Address: deskIP,
 				LastConfigFetch: &v1alpha1.ConfigFetch{Version: vNow, At: *mt(ago(time.Minute))},
@@ -233,6 +266,170 @@ func TestFold(t *testing.T) {
 				UpgradeStartedAt: mt(ago(time.Hour)), LastAction: action, HandledRequest: "r1",
 			},
 		},
+
+		// Which scrape counts: a successful one, no older than the phone's
+		// last config fetch or firmware download (either means it restarted
+		// or changed its load since).
+		{
+			name: "firmware: a failed scrape's fields (an older success's) are not read",
+			mem:  drivers.Memory{Firmware: sccp45},
+			d: &agentapi.DeviceObservations{Web: func() *agentapi.WebScrape {
+				w := web(sip45, jarSIP)
+				w.Error = "context deadline exceeded"
+				return w
+			}()},
+			want: drivers.Memory{Firmware: sccp45},
+		},
+		{
+			name: "firmware: a scrape older than the last config fetch is not read",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45},
+			d: &agentapi.DeviceObservations{
+				Fetches: []agentapi.Fetch{sepFetch(ago(2*time.Minute), vNow)},
+				Web:     scrapeAt(ago(3*time.Minute), sip45),
+			},
+			want: drivers.Memory{
+				FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sccp45,
+				LastConfigFetch: cfgFetch(vNow, ago(2*time.Minute)),
+			},
+		},
+		{
+			name: "firmware: a scrape at the last config fetch's second is read",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45},
+			d: &agentapi.DeviceObservations{
+				Fetches: []agentapi.Fetch{sepFetch(sub(2*time.Minute), vNow)},
+				Web:     scrapeAt(ago(2*time.Minute), sip45),
+			},
+			want: drivers.Memory{
+				FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sip45,
+				LastConfigFetch: cfgFetch(vNow, ago(2*time.Minute)),
+			},
+		},
+		{
+			name: "firmware: a scrape older than the last firmware download is not read",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45},
+			d: &agentapi.DeviceObservations{
+				Fetches: []agentapi.Fetch{fwFetch("apps45.9-4-2SR4-3.sbn", ago(time.Minute))},
+				Web:     scrapeAt(ago(2*time.Minute), sip45),
+			},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sccp45},
+		},
+		{
+			name: "firmware: back from a download, the load from before it is forgotten",
+			mem:  beforeUpgrade,
+			d:    upgraded(nil),
+			want: afterUpgrade(""),
+		},
+		{
+			name: "firmware: back from a download, a failed scrape is still not read",
+			mem:  beforeUpgrade,
+			d: upgraded(func() *agentapi.WebScrape {
+				w := scrapeAt(ago(5*time.Second), sccp45)
+				w.Error = "timeout"
+				return w
+			}()),
+			want: afterUpgrade(""),
+		},
+		{
+			name: "firmware: back from a download, a scrape before its reboot is not read",
+			mem:  beforeUpgrade,
+			d:    upgraded(scrapeAt(ago(5*time.Minute), sccp45)),
+			want: afterUpgrade(""),
+		},
+		{
+			name: "firmware: back from a download, a scrape since is read",
+			mem:  beforeUpgrade,
+			d:    upgraded(scrapeAt(ago(5*time.Second), sip45)),
+			want: afterUpgrade(sip45),
+		},
+		{
+			name: "firmware: the agent's log lost the download; UpgradeStartedAt marks it",
+			mem:  beforeUpgrade,
+			d: &agentapi.DeviceObservations{
+				Fetches:      []agentapi.Fetch{sepFetch(ago(20*time.Second), vNow)},
+				Registration: contact(t0.Add(5 * time.Minute)),
+			},
+			want: afterUpgrade(""),
+		},
+		{
+			name: "firmware: a load remembered after the reboot is kept",
+			mem: func() drivers.Memory {
+				m := afterUpgrade(sip45)
+				m.LastRegistered = mt(ago(10 * time.Second))
+				return m
+			}(),
+			d: upgraded(nil),
+			want: func() drivers.Memory {
+				m := afterUpgrade(sip45)
+				m.LastRegistered = mt(ago(10 * time.Second))
+				return m
+			}(),
+		},
+		{
+			name: "firmware: a live SIP registration rules out an SCCP load",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45, LastRegistered: mt(ago(30 * time.Second))},
+			d:    &agentapi.DeviceObservations{Registration: contact(t0.Add(time.Minute))},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastRegistered: mt(ago(30 * time.Second))},
+		},
+		{
+			name: "firmware: and an SCCP image",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastRegistered: mt(ago(30 * time.Second))},
+			d: &agentapi.DeviceObservations{
+				Registration: contact(t0.Add(time.Minute)),
+				Web:          web("", "jar45sccp.9-4-2SR4-3.sbn"),
+			},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastRegistered: mt(ago(30 * time.Second))},
+		},
+		{
+			name: "firmware: without a contact an SCCP load stands",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45, LastRegistered: mt(ago(time.Hour))},
+			d:    &agentapi.DeviceObservations{Registration: contact(t0)},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45, LastRegistered: mt(ago(time.Hour))},
+		},
+
+		// Status stores whole seconds; the agent reports nanoseconds. Events
+		// round down (as storing them would), marks round up.
+		{
+			name: "times: the first fetch rounds down",
+			d:    seen(fetch(deskSEP+".sgn", agentapi.FetchNotFound, sub(4*time.Minute))),
+			want: drivers.Memory{FirstSeen: mt(ago(4 * time.Minute)), Address: deskIP},
+		},
+		{
+			name: "times: first seen as a contact between seconds rounds down",
+			d:    &agentapi.DeviceObservations{Registration: contact(t0.Add(time.Minute))},
+			now:  t0.Add(500 * time.Millisecond),
+			want: drivers.Memory{FirstSeen: mt(t0), Address: deskIP, LastRegistered: mt(t0.Add(time.Second))},
+		},
+		{
+			name: "times: a config fetch rounds down",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour))},
+			d:    seen(sepFetch(sub(5*time.Minute), vNow)),
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(5*time.Minute))},
+		},
+		{
+			name: "times: the stored config fetch is not news",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastConfigFetch: cfgFetch(vNow, ago(5*time.Minute))},
+			d:    seen(sepFetch(sub(5*time.Minute), vNow)),
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(5*time.Minute))},
+		},
+		{
+			name: "times: another version in the stored second is news",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastConfigFetch: cfgFetch(vOld, ago(5*time.Minute))},
+			d:    seen(sepFetch(sub(5*time.Minute), vNow)),
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(5*time.Minute))},
+		},
+		{
+			name: "times: last registered rounds up, after a config fetch in its second",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour))},
+			d: &agentapi.DeviceObservations{
+				Fetches:      []agentapi.Fetch{sepFetch(t0.Add(200*time.Millisecond), vNow)},
+				Registration: contact(t0.Add(time.Minute)),
+			},
+			now: t0.Add(500 * time.Millisecond),
+			want: drivers.Memory{
+				FirstSeen: mt(ago(time.Hour)), Address: deskIP,
+				LastConfigFetch: cfgFetch(vNow, t0), LastRegistered: mt(t0.Add(time.Second)),
+			},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dev := desk()
@@ -243,7 +440,11 @@ func TestFold(t *testing.T) {
 			}
 			obs := healthy()
 			obs.Device = c.d
-			got := cisco79x5.Fold(dev, obs, t0, prof)
+			now := c.now
+			if now.IsZero() {
+				now = t0
+			}
+			got := cisco79x5.Fold(dev, obs, now, prof)
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("fold:\n got %s\nwant %s", fmtMemory(got), fmtMemory(c.want))
 			}

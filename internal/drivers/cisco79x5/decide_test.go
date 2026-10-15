@@ -756,6 +756,116 @@ func needsTrustResetCases() []decideCase {
 			},
 		},
 	)
+
+	// The trust log counts only from a successful scrape no older than its
+	// last config fetch or firmware download.
+	trustLine := []string{"Trust List Update Failed"}
+	twoMinutes := drivers.Memory{FirstSeen: mt(ago(2 * time.Minute)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(2*time.Minute))}
+	waiting := func(m drivers.Memory, requeue time.Duration) drivers.Decision {
+		return drivers.Decision{
+			State: drivers.StateRegistering,
+			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
+				faPending, fcNotReported, provNow, regNone, cfgNow),
+			StatusPatch:  m,
+			RequeueAfter: requeue,
+		}
+	}
+	cases = append(cases,
+		decideCase{
+			name: "a trust error read before its last config fetch is old news → row 7", dev: desk(),
+			obs: obsWith(&agentapi.DeviceObservations{
+				Fetches: []agentapi.Fetch{sepFetch(ago(2*time.Minute), vNow)},
+				Web:     &agentapi.WebScrape{At: ago(3 * time.Minute), Address: deskIP, DeviceLog: trustLine},
+			}),
+			want: waiting(twoMinutes, 3*time.Minute),
+		},
+		decideCase{
+			name: "a trust error in a failed scrape is not read → row 7", dev: desk(),
+			obs: obsWith(&agentapi.DeviceObservations{
+				Fetches: []agentapi.Fetch{sepFetch(ago(2*time.Minute), vNow)},
+				Web:     &agentapi.WebScrape{At: t0, Address: deskIP, Error: "timeout", DeviceLog: trustLine},
+			}),
+			want: waiting(twoMinutes, 3*time.Minute),
+		},
+	)
+
+	// The factory reset P5 asked for: the phone downloads the staged
+	// default load. A download is progress, so neither the .sgn requests
+	// from before it nor the trust error its web page showed before it
+	// (while flashing the page is down, and the agent keeps the last
+	// successful scrape) asks for another reset.
+	resetMem := drivers.Memory{FirstSeen: mt(ago(25 * time.Minute)), Address: deskIP, Firmware: sccp45}
+	downloading := func(w *agentapi.WebScrape, fs ...agentapi.Fetch) drivers.Observations {
+		return obsWith(&agentapi.DeviceObservations{
+			Fetches: append(fs, fwFetch("term45.default.loads", ago(90*time.Second)), fwFetch("apps45.9-4-2SR4-3.sbn", ago(30*time.Second))),
+			Web:     w,
+		}, withStore(staged()))
+	}
+	afterReset := func() drivers.Decision {
+		m := resetMem
+		m.UpgradeStartedAt = mt(ago(90 * time.Second))
+		return drivers.Decision{
+			State:        drivers.StateUpgrading,
+			Conditions:   conds(ready(cF, cisco79x5.ReasonUpgrading, p7), faStaged, fcOther(sccp45), provNone, regNone, cfgNone),
+			StatusPatch:  m,
+			HumanAction:  p7,
+			RequeueAfter: 150 * time.Second,
+		}
+	}
+	cases = append(cases,
+		decideCase{
+			name: "factory reset: the download after old .sgn requests → row 6", drv: pinned(), dev: deskWith(resetMem),
+			obs:  downloading(nil, sgn(ago(20*time.Minute)), sgn(ago(10*time.Minute))),
+			want: afterReset(),
+		},
+		decideCase{
+			name: "factory reset: the download while the old trust error is all the agent has → row 6", drv: pinned(), dev: deskWith(resetMem),
+			obs: downloading(&agentapi.WebScrape{
+				At: ago(10 * time.Second), Address: deskIP, Error: "connection refused",
+				DeviceInformation:    &agentapi.DeviceInformation{VersionID: sccp45},
+				NetworkConfiguration: &agentapi.NetworkConfiguration{},
+				DeviceLog:            []string{"ITL file verification failed"},
+			}),
+			want: afterReset(),
+		},
+		decideCase{
+			name: "factory reset: a trust error read before the download → row 6", drv: pinned(), dev: deskWith(resetMem),
+			obs: downloading(&agentapi.WebScrape{
+				At: ago(2 * time.Minute), Address: deskIP,
+				DeviceInformation:    &agentapi.DeviceInformation{VersionID: sccp45},
+				NetworkConfiguration: &agentapi.NetworkConfiguration{},
+				DeviceLog:            []string{"ITL file verification failed"},
+			}),
+			want: afterReset(),
+		},
+	)
+	// After the download it still asks only for the signed config: the
+	// .sgn clock restarts at the download.
+	stillSigned := func(sgnAge time.Duration) (drivers.Device, drivers.Observations) {
+		m := resetMem
+		m.UpgradeStartedAt = mt(ago(5 * time.Minute))
+		return deskWith(m), obsWith(seen(
+			sgn(ago(20*time.Minute)), fwFetch("term45.default.loads", ago(5*time.Minute)),
+			fwFetch("apps45.9-4-2SR4-3.sbn", ago(4*time.Minute)), sgn(ago(sgnAge)),
+		), withStore(staged()))
+	}
+	dev, obs = stillSigned(3*time.Minute - time.Second)
+	cases = append(cases, decideCase{
+		name: "a .sgn 3m-1s after the download → row 6", drv: pinned(), dev: dev, obs: obs,
+		want: drivers.Decision{
+			State:        drivers.StateUpgrading,
+			Conditions:   conds(ready(cF, cisco79x5.ReasonUpgrading, p7), faStaged, fcOther(sccp45), provNone, regNone, cfgNone),
+			StatusPatch:  dev.Memory,
+			HumanAction:  p7,
+			RequeueAfter: time.Second,
+		},
+	})
+	dev, obs = stillSigned(3 * time.Minute)
+	cases = append(cases, decideCase{
+		name: "a .sgn 3m after the download", drv: pinned(), dev: dev, obs: obs,
+		want: trust(p5, resetMem, provNone, cfgNone, faStaged),
+	})
+	cases[len(cases)-1].want.Conditions[2] = fcOther(sccp45)
 	return cases
 }
 
@@ -1198,7 +1308,7 @@ func registeredCases() []decideCase {
 	advancedWant.LastRegistered = mt(t0)
 	upgradeEnded := registeredMem(cur)
 	upgradeEnded.UpgradeStartedAt = mt(ago(40 * time.Minute))
-	return []decideCase{
+	cases := []decideCase{
 		{name: "plain", dev: deskWith(plain), obs: registeredObs(vNow, 0), want: registered(plain, fcRunning, cfgNow, nil)},
 		{name: "firmware not reported", dev: deskWith(notReported), obs: notReportedObs, want: registered(notReported, fcNotReported, cfgNow, nil)},
 		{
@@ -1236,6 +1346,81 @@ func registeredCases() []decideCase {
 		},
 		{name: "last registered advances after a minute", dev: deskWith(advanced), obs: registeredObs(vNow, 0), want: registered(advancedWant, fcRunning, cfgNow, nil)},
 		{name: "clears an ended upgrade", dev: deskWith(upgradeEnded), obs: registeredObs(vNow, 0), want: registered(plain, fcRunning, cfgNow, nil)},
+	}
+	cases = append(cases, upgradedCases()...)
+	return cases
+}
+
+// upgradedCases: the phone is back from upgrading SCCP to the SIP load,
+// fetched its config 20 s ago and registered. What it ran before the
+// download is forgotten; only a scrape since may say what it runs now.
+// Nothing resyncs (restarts) a freshly upgraded phone.
+func upgradedCases() []decideCase {
+	before := drivers.Memory{
+		FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sccp45,
+		LastConfigFetch: cfgFetch(vNow, ago(12*time.Minute)), UpgradeStartedAt: mt(ago(10 * time.Minute)),
+	}
+	obs := func(w *agentapi.WebScrape) drivers.Observations {
+		return obsWith(&agentapi.DeviceObservations{
+			Fetches: []agentapi.Fetch{
+				sepFetch(ago(12*time.Minute), vNow), fwFetch("SIP45.9-4-2SR4-3S.loads", ago(10*time.Minute)),
+				fwFetch("apps45.9-4-2SR4-3.sbn", ago(6*time.Minute)), sepFetch(ago(20*time.Second), vNow),
+			},
+			Registration: contact(t0.Add(5 * time.Minute)),
+			Web:          w,
+		}, withStore(staged()))
+	}
+	scrape := func(at time.Time, versionID, err string) *agentapi.WebScrape {
+		w := web(versionID, "")
+		w.At, w.Error = at, err
+		return w
+	}
+	registered := func(firmware string, fc metav1.Condition) drivers.Decision {
+		return drivers.Decision{
+			State:      drivers.StateRegistered,
+			Conditions: conds(ready(cT, cisco79x5.ReasonRegistered, ""), faStaged, fc, provNow, regLive, cfgNow),
+			StatusPatch: drivers.Memory{
+				FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: firmware,
+				LastConfigFetch: cfgFetch(vNow, ago(20*time.Second)), LastRegistered: mt(t0),
+			},
+			RequeueAfter: 10 * time.Minute,
+		}
+	}
+	sccpLive := drivers.Memory{
+		FirstSeen: mt(ago(time.Hour)), Address: deskIP, Firmware: sccp45,
+		LastConfigFetch: cfgFetch(vNow, ago(30*time.Minute)), LastRegistered: mt(ago(30 * time.Second)),
+	}
+	sccpLiveWant := sccpLive
+	sccpLiveWant.Firmware = ""
+	sccpLiveObs := registeredObs(vNow, 0)
+	sccpLiveObs.Device.Web = nil
+	return []decideCase{
+		{
+			name: "upgraded, web page not read since", drv: pinned(), dev: deskWith(before),
+			obs: obs(nil), want: registered("", fcNotReported),
+		},
+		{
+			name: "upgraded, the scrape fails (the agent holds the SCCP success)", drv: pinned(), dev: deskWith(before),
+			obs: obs(scrape(ago(5*time.Second), sccp45, "timeout")), want: registered("", fcNotReported),
+		},
+		{
+			name: "upgraded, read between the download and the reboot", drv: pinned(), dev: deskWith(before),
+			obs: obs(scrape(ago(5*time.Minute), sccp45, "")), want: registered("", fcNotReported),
+		},
+		{
+			name: "upgraded, read since", drv: pinned(), dev: deskWith(before),
+			obs: obs(scrape(ago(5*time.Second), sip45, "")), want: registered(sip45, fcRunning),
+		},
+		{
+			name: "a live SIP registration rules out a remembered SCCP load", dev: deskWith(sccpLive),
+			obs: sccpLiveObs,
+			want: drivers.Decision{
+				State:        drivers.StateRegistered,
+				Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faPending, fcNotReported, provNow, regLive, cfgNow),
+				StatusPatch:  sccpLiveWant,
+				RequeueAfter: 10 * time.Minute,
+			},
+		},
 	}
 }
 

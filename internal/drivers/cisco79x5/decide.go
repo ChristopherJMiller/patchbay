@@ -110,13 +110,14 @@ type input struct {
 	m    drivers.Memory               // dev.Memory folded with the observations
 	live bool                         // a live contact
 
-	available   bool      // the target load is staged (Missing is empty)
-	current     bool      // the last config fetch is dev.ConfigVersion
-	fwWrong     bool      // it reports a load that is not the target
-	fwRequested bool      // it asked for a target-load file that was not there
-	lastFw      time.Time // the latest served firmware fetch, or zero
-	sgnFirst    time.Time // the first .sgn request after the last config fetch, or zero
-	trustLog    bool      // its log shows a trust error
+	available   bool                // the target load is staged (Missing is empty)
+	current     bool                // the last config fetch is dev.ConfigVersion
+	fwWrong     bool                // it reports a load that is not the target
+	fwRequested bool                // it asked for a target-load file that was not there
+	lastFw      time.Time           // the latest served firmware fetch (whole seconds), or zero
+	sgnFirst    time.Time           // the first .sgn request since its last progress, or zero
+	web         *agentapi.WebScrape // the scrape, when freshScrape says it still holds
+	trustLog    bool                // the fresh scrape's log shows a trust error
 }
 
 func (d *Driver) newInput(dev drivers.Device, obs drivers.Observations, s drivers.DecideSettings, now time.Time) *input {
@@ -136,9 +137,17 @@ func (d *Driver) newInput(dev drivers.Device, obs drivers.Observations, s driver
 	if in.d == nil {
 		return in
 	}
+	in.lastFw = lastFirmwareFetch(in.d.Fetches)
+	in.web = freshScrape(in.d.Web, in.m, in.lastFw)
 	var since time.Time // the last config fetch, or zero: "at or after"
 	if in.m.LastConfigFetch != nil {
 		since = in.m.LastConfigFetch.At.Time
+	}
+	// progress is the phone's last sign of progress: its last config fetch
+	// or firmware download. A .sgn request before it is old news.
+	progress := since
+	if in.lastFw.After(progress) {
+		progress = in.lastFw
 	}
 	loadFiles := map[string]bool{}
 	for _, f := range in.load.Files {
@@ -146,19 +155,17 @@ func (d *Driver) newInput(dev drivers.Device, obs drivers.Observations, s driver
 	}
 	sgn := ConfigFileName(dev.MAC) + ".sgn"
 	for _, f := range in.d.Fetches {
-		if f.Result == agentapi.FetchNotFound && loadFiles[f.File] && !f.At.Before(since) {
+		at := floorSecond(f.At)
+		if f.Result == agentapi.FetchNotFound && loadFiles[f.File] && !at.Before(since) {
 			in.fwRequested = true
 		}
-		if f.Result == agentapi.FetchServed && isFirmwareFile(f.File) && f.At.After(in.lastFw) {
-			in.lastFw = f.At
-		}
-		if f.File == sgn && (in.m.LastConfigFetch == nil || f.At.After(since)) &&
+		if f.File == sgn && (progress.IsZero() || at.After(progress)) &&
 			(in.sgnFirst.IsZero() || f.At.Before(in.sgnFirst)) {
 			in.sgnFirst = f.At
 		}
 	}
-	if in.d.Web != nil {
-		for _, l := range in.d.Web.DeviceLog {
+	if in.web != nil {
+		for _, l := range in.web.DeviceLog {
 			if trustErrorPattern.MatchString(l) && !loadAuthPattern.MatchString(l) {
 				in.trustLog = true
 			}
@@ -196,6 +203,12 @@ func (in *input) isNeedsFirmware() bool {
 	return (in.fwWrong || in.fwRequested) && !in.available
 }
 
+// isNeedsTrustReset: no contact, and it has asked only for its signed config
+// for 3 minutes since its last progress (a config fetch or a firmware
+// download: the download a factory reset starts is progress), or a fresh
+// scrape's log shows a trust error. A scrape from before that progress, or
+// the older success a failed scrape carries, is not read: while the phone
+// flashes its web page is down.
 func (in *input) isNeedsTrustReset() bool {
 	if in.live {
 		return false
@@ -356,15 +369,15 @@ func (in *input) upgrading() drivers.Decision {
 	if m.UpgradeStartedAt == nil {
 		// Only the firmware-fetch clause matches without UpgradeStartedAt,
 		// so there are fetches; the earliest of the last 20 min is the start.
-		start := in.now
+		start := floorSecond(in.now)
 		var fetches []agentapi.Fetch
 		if in.d != nil {
 			fetches = in.d.Fetches
 		}
 		for _, f := range fetches {
 			if f.Result == agentapi.FetchServed && isFirmwareFile(f.File) &&
-				in.now.Sub(f.At) <= upgradeStuckAfter && f.At.Before(start) {
-				start = f.At
+				in.now.Sub(f.At) <= upgradeStuckAfter && floorSecond(f.At).Before(start) {
+				start = floorSecond(f.At)
 			}
 		}
 		m.UpgradeStartedAt = timePtr(start)
@@ -539,7 +552,7 @@ func (in *input) resyncedV() bool {
 // resync records a resync to the current config version in m and returns it.
 func (in *input) resync(m *drivers.Memory, attempts int32) []drivers.Action {
 	v := in.dev.ConfigVersion
-	m.LastAction = &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: v, At: metav1.NewTime(in.now), Attempts: attempts}
+	m.LastAction = &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: v, At: metav1.NewTime(ceilSecond(in.now)), Attempts: attempts}
 	return []drivers.Action{{Kind: v1alpha1.ActionResync, Version: v}}
 }
 
@@ -582,12 +595,13 @@ func (in *input) soonest(deadlines ...time.Time) time.Duration {
 	return out
 }
 
-// adminVLAN is the phone's Admin. VLAN ID from its web page, or "".
+// adminVLAN is the phone's Admin. VLAN ID from a fresh scrape of its web
+// page (a factory reset clears it), or "".
 func (in *input) adminVLAN() string {
-	if in.d == nil || in.d.Web == nil || in.d.Web.NetworkConfiguration == nil {
+	if in.web == nil || in.web.NetworkConfiguration == nil {
 		return ""
 	}
-	return in.d.Web.NetworkConfiguration.AdminVLAN
+	return in.web.NetworkConfiguration.AdminVLAN
 }
 
 // defaultSource is where the model's default load comes from, for the texts

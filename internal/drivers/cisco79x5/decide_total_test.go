@@ -28,9 +28,18 @@ var ages = []time.Duration{
 // gen draws random but plausible Decide inputs.
 type gen struct{ r *rand.Rand }
 
-func (g gen) pct(p int) bool          { return g.r.IntN(100) < p }
-func (g gen) at() time.Time           { return ago(ages[g.r.IntN(len(ages))]) }
-func pick[T any](g gen, xs ...T) T    { return xs[g.r.IntN(len(xs))] }
+func (g gen) pct(p int) bool       { return g.r.IntN(100) < p }
+func (g gen) at() time.Time        { return ago(ages[g.r.IntN(len(ages))]) }
+func pick[T any](g gen, xs ...T) T { return xs[g.r.IntN(len(xs))] }
+
+// seen is a time the agent reports: one of the ages, often between whole
+// seconds. Memory, read back from status, is always whole seconds (at).
+func (g gen) seen() time.Time {
+	return g.at().Add(-pick(g, time.Duration(0), 0, 250*time.Millisecond, 999*time.Millisecond))
+}
+
+// now is when Decide runs: usually t0, sometimes between seconds.
+func (g gen) now() time.Time          { return pick(g, t0, t0, t0.Add(500*time.Millisecond)) }
 func (g gen) maybeTime() *metav1.Time { return g.timeIf(50) }
 func (g gen) timeIf(p int) *metav1.Time {
 	if g.pct(p) {
@@ -116,20 +125,20 @@ func (g gen) observations() drivers.Observations {
 		var f agentapi.Fetch
 		switch g.r.IntN(9) {
 		case 0, 1:
-			f = sepFetch(g.at(), g.version())
+			f = sepFetch(g.seen(), g.version())
 		case 2:
-			f = fetch(deskSEP, agentapi.FetchNotFound, g.at())
+			f = fetch(deskSEP, agentapi.FetchNotFound, g.seen())
 		case 3:
-			f = fetch(deskSEP+".sgn", agentapi.FetchNotFound, g.at())
+			f = fetch(deskSEP+".sgn", agentapi.FetchNotFound, g.seen())
 		case 4:
-			f = fetch("CTLSEPD0C78915E8C8.tlv", agentapi.FetchNotFound, g.at())
+			f = fetch("CTLSEPD0C78915E8C8.tlv", agentapi.FetchNotFound, g.seen())
 		case 5:
 			f = fetch(pick(g, "SIP45.9-4-2SR4-3S.loads", "apps45.9-4-2SR4-3.sbn", "term45.default.loads"),
-				pick(g, agentapi.FetchServed, agentapi.FetchNotFound), g.at())
+				pick(g, agentapi.FetchServed, agentapi.FetchNotFound), g.seen())
 		case 6:
-			f = fwFetch("jar45sccp.9-4-2SR4-3.sbn", g.at())
+			f = fwFetch("jar45sccp.9-4-2SR4-3.sbn", g.seen())
 		default:
-			f = fwFetch(pick(g, "cnu45.9-4-2SR4-3.sbn", "dsp45.9-4-2SR4-3.sbn"), g.at())
+			f = fwFetch(pick(g, "cnu45.9-4-2SR4-3.sbn", "dsp45.9-4-2SR4-3.sbn"), g.seen())
 		}
 		d.Fetches = append(d.Fetches, f)
 	}
@@ -140,7 +149,7 @@ func (g gen) observations() drivers.Observations {
 		d.Registration = contact(t0.Add(5 * time.Minute))
 		d.Registration.Qualify = pick(g, agentapi.QualifyReachable, agentapi.QualifyUnreachable)
 	}
-	switch g.r.IntN(5) {
+	switch g.r.IntN(6) {
 	case 0:
 		d.Web = web(g.firmware(), g.firmware(), pick(g, "registering", "Trust List Update Failed", "Load Auth Failed CTL"))
 	case 1:
@@ -148,6 +157,13 @@ func (g gen) observations() drivers.Observations {
 		d.Web.NetworkConfiguration.AdminVLAN = pick(g, "", "20")
 	case 2:
 		d.Web = &agentapi.WebScrape{At: t0, Error: "timeout"}
+	case 3:
+		// A failed scrape still carries the last success's fields.
+		d.Web = web(g.firmware(), "", "Trust List Update Failed")
+		d.Web.At, d.Web.Error = t0, "timeout"
+	}
+	if d.Web != nil && d.Web.Error == "" {
+		d.Web.At = g.seen()
 	}
 	o.Device = d
 	return o
@@ -169,11 +185,22 @@ func rowOf(dec drivers.Decision, agentProblem bool) int {
 	return 0
 }
 
+// ceil is t rounded up to a whole second.
+func ceil(t time.Time) time.Time {
+	if f := t.Truncate(time.Second); f.Before(t) {
+		return f.Add(time.Second)
+	}
+	return t
+}
+
 // TestDecideTotal: over a seeded grid of agent health, observations, memory
-// and timing (20 000 inputs), Decide never reaches the defensive branch,
-// always lists Ready first in the fixed order, acts only in ConfigStale and
-// Registered, never resyncs during a call or before the config is live,
-// answers a request at most once, and is deterministic.
+// and timing (20 000 inputs, the agent's times often between seconds),
+// Decide never reaches the defensive branch, always lists Ready first in
+// the fixed order, acts only in ConfigStale and Registered, never resyncs
+// during a call or before the config is live, answers a request at most
+// once, and is deterministic. Its memory is stored in status unchanged, and
+// deciding again on the stored memory with the same observations changes
+// nothing: status is not rewritten on every poll.
 func TestDecideTotal(t *testing.T) {
 	g := gen{rand.New(rand.NewPCG(2026, 1014))}
 	order := []string{
@@ -184,18 +211,18 @@ func TestDecideTotal(t *testing.T) {
 	}
 	reached := map[int]int{}
 	for i := range 20000 {
-		drv, dev, obs := g.driver(), g.device(), g.observations()
+		drv, dev, obs, now := g.driver(), g.device(), g.observations(), g.now()
 		before := fmtMemory(dev.Memory)
-		dec := drv.Decide(dev, obs, settings, t0)
+		dec := drv.Decide(dev, obs, settings, now)
 		fail := func(format string, args ...any) {
 			t.Helper()
-			t.Fatalf("input %d: "+format+"\ndevice %+v\nmemory %s\nobs %+v\ndevice obs %+v\ndecision %+v",
-				append(append([]any{i}, args...), dev, before, obs, obs.Device, dec)...)
+			t.Fatalf("input %d (now t0%+v): "+format+"\ndevice %+v\nmemory %s\nobs %+v\ndevice obs %+v\ndecision %+v",
+				append(append([]any{i, now.Sub(t0)}, args...), dev, before, obs, obs.Device, dec)...)
 		}
 		if fmtMemory(dev.Memory) != before {
 			fail("Decide changed dev.Memory")
 		}
-		if again := drv.Decide(dev, obs, settings, t0); !reflect.DeepEqual(again, dec) {
+		if again := drv.Decide(dev, obs, settings, now); !reflect.DeepEqual(again, dec) {
 			fail("Decide is not deterministic")
 		}
 		if len(dec.Conditions) == 0 || dec.Conditions[0].Type != v1alpha1.ConditionReady {
@@ -204,9 +231,9 @@ func TestDecideTotal(t *testing.T) {
 		if dec.Conditions[0].Reason == cisco79x5.ReasonNoRuleMatched {
 			fail("reached the defensive branch")
 		}
-		problem := obs.AgentProblem(t0, settings.StaleAfter) != ""
+		problem := obs.AgentProblem(now, settings.StaleAfter) != ""
 		row := rowOf(dec, problem)
-		if rows := drv.MatchingRows(dev, obs, settings, t0); row == 0 || len(rows) == 0 || rows[0] != row {
+		if rows := drv.MatchingRows(dev, obs, settings, now); row == 0 || len(rows) == 0 || rows[0] != row {
 			fail("decided by row %d, but the first matching row is %v", row, rows)
 		}
 		reached[row]++
@@ -233,7 +260,7 @@ func TestDecideTotal(t *testing.T) {
 			if obs.Device == nil || obs.Device.Calls > 0 || !obs.ConfigLive() {
 				fail("resync during a call or before the config is live")
 			}
-			if la := dec.StatusPatch.LastAction; la == nil || !la.At.Equal(mt(t0)) || la.Version != a.Version {
+			if la := dec.StatusPatch.LastAction; la == nil || !la.At.Equal(mt(ceil(now))) || la.Version != a.Version {
 				fail("the resync is not recorded in lastAction: %+v", la)
 			}
 		}
@@ -253,6 +280,16 @@ func TestDecideTotal(t *testing.T) {
 		}
 		if dec.RequeueAfter < 0 {
 			fail("negative requeue")
+		}
+
+		// Stored in status, the memory is unchanged; decided again on it,
+		// nothing changes.
+		stored := roundTrip(t, dev, dec.StatusPatch, dec.State)
+		if got := fmtMemory(stored.Memory); got != fmtMemory(dec.StatusPatch) {
+			fail("storing the memory changed it: %s", got)
+		}
+		if again := drv.Decide(stored, obs, settings, now); !reflect.DeepEqual(again.StatusPatch, stored.Memory) {
+			fail("deciding on the stored memory changed it: %s", fmtMemory(again.StatusPatch))
 		}
 	}
 	for row := 1; row <= 10; row++ {
