@@ -42,6 +42,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/netlimit"
 	"github.com/ChristopherJMiller/patchbay/internal/version"
 )
 
@@ -237,8 +238,22 @@ func writeText(w http.ResponseWriter, code int, msg string) {
 	_, _ = fmt.Fprintln(w, msg)
 }
 
+// The control API's connection caps (package netlimit). It listens on the
+// host network, where anything that reaches the node can connect before a
+// token is checked, and each connection costs the agent (128 MiB) its
+// buffers and a goroutine. The controller keeps one or two keep-alive
+// connections from its pod's address, the CLI's port-forward arrives from
+// the node's loopback one request at a time, and the kubelet probes from
+// the node's own address.
+const (
+	MaxControlConns          = 64
+	MaxControlConnsPerSource = 16
+)
+
 // Serve runs the control API on addr until ctx is done, then shuts down
-// gracefully.
+// gracefully. It holds at most MaxControlConns connections, and at most
+// MaxControlConnsPerSource from any one address: a connection over either
+// cap is closed as soon as it is accepted.
 func Serve(ctx context.Context, addr string, h http.Handler, log logr.Logger) error {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -247,7 +262,9 @@ func Serve(ctx context.Context, addr string, h http.Handler, log logr.Logger) er
 	return serveOn(ctx, ln, h, log)
 }
 
+// serveOn serves h on ln, within the connection caps, until ctx is done.
 func serveOn(ctx context.Context, ln net.Listener, h http.Handler, log logr.Logger) error {
+	ln = netlimit.New(ln, MaxControlConns, MaxControlConnsPerSource, log)
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,

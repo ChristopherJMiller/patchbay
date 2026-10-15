@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -143,5 +144,87 @@ func TestServeShutsDownOnCancel(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("serve did not stop within 15s of cancel")
+	}
+}
+
+// TestServeCapsConnections: the control API holds at most
+// MaxControlConnsPerSource connections from one address and
+// MaxControlConns in all (the W2 review's caps, now on :9440 too); a
+// connection over either is closed when accepted, and one closed frees
+// its place.
+func TestServeCapsConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(Options{Tokens: StaticToken(token)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveOn(ctx, ln, h, logr.Discard()) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	// held opens a keep-alive connection from source and completes one
+	// request on it, so the server holds it idle; it reports whether the
+	// server answered.
+	held := func(source string) (net.Conn, bool) {
+		t.Helper()
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(source)}, Timeout: 5 * time.Second}
+		c, err := d.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial from %s: %v", source, err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.WriteString(c, "GET "+api.PathHealthz+" HTTP/1.1\r\nHost: agent\r\n\r\n"); err != nil {
+			return c, false
+		}
+		buf := make([]byte, 64)
+		n, err := c.Read(buf)
+		return c, err == nil && strings.HasPrefix(string(buf[:n]), "HTTP/1.1 200")
+	}
+
+	var first net.Conn
+	for i := range MaxControlConnsPerSource {
+		c, ok := held("127.0.0.1")
+		if !ok {
+			t.Fatalf("connection %d from one source was refused; the cap is %d", i+1, MaxControlConnsPerSource)
+		}
+		if i == 0 {
+			first = c
+		}
+	}
+	if _, ok := held("127.0.0.1"); ok {
+		t.Fatalf("connection %d from one source was served", MaxControlConnsPerSource+1)
+	}
+	_ = first.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := held("127.0.0.1"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a closed connection's place was not freed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Other sources fill the total; then nobody new gets in.
+	open := MaxControlConnsPerSource
+	for src := 2; open < MaxControlConns; src++ {
+		for i := 0; i < MaxControlConnsPerSource && open < MaxControlConns; i++ {
+			if _, ok := held("127.0.0." + strconv.Itoa(src)); !ok {
+				t.Fatalf("connection %d of %d was refused", open+1, MaxControlConns)
+			}
+			open++
+		}
+	}
+	if _, ok := held("127.0.0.99"); ok {
+		t.Fatalf("connection %d in all was served", MaxControlConns+1)
 	}
 }
