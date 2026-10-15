@@ -88,9 +88,11 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **e2e runs Kubernetes 1.33** (the target cluster's minor) and the chart
   requires >= 1.33.
 - **Labels and names lose runs of `@`** (§4 says "as written"): Compile
-  collapses every `@@` in a label or person name to `@`, so text a person
-  writes can never form a `@@secret:…@@` placeholder that the agent would
-  resolve into a file served to devices.
+  collapses every run of `@`, with any white space between them, in a
+  label or person name to one `@`, so text a person writes can never form
+  a `@@secret:…@@` placeholder that the agent would resolve into a file
+  served to devices, even once a driver drops its spaces (the 79x5's
+  screen label does).
 - **The number plan also refuses shadowing** (§4 only says the controller
   enforces it): a fixed-length pattern may not match a prefix of a number
   in Devices, People, Streams or a built-in (People `1X` beside Devices

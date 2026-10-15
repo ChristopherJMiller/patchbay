@@ -1,11 +1,14 @@
 # Labels with characters special to XML, Asterisk config and caller ID, a
-# label that tries to be a secret placeholder, and one of 64 characters (the
-# schema's limit), over every device's cut.
+# label that tries to be a secret placeholder (also with white space between
+# its "@"s, which the 79x5's screen label drops), and one of 64 characters
+# (the schema's limit), over every device's cut.
 phones:
   - metadata: {name: lab, creationTimestamp: "2026-10-01T12:00:00Z"}
     spec: {model: cisco-7945, mac: D0C78915E8C8, number: "100", label: 'R&D; "Lab" <1> Küche'}
   - metadata: {name: long, creationTimestamp: "2026-10-01T12:01:00Z"}
     spec: {model: cisco-7945, mac: D0C78915EBB5, number: "101", label: "A label of sixty-four characters, cut for every phone's screen!!"}
+  - metadata: {name: spaced, creationTimestamp: "2026-10-01T12:01:30Z"}
+    spec: {model: cisco-7945, mac: D0C78915A0C1, number: "102", label: "@ @secret:a/b @ @x"}
 softphones:
   - metadata: {name: den, creationTimestamp: "2026-10-01T12:02:00Z"}
     spec: {number: "150", label: "Mom & Dad's \\ ;-- --; @@secret:patchbay-ami/password@@"}
@@ -16,5 +19,6 @@ secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
   - {name: patchbay-phone-lab, key: sip-password, value: not-a-secret-lab-0001}
   - {name: patchbay-phone-long, key: sip-password, value: not-a-secret-long-0001}
+  - {name: patchbay-phone-spaced, key: sip-password, value: not-a-secret-spaced-0001}
   - {name: patchbay-softphone-den, key: sip-password, value: not-a-secret-den-0001}
   - {name: patchbay-softphone-den, key: provisioning-token, value: not-a-secret-token-0003}

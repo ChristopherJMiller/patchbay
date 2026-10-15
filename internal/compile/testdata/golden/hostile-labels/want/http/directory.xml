@@ -10,6 +10,10 @@
     <Telephone>101</Telephone>
   </DirectoryEntry>
   <DirectoryEntry>
+    <Name>@secret:a/b @x</Name>
+    <Telephone>102</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
     <Name>Mom &amp; Dad&#39;s \ ;-- --; @secret:pa</Name>
     <Telephone>150</Telephone>
   </DirectoryEntry>

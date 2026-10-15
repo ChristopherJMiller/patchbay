@@ -1,5 +1,5 @@
 {
-  "version": "769abac9a6c24946051a7466d47016e6ec41b32a74cc44524b4cc2d12243bd0a",
+  "version": "470eeefb66f43749b229f7a635c96d942c7193f2c8b06864ac9e404f45ed49ee",
   "devices": {
     "phone-lab": {
       "kind": "Phone",
@@ -22,6 +22,18 @@
       "configFile": "tftp/SEPD0C78915EBB5.cnf.xml",
       "files": [
         "tftp/SEPD0C78915EBB5.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "phone-spaced": {
+      "kind": "Phone",
+      "name": "spaced",
+      "number": "102",
+      "mac": "D0C78915A0C1",
+      "version": "b56847a682cc51973943f2e5b7744823dc38c24a6e761f3c700453f4c3cab50b",
+      "configFile": "tftp/SEPD0C78915A0C1.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915A0C1.cnf.xml",
         "tftp/dialplan.xml"
       ]
     },

@@ -203,6 +203,15 @@ func TestCompileWithFakes(t *testing.T) {
 		}
 	})
 
+	t.Run("white space between @s goes with them", func(t *testing.T) {
+		in, s := fakeHouse()
+		in.Phones[0].Spec.Label = "a @ @ b @  @secret:x/y@ \t@ c@"
+		b := compileOK(t, reg, in, s)
+		if want := "label=a @ b @secret:x/y@ c@ "; !strings.Contains(string(b.Files["tftp/phone-desk.cfg"]), want) {
+			t.Errorf("want %q in:\n%s", want, b.Files["tftp/phone-desk.cfg"])
+		}
+	})
+
 	for _, tc := range []struct {
 		name  string
 		edit  func(in *compile.Inputs, s *compile.Settings)

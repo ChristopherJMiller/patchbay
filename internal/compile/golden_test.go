@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"flag"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -407,6 +408,36 @@ func TestVersionsBuiltin(t *testing.T) {
 			}
 			if got := changed(before, after); !slices.Equal(got, tc.devices) {
 				t.Errorf("device versions changed for %v, want %v", got, tc.devices)
+			}
+		})
+	}
+}
+
+// TestUserTextBuiltin: no label can stop Compile or form a placeholder
+// through what a real driver does to it. The 79x5's screen label drops
+// every Unicode space, so "@ @secret:…" would become "@@secret:…" in its
+// SEP file had Compile collapsed only adjacent "@"s; malformed placeholder
+// text fails the whole Compile, for every resource.
+func TestUserTextBuiltin(t *testing.T) {
+	reg := builtinRegistry(t)
+	for _, label := range []string{
+		"@ @secret:a/b",
+		"@ @secret:a/b",                // no-break space
+		"@  　@secret:x/y@ @",           // em and ideographic spaces
+		"@\t@\n@secret:patchbay-ami/x", // controls (the schema refuses them; Compile does not rely on it)
+		"x @ @ @ y",
+		"@@ @@secret:patchbay-ami/password@@ @@",
+	} {
+		t.Run(fmt.Sprintf("%q", label), func(t *testing.T) {
+			in, s := loadGolden(t, "house")
+			in.Phones[0].Spec.Label = label
+			in.People[0].Spec.Name = label
+			b := compileOK(t, reg, in, s)
+			for p, content := range b.Files {
+				rest := compile.PlaceholderPattern.ReplaceAll(content, nil)
+				if i := bytes.Index(rest, []byte("@@")); i >= 0 {
+					t.Errorf("%s holds %q", p, rest[max(0, i-10):min(len(rest), i+20)])
+				}
 			}
 		})
 	}
