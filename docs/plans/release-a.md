@@ -3,8 +3,8 @@
 **Status:** plan, 2026-10-14; adversarially reviewed 2026-10-15 (changes
 are marked *review*, and checked facts carry their source and date).
 **Spec:** [docs/design.md](../design.md) (§11, A).
-**Contracts landed with this plan:** commit `f346cf7` ("contracts: release A
-shared contracts …"), amended by the review's `8971df8` (§3). Read
+**Contracts landed with this plan:** commit `14f22fe` ("contracts: release A
+shared contracts …"), amended by the review's `4a087ec` (§3). Read
 [CLAUDE.md](../../CLAUDE.md) first.
 
 Release A is built in three workflows, each implement → review → fix:
@@ -20,7 +20,7 @@ in §5.2 and W3 in §6.2, each written once its contracts had landed).
 
 Contents: [1 Global constraints](#1-global-constraints) ·
 [2 Decisions made now](#2-decisions-made-now) ·
-[3 Contracts landed](#3-contracts-landed-commit-f346cf7) ·
+[3 Contracts landed](#3-contracts-landed-commit-14f22fe) ·
 [4 W1 tasks](#4-w1-the-pure-core-task-level) ·
 [5 W2](#5-w2-agent-and-chart-component-level) ([5.2 task level](#52-w2-task-level)) ·
 [6 W3](#6-w3-controller-cli-and-e2e-loop-component-level) ([6.2 task level](#62-w3-task-level)) ·
@@ -407,7 +407,7 @@ coupled to real drivers' output.
 
 ---
 
-## 3. Contracts landed (commit `f346cf7`)
+## 3. Contracts landed (commit `14f22fe`)
 
 Types, helpers and docs only, each pinned by a test; `make generate
 check-generated fmt vet lint test` is green.
@@ -418,7 +418,7 @@ check-generated fmt vet lint test` is green.
 | `internal/compile` | `Compile(reg, in, s)` (stub); `Bundle.Devices` (`BundleDevice`, replaces `DeviceVersions`), `Bundle.AMI` (`AMIAccount`, `AMIUsername`); `Validate` checks the index; `Settings.AMISecret` and JSON tags; `SecretRef` JSON tags; `DeviceSecretName`, `PasswordRef`, `ProvisioningTokenRef`, `SecretKeySIPPassword`, `SecretKeyProvisioningToken`; portable `TreeOf`; `DirectoryFile`; `SoundsDir`, `SoundNoEmergency`, `SoundNotAvailable`; `configmap.go` (`ConfigMapKey`, `PathFromConfigMapKey`, `IndexKey`, `Index`, `Bundle.ConfigMapData`, `BundleFromConfigMap`, `MaxConfigMapBytes`, `ErrBundleTooLarge`) |
 | `internal/agent/api` | `AgentStatus.LastApplyVersion`; `DeviceObservations.Calls`; `Fetch.File` is the bundle path for provisioning documents (never the token); `PathFirmware`, `FirmwarePath`, `MaxFirmwareFileSize`, `FirmwareUploadResponse`; `ProvisioningPathPrefix` (`/p/`) |
 | `api/v1alpha1` | control characters rejected in Phone/Softphone `label`, Person/Stream `name`; `ConditionLabelShortened`; `ReasonApplyPending`, `ReasonNumberNotInPlan` |
-| *review, `8971df8`* | `drivers.DeviceIDMaxLength` 63 → **30** (the 79x5 `authName` limit); `agentapi.DeviceInformation.VersionID` added and `AppLoadID` documented as the application image, never a load name; `PhoneObserved.Firmware`'s example is `SCCP45.9-4-2SR4-3S` |
+| *review, `4a087ec`* | `drivers.DeviceIDMaxLength` 63 → **30** (the 79x5 `authName` limit); `agentapi.DeviceInformation.VersionID` added and `AppLoadID` documented as the application image, never a load name; `PhoneObserved.Firmware`'s example is `SCCP45.9-4-2SR4-3S` |
 
 ---
 
@@ -1344,7 +1344,7 @@ from this point, because the compiled endpoints identify by auth username.
 W2 runs as **four stages**: **core**, **files** and **web** in parallel, in
 one working tree, each in its own packages; then the **integrator** wires
 them into `cmd/patchbay`, the chart, the sounds and e2e. The seams between
-them landed first as contracts (commits `990a18a`, `2cd290f`): types,
+them landed first as contracts (commits `0287dbc`, `7aba7d0`): types,
 interfaces and their rules, each pinned by a test. **The contract code is
 authoritative;** this section says what to build on it.
 
@@ -1435,7 +1435,7 @@ flake.nix, .dockerignore, .gitignore, docs/, CLAUDE.md                  integrat
 #### 5.2.4 Contracts landed (read the code; summary)
 
 ```go
-// compile (990a18a)
+// compile (0287dbc)
 func (r SecretRef) ProjectedKey() (string, error)          // "<name>_<key>"
 func SecretRefFromProjectedKey(key string) (SecretRef, error)
 func (b Bundle) SecretRefs() ([]SecretRef, error)          // placeholders + tokens + AMI, sorted, unique
@@ -2367,8 +2367,8 @@ W3 runs as **five stages**: **controller-core**, **controller-devices**,
 packages; then the **integrator** wires them into `internal/controller`,
 `cmd/patchbay` and the chart, moves the e2e harness onto the real
 controller and writes the §9 W3 e2e tests. The seams between them landed
-first as contracts (`7b11480` the dependency, `462fe42`, `6ebf661`,
-`be986f0`, `82ffe70`), each pinned by a test. **The contract code is
+first as contracts (`0a1c0f8` the dependency, `0d86131`, `133d7bc`,
+`6ae9a64`, `2d81b5c`), each pinned by a test. **The contract code is
 authoritative;** this section says what to build on it.
 
 #### 6.2.1 Decisions (§6.1 resolved, and new ones)
@@ -2379,7 +2379,7 @@ authoritative;** this section says what to build on it.
 | **Event target for discovery** (§6.1) | **Confirmed:** the `pbx-config` ConfigMap, also for `ConfigWritten` and `CompileFailed`; while `pbx-config` does not exist yet, `CompileFailed` goes to the chart's `<fullname>-settings` ConfigMap (`install` events.go). | Both always exist once the install runs; the settings are the usual cause of a first compile failing. |
 | **What a failed action records** (§6.1) | **Confirmed, made exact:** on an `Actor` error, `Sent=false`, or a token Secret write that fails, the status write keeps the previous `lastAction` **and** `handledRequest` (a requested resync stays pending and is tried again), writes the rest of the `StatusPatch` (the fold), emits `ActionFailed` (Warning) and requeues in 30 s. Later actions of the same Decision are not attempted. | The rate limit counts only NOTIFYs that went out; consuming a human's request on a transient failure would lose it. |
 | **Rollback e2e** (§6.1) | **Confirmed, changed in one place:** the agent half in e2e with the controller scaled to 0; scaled back up, the controller rewrites its own version, and the test then reissues the laptop's token (a new version) because the agent does not clear its last apply error when the live version is written back (5.2.11). No device may show `ApplyFailed` for the broken version, which was never compiled. The controller half is envtest (controller-devices). | |
-| **QR library** (§6.1) | **`rsc.io/qr` v0.2.0** (BSD-3, pure Go, no dependencies; `7b11480`), drawn by our own renderer: half blocks (`▀`, one column per module, two module rows per line) with explicit ANSI black on bright white, level M, quiet zone 4. A provisioning URL (~60 bytes) is version 4: 33 modules + 8 = 41 columns, 21 lines. | `mdp/qrterminal` wraps the same encoder and adds `x/term`; explicit colours render the same on dark and light terminals; the renderer is ~30 lines and its output decodes back to the module grid in a unit test. |
+| **QR library** (§6.1) | **`rsc.io/qr` v0.2.0** (BSD-3, pure Go, no dependencies; `0a1c0f8`), drawn by our own renderer: half blocks (`▀`, one column per module, two module rows per line) with explicit ANSI black on bright white, level M, quiet zone 4. A provisioning URL (~60 bytes) is version 4: 33 modules + 8 = 41 columns, 21 lines. | `mdp/qrterminal` wraps the same encoder and adds `x/term`; explicit colours render the same on dark and light terminals; the renderer is ~30 lines and its output decodes back to the module grid in a unit test. |
 | **Settings** (W3.1) | The chart renders `<fullname>-settings` (key `settings.json`); the controller reads the **mounted file** once at start (`settings.Load`: strict JSON, `Validate`), then `install.CheckSettings` (its `amiSecret` must be `<fullname>-ami/password`). A checksum annotation over the JSON restarts the controller on change. | No RBAC, no watch, no partial reload: a settings change rolls one stateless pod. |
 | **How the device reconcilers read the compiled index** | From the cluster, every reconcile: `install.ReadCompiled` reads `pbx-config` (`bundle.json` only, `IndexOf`) and `pbx-secrets` from the cache. No component hands compiled state to another in memory. | The stateless option: it survives a controller restart without a warm-up, it is exactly what the agent and the CLI see, and the cost is decoding a few KB of JSON from an informer cache. An in-memory index would be empty after a restart until the bundle reconciler ran, and could drift from what was written. |
 | **The provisioning URL shows the compiled token** | `status.provisioningURL` uses `Compiled.ProvisioningToken`: `pbx-secrets`' value, only while its `bundle-version` annotation equals `pbx-config`'s version; otherwise the previous URL stays. **Amended by the W3 review (6.2.12):** only while the Decision's state is `Issued` (design §8.4), the Decision does not rotate the token, and the device Secret still holds the compiled token; `""` otherwise. | The device Secret changes before the bundle is recompiled; showing its token at once would publish a URL the agent does not serve yet. `qr --reissue` additionally waits until `ConfigCurrent` is not `ApplyPending` (the bundle is live). |
@@ -2414,9 +2414,9 @@ authoritative;** this section says what to build on it.
 #### 6.2.3 Package map and ownership
 
 ```text
-internal/controller/install/      contract (6ebf661)                             nobody
-internal/controller/agentview/    contract (6ebf661)                             nobody
-internal/controller/ctrltest/     contract: envtest harness (be986f0)            nobody
+internal/controller/install/      contract (133d7bc)                             nobody
+internal/controller/agentview/    contract (133d7bc)                             nobody
+internal/controller/ctrltest/     contract: envtest harness (6ae9a64)            nobody
 internal/controller/settings/     W3.1                                           core
 internal/controller/secrets/      W3.2                                           core
 internal/controller/bundle/       W3.3                                           core
@@ -2426,9 +2426,9 @@ internal/controller/metrics/      W3.8                                          
 internal/controller/devices/      W3.5                                           devices
 internal/controller/numbers/      W3.6                                           devices
 internal/controller/discovery/    W3.7                                           devices
-internal/cli/{doc,env,env_test}.go contract (7b11480, 82ffe70)                   nobody
+internal/cli/{doc,env,env_test}.go contract (0a1c0f8, 2d81b5c)                   nobody
 internal/cli/ (every other file)  W3.9                                           cli
-test/e2e/fakephone/script/        contract (82ffe70)                             nobody
+test/e2e/fakephone/script/        contract (2d81b5c)                             nobody
 test/e2e/fakephone/ (the rest, Dockerfile, Dockerfile.dockerignore)  W3.10       fakephone
 internal/controller/*.go (the root package), cmd/patchbay/,
 internal/agent/server.go (+ its test), charts/, test/chart/, test/e2e/*.go,
@@ -2488,7 +2488,7 @@ docs/, CLAUDE.md, README.md                                                     
 #### 6.2.4 Contracts landed (read the code; summary)
 
 ```go
-// internal/controller/install (6ebf661)
+// internal/controller/install (133d7bc)
 type Names struct{ Fullname, ConfigMap, ProjectedSecret, AgentTokenSecret, AMISecret, Settings, AgentService string }
 func NewNames(fullname string) Names            // <f>-pbx-config, -pbx-secrets, -agent-token, -ami, -settings, -agent
 func (n Names) Validate() error; AMIRef() compile.SecretRef; AgentTokenRef() compile.SecretRef
@@ -2523,7 +2523,7 @@ const EventReasonStateChanged, EventReasonActionSent, EventReasonActionFailed, E
 const EventActionDecide, EventActionResync, EventActionRestart, EventActionRotateToken, EventActionDiscover, EventActionCompile
 func UnknownPhoneMessage(mac, source string) string   // "unknown phone <MAC> requested config from <IP>"
 
-// internal/controller/agentview (6ebf661)
+// internal/controller/agentview (133d7bc)
 type Snapshot struct{ Document agentapi.Observations; PolledAt time.Time; AgentReachable bool; Polls uint64; LastError string }
 func (s Snapshot) Started() bool
 func (s Snapshot) Device(id string) *agentapi.DeviceObservations
@@ -2541,20 +2541,20 @@ type Changes struct{ Phones chan event.TypedGenericEvent[*v1alpha1.Phone]; Softp
 func NewChanges(buffer int) Changes
 func (c Changes) Notify(ctx context.Context, kind drivers.DeviceKind, namespace, name string) error
 
-// internal/controller/ctrltest (be986f0), _test.go files only
+// internal/controller/ctrltest (6ae9a64), _test.go files only
 type Env struct{ Config *rest.Config; Client client.Client; Scheme *runtime.Scheme }
 func Main(m *testing.M, env **Env) int; Need(t, env); Namespace(t, env) string
 func NewScheme() (*runtime.Scheme, error); CRDDir() (string, error)
 func NewManager(t, env, namespace string) ctrl.Manager; StartManager(t, mgr)
 
-// internal/cli (82ffe70): env.go
+// internal/cli (2d81b5c): env.go
 type Env struct{ Kube client.Client; Namespace string; Agent AgentOpener; Registry *drivers.Registry; Clock clock.Clock; Out, Err io.Writer }
 type ClientFlags struct{ Namespace, Instance string }
 type AgentOpener interface{ OpenAgent(ctx context.Context) (*AgentConn, error) }
 type AgentConn struct{ BaseURL, Token string; HTTP *http.Client; Close func() error }  // String/GoString redact Token
 const LabelPartOf, PartOf, LabelComponent, ComponentPBX, LabelInstance, AgentContainer, ControlPortName, AgentTokenVolume
 
-// test/e2e/fakephone/script (82ffe70)
+// test/e2e/fakephone/script (2d81b5c)
 const EnvScript = "FAKEPHONE_SCRIPT"; PathState = "/fakephone/state"; PathSignalPrefix = "/fakephone/signal/"
 type Script struct{ Mode; Server, MAC, ProvisioningURL, WebListen string; Web *Web; Answer *Answer; ToneHz float64; UserAgent string; Steps []Step; ExitWhenDone bool }
 type Step struct{ Label string; FetchConfig, Fetch, SetWeb, Register, Unregister, StopRefreshing, Call, Hangup, Transfer, WaitNotify, WaitCall, WaitSignal, Sleep *… }
@@ -2562,7 +2562,7 @@ type State struct{ Mode; Step int; Label string; Done, Registered bool; Config *
 func Parse([]byte) (Script, error); (Script) Validate() error; (Script) Encode() (string, error); NewState(Mode) State
 func Expand(file, mac, load string) string; SignalPath(name string) string; HzKey(hz float64) string
 
-// api/v1alpha1 (462fe42)
+// api/v1alpha1 (0d86131)
 const ReasonNumberConflict, ReasonNoConflict, ReasonRouted, ReasonMissingRingTargets, ReasonNoStreamBridge
 ```
 
