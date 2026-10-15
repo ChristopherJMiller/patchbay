@@ -24,8 +24,8 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Digest-pinned images in the chart and the e2e harness. The forms are `<repo/name>:<tag>@sha256:<digest>`, or the keys `repository:`, `tag:` and `digest:` in that order (comment lines may sit between them), or `repository:` then `tag: <tag>@sha256:<digest>`. Official images need a namespace, as in `docker.io/library/<name>`. test/ is scanned because ignorePaths above replaces the preset list, which skips **/test/**: the e2e harness pulls these images too.",
-      "managerFilePatterns": ["/^charts/.+\\.ya?ml$/", "/^test/e2e/.+/", "/(^|/)Makefile$/"],
+      "description": "Digest-pinned images in the chart and the e2e harness. The forms are `<repo/name>:<tag>@sha256:<digest>`, or the keys `repository:`, `tag:` and `digest:` in that order (comment lines may sit between them), or `repository:` then `tag: <tag>@sha256:<digest>`. Official images need a namespace, as in `docker.io/library/<name>`. test/e2e YAML and Go are scanned because ignorePaths above replaces the preset list, which skips **/test/**: the e2e harness pulls these images too. Dockerfiles are left to the dockerfile manager, so no image is extracted twice.",
+      "managerFilePatterns": ["/^charts/.+\\.ya?ml$/", "/^test/e2e/.+\\.(ya?ml|go)$/", "/(^|/)Makefile$/"],
       "matchStrings": [
         "(?<depName>[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)+):(?<currentValue>[A-Za-z0-9_][A-Za-z0-9_.-]*)@(?<currentDigest>sha256:[a-f0-9]{64})",
         "repository:[ \\t]*[\"']?(?<depName>[^\\s\"'#]+)[\"']?[ \\t]*(?:#[^\\n]*)?\\n(?:[ \\t]*#[^\\n]*\\n)*[ \\t]*tag:[ \\t]*[\"']?(?<currentValue>[^\\s\"'@#]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
