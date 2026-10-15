@@ -65,6 +65,7 @@
               jq
               yq-go
               actionlint
+              gitleaks # make check-hygiene: no secrets in the public history
 
               # Telephony test tools (simulated phones, TFTP checks, test tones)
               sipp

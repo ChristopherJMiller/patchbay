@@ -4,14 +4,25 @@
 cover.out
 *.test
 
-# e2e: kind kubeconfig, logs, scratch (never commit a kubeconfig)
+# e2e: kind kubeconfig, kubectl cache, logs, scratch (never commit a kubeconfig)
 /.e2e/
 
-# Firmware never lands in this repo, encrypted or not (spec §12).
-firmware/
+# Firmware never lands in this repo, encrypted or not (spec §12). The file
+# types are what keep it out, wherever it is unpacked; /firmware/ is only a
+# convenient local staging directory. (Unanchored, "firmware/" would also hide
+# Go packages such as internal/firmware/.)
+/firmware/
 *.zip
+*.tar
+*.tar.gz
+*.tgz
 *.sbn
 *.loads
+*.cop
+*.sgn
+*.tlv
+*.bin
+*.img
 
 # Secrets of any kind
 *.secret*

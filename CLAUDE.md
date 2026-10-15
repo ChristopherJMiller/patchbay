@@ -77,9 +77,14 @@ The CRDs are generated into `charts/patchbay/templates/crds/` and carry
    about 7 GB of free RAM. Delete it when you are done with it.
 4. **No firmware, secrets or binary blobs in the repo, ever, encrypted or
    not.** The repo is public. Firmware lives on the PBX's PVC; the repo holds
-   only a manifest of names and SHA-256s. `.gitignore` blocks `firmware/`,
-   `*.zip`, `*.sbn`, `*.loads` and `*.secret*`; do not work around it. Test
-   fixtures are generated, not copied from a real phone or Cisco.
+   only a manifest of names and SHA-256s. `.gitignore` blocks firmware,
+   archive and secret file types (`*.sbn`, `*.loads`, `*.cop`, `*.sgn`,
+   `*.tlv`, `*.zip`, `*.tar`, `*.bin`, `*.secret*`, ...) and the top-level
+   `/firmware/` staging directory; do not work around it (`git add -f`).
+   `make check-hygiene` (CI runs it) fails on any tracked binary, any file
+   over 512 KiB, any of those types, or a secret anywhere in the history
+   (gitleaks). Test fixtures are generated, not copied from a real phone or
+   Cisco.
 5. **Pinned images.** Every image is pinned by digest (tag plus digest, for
    example `golang:1.26.8-trixie@sha256:...`), including test images.
 6. **Git hygiene.** Small, logical commits. Stage explicit paths, never

@@ -45,6 +45,7 @@ tools-versions: ## Print the version of every tool in the dev shell.
 	@jq --version
 	@yq --version
 	@echo "actionlint $$(actionlint -version | sed -n 1p)"
+	@echo "gitleaks $$(gitleaks version)"
 	@# sipp -v exits 99 by design; keep its version line only.
 	@{ sipp -v 2>&1 || true; } | grep SIPp | sed -n 1p
 	@{ tftp -V 2>&1 || true; } | sed -n 1p
@@ -72,6 +73,10 @@ check-generated: generate ## Fail if generated files are out of date.
 		{ echo "generated files are stale: run 'make generate' and commit"; exit 1; }
 	@test -z "$$(git status --porcelain -- api $(CRD_DIR))" || \
 		{ git status --porcelain -- api $(CRD_DIR); echo "untracked generated files"; exit 1; }
+
+.PHONY: check-hygiene
+check-hygiene: ## Fail on tracked binaries, files over 512 KiB, firmware/archive/secret types, or secrets in history.
+	hack/check-hygiene.sh
 
 .PHONY: fmt
 fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
