@@ -99,6 +99,9 @@ func TestAnswerRejectsAndCancels(t *testing.T) {
 			if err == nil {
 				t.Fatal("the call was answered")
 			}
+			if got := dialogStatus(err); tc.wait == 0 && got != tc.status {
+				t.Fatalf("the caller got %d (%v), want %d", got, err, tc.status)
+			}
 			s := h.waitState(5*time.Second, "the call over", func(s script.State) bool {
 				return len(s.Calls) == 1 && !s.Calls[0].End.IsZero()
 			})
