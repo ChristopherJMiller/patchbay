@@ -6,6 +6,9 @@ run:
   # The flake pins Go; never lint against a different language version.
   go: "1.26"
   tests: true
+  # Lint the e2e suite (test/e2e, behind the e2e build tag) too.
+  build-tags:
+    - e2e
 
 linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused

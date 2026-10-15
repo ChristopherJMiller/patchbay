@@ -1,0 +1,34 @@
+# Helm values for the e2e install (test/e2e). The harness adds at runtime:
+#   pbx.nodeName, pbx.address   the kind node's name and InternalIP
+#   *.podAnnotations            the loaded images' IDs, so a rebuilt image
+#                               rolls the pods even though its tag is unchanged
+image:
+  repository: ghcr.io/christopherjmiller/patchbay
+  tag: e2e
+  # Loaded with `kind load docker-image`; never pulled.
+  pullPolicy: Never
+
+controller:
+  logLevel: debug
+
+pbx:
+  asterisk:
+    image:
+      # The chart's own tag, pulled on the host BY DIGEST and loaded into kind
+      # under that tag (`make e2e-images`). kind load cannot carry a registry
+      # digest into containerd, so the reference here drops it.
+      digest: ""
+      pullPolicy: Never
+  agent:
+    logLevel: debug
+  # TEMPORARY: the hand-written Asterisk config, until the agent applies.
+  staticConfig:
+    enabled: true
+    endpoint: e2e-phone
+    # A fixed, test-only password on a throwaway cluster. Not a secret.
+    password: e2e-only-not-a-secret
+    echoNumber: "600"
+
+firmware:
+  persistence:
+    keep: false

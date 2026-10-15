@@ -78,11 +78,12 @@ fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
 	golangci-lint fmt ./...
 
 .PHONY: vet
-vet: ## go vet.
+vet: ## go vet (including the e2e-tagged suite).
 	go vet ./...
+	go vet -tags e2e ./test/e2e/...
 
 .PHONY: lint
-lint: ## golangci-lint (incl. exhaustive) and helm lint.
+lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
 	golangci-lint run ./...
 	@# The chart has required values, so it is linted with each ci/ values file.
 	for f in charts/patchbay/ci/*-values.yaml; do helm lint --strict charts/patchbay -f "$$f"; done
@@ -118,9 +119,38 @@ image: ## Build the container image (IMG, default ghcr.io/christopherjmiller/pat
 clean: ## Remove build output.
 	rm -rf bin/ cover.out
 
-##@ End-to-end
+##@ End-to-end (kind + the chart + real Asterisk + fakephone; see docs/e2e.md)
+
+E2E_CLUSTER    := patchbay-e2e
+# The ONLY kubeconfig e2e uses. Never ~/.kube/config.
+E2E_KUBECONFIG := $(CURDIR)/.e2e/kubeconfig
+E2E_IMG        := ghcr.io/christopherjmiller/patchbay:e2e
+E2E_TOOLS_IMG  := ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e
+E2E_TIMEOUT    ?= 30m
+# The Asterisk image is whatever the chart pins.
+CHART_VALUES    := charts/patchbay/values.yaml
+ASTERISK_REPO    = $(shell yq '.pbx.asterisk.image.repository' $(CHART_VALUES))
+ASTERISK_TAG     = $(shell yq '.pbx.asterisk.image.tag' $(CHART_VALUES))
+ASTERISK_DIGEST  = $(shell yq '.pbx.asterisk.image.digest' $(CHART_VALUES))
 
 .PHONY: e2e
-e2e: ## (next stage) kind + real Asterisk + simulated phone.
-	@echo "e2e is not built yet: the kind harness (test/e2e) lands in the next stage."
-	@exit 1
+e2e: e2e-images ## Run the e2e suite. PATCHBAY_E2E_REUSE=1 reuses the cluster; PATCHBAY_E2E_KEEP=1 keeps it.
+	KUBECONFIG=$(E2E_KUBECONFIG) go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -v ./test/e2e/
+
+.PHONY: e2e-up
+e2e-up: e2e-images ## Create (or reuse) the e2e cluster and install the chart, run no tests, keep it.
+	PATCHBAY_E2E_REUSE=1 PATCHBAY_E2E_KEEP=1 KUBECONFIG=$(E2E_KUBECONFIG) \
+		go test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) -v -run '^$$' ./test/e2e/
+
+.PHONY: e2e-down
+e2e-down: ## Delete the e2e kind cluster.
+	kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_KUBECONFIG)
+
+.PHONY: e2e-images
+e2e-images: ## Build the patchbay and fakephone images; pull the chart's Asterisk image by digest.
+	$(MAKE) image IMG=$(E2E_IMG)
+	docker build -f test/e2e/fakephone/Dockerfile -t $(E2E_TOOLS_IMG) .
+	@# Pulled by digest, then tagged so `kind load` can carry it (kind load
+	@# drops registry digests; the e2e values reference the tag).
+	docker pull $(ASTERISK_REPO):$(ASTERISK_TAG)@$(ASTERISK_DIGEST)
+	docker tag $(ASTERISK_REPO)@$(ASTERISK_DIGEST) $(ASTERISK_REPO):$(ASTERISK_TAG)
