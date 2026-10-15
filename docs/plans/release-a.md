@@ -1,8 +1,11 @@
 # Release A ("core calling"): implementation plan
 
-**Status:** plan, 2026-10-14. **Spec:** [docs/design.md](../design.md) (§11, A).
+**Status:** plan, 2026-10-14; adversarially reviewed 2026-10-15 (changes
+are marked *review*, and checked facts carry their source and date).
+**Spec:** [docs/design.md](../design.md) (§11, A).
 **Contracts landed with this plan:** commit `f346cf7` ("contracts: release A
-shared contracts …"). Read [CLAUDE.md](../../CLAUDE.md) first.
+shared contracts …"), amended by the review's `8971df8` (§3). Read
+[CLAUDE.md](../../CLAUDE.md) first.
 
 Release A is built in three workflows, each implement → review → fix:
 
@@ -93,7 +96,9 @@ this plan decides it, it says *(plan)*.
   otherwise. DTMF RFC 4733 on payload **101** (`dtmfAvtPayload=101`).
 - **PC port off** (`pcPort=1`). Web UI **on** (read-only, a sensor;
   `webAccess=0` means enabled, *research*). **SSH off** (`sshAccess=1`,
-  *research*: 0 = enabled). Settings menu restricted.
+  *research*: 0 = enabled). Settings menu restricted (`settingsAccess`:
+  usecallmanager documents only 0 = disabled and 1 = enabled; CUCM's
+  "Restricted" is `2`, *review*, a bench check in §8).
 - A `dialplan.xml` dial template generated from the number plan, so complete
   numbers dial at once instead of after the phone's **15 s** timeout.
 - *(research)* SEP file name `SEP` + **upper-case** MAC + `.cnf.xml`
@@ -101,6 +106,14 @@ this plan decides it, it says *(plan)*.
   ≤ 50; `loadInformation` without `.loads` (blank = keep); `versionStamp`
   bumps on every change; URLs ≤ 255 characters; media ports default
   16384–32766; webAccess/sshAccess 0 = enabled.
+- *(review, checked against https://usecallmanager.nz/sepmac-cnf-xml.html
+  on 2026-10-15)* line `name`, `displayName`, `authName`, `authPassword`
+  and `featureLabel` are each **at most 30 characters**, so the device ID
+  (the authName) is capped at 30 (`drivers.DeviceIDMaxLength`);
+  `processNodeName` and the NTP `name` at most 50; `remotePartyID` lives in
+  `sipProfile/sipStack`; `remoteCcEnable` "must be set to true";
+  `sipStack/timerRegisterExpires` is the REGISTER expiry the phone asks for
+  (sample 3600); the time-zone list includes every name in T1's table.
 
 ### 1.4 PBX, ports, flow (§5, §6)
 
@@ -223,7 +236,15 @@ Values *(plan)*:
 | DirectMedia | no | no |
 | SendRPID / SendPAI / TrustIDOutbound | yes / no / yes | no / yes / yes |
 | QualifyFrequency | 0 (bench §8.6) | 0 |
-| RegistrationExpiry | 3600 s (the phone's default; bench whether it honours less) | 600 s (also in the provisioning document) |
+| RegistrationExpiry | 600 s, **also rendered into the SEP file** as `sipStack/timerRegisterExpires`, so the phone asks for exactly what Asterisk grants | 600 s (also in the provisioning document) |
+
+*Review change:* the 79x5's expiry was 3600 s, "the phone's default; bench
+whether it honours less". The SEP file sets the expiry the phone requests
+(`timerRegisterExpires`, usecallmanager's sample), so there is nothing to
+bench: Render writes the profile's value and the two sides agree by
+construction. 600 s bounds Unreachable detection at about 20 min (expiry
+plus the 10 min grace) instead of 70, and bounds how long a phone stays
+uncallable after the PBX pod is recreated (contacts live in an emptyDir).
 
 ### (b) The firmware manifest before genuine SHA-256s exist
 
@@ -261,10 +282,20 @@ SIT tone in the dialplan.
 
 - `hack/gen-sounds.sh` (run by `make sounds`, inside the flake) renders each
   prompt with **espeak-ng** (added to `flake.nix`, pinned by `flake.lock`)
-  and converts it with ffmpeg (already in the shell) to `<name>.ulaw` (8 kHz)
-  and `<name>.g722` (16 kHz) under `build/sounds/` (gitignored). The
-  Dockerfile copies them to `/usr/share/patchbay/sounds/`; `make image`
-  depends on `make sounds`.
+  using espeak's own `en-us` voice (never an mbrola `mb-*` voice, whose data
+  has its own licence), and converts it with ffmpeg (already in the shell)
+  to `<name>.ulaw` (8 kHz) and `<name>.g722` (16 kHz) under `build/sounds/`.
+  The Dockerfile copies them to `/usr/share/patchbay/sounds/`; `make image`
+  depends on `make sounds`. Two repo files must change with it, or the build
+  silently ships no prompts: **`.dockerignore`** admits only go.mod, go.sum,
+  api/, cmd/ and internal/ today, so it gains `!build/sounds/`; and
+  **`.gitignore`** gains `/build/`.
+- *Checked in review (2026-10-15):* with the flake's pinned nixpkgs,
+  `espeak-ng -v en-us -s 150 -w x.wav '<text>'` then
+  `ffmpeg -i x.wav -ar 8000 -ac 1 -f mulaw -acodec pcm_mulaw x.ulaw` and
+  `ffmpeg -i x.wav -ar 16000 -ac 1 -acodec g722 -f g722 x.g722` work
+  (espeak-ng 1.52.0.1, ffmpeg 9.0.1), and two runs give byte-identical
+  files (the 911 prompt is about 45 KB, 5.7 s, per format).
 - Texts (verbatim): `no-emergency`: "This phone cannot call emergency
   services. Hang up and use a mobile phone." `not-available`: "That number is
   not available."
@@ -304,8 +335,12 @@ objects of their own then, which the index can point to.
 ### (e) The device bundle ID
 
 **Decision (landed):** `drivers.DeviceID(kind, name)` = lower-case kind, `-`,
-resource name: `phone-desk`, `softphone-chris-laptop`; over 63 characters it
-is cut and suffixed with 8 hex digits of the name's SHA-256. It is
+resource name: `phone-desk`, `softphone-chris-laptop`; over **30**
+characters it is cut and suffixed with 8 hex digits of the name's SHA-256
+(*review:* the plan stage capped it at 63, but the 79x5's `authName` holds
+at most 30 characters, so a Phone named with more than 24 would have
+rendered an auth username the phone cannot send; a Phone name of up to 24
+characters and a Softphone name of up to 20 stay whole). It is
 `DeviceObservations.Device`, `Device.ID`, the PJSIP **endpoint** name and the
 **auth username**. The device's **number** is its SIP user and its **AOR**
 name; endpoints are identified with `identify_by = auth_username` (requests
@@ -341,10 +376,20 @@ coupled to real drivers' output.
   phone is never resynced before its new config is served (else it re-reads
   the old one and spends an attempt).
 - **No resync mid-call** (`DeviceObservations.Calls`).
+- **The running load** *(review, landed)*: `/DeviceInformationX` has both
+  `appLoadID` (the application image, a file such as
+  `jar45sip.9-4-2SR4-3.sbn`) and `versionID` (the load ID the SEP file's
+  `loadInformation` names, such as `SIP45.9-4-2SR4-3S`). The plan stage
+  compared `appLoadID` with the target load, which can never be equal, so a
+  correctly upgraded phone would have looked like it ran the wrong load and
+  been resynced until a human was asked. `agentapi.DeviceInformation` now
+  carries `VersionID`, and the driver accepts either field (T1 *runsLoad*),
+  because which one a 79x5 fills is a bench check (§8).
 - **Requests** (`resync-requested`, `reissue-requested`) are marked handled
   by the first Decide after Unknown that sees them. A phone resync request
-  sends a resync only in Registered/ConfigStale and not during a call (it
-  stays pending until the call ends); in any other row it is dropped and the
+  sends a resync only in Registered/ConfigStale, not during a call and not
+  before the compiled config is live (it stays pending until both hold); in
+  any other row it is dropped and the
   controller emits Event `RequestIgnored` with the state (W3 infers this when
   `HandledRequest` advances and no action of that kind was returned).
 - **Labels and names reject control characters** in the schema (landed;
@@ -371,6 +416,7 @@ check-generated fmt vet lint test` is green.
 | `internal/compile` | `Compile(reg, in, s)` (stub); `Bundle.Devices` (`BundleDevice`, replaces `DeviceVersions`), `Bundle.AMI` (`AMIAccount`, `AMIUsername`); `Validate` checks the index; `Settings.AMISecret` and JSON tags; `SecretRef` JSON tags; `DeviceSecretName`, `PasswordRef`, `ProvisioningTokenRef`, `SecretKeySIPPassword`, `SecretKeyProvisioningToken`; portable `TreeOf`; `DirectoryFile`; `SoundsDir`, `SoundNoEmergency`, `SoundNotAvailable`; `configmap.go` (`ConfigMapKey`, `PathFromConfigMapKey`, `IndexKey`, `Index`, `Bundle.ConfigMapData`, `BundleFromConfigMap`, `MaxConfigMapBytes`, `ErrBundleTooLarge`) |
 | `internal/agent/api` | `AgentStatus.LastApplyVersion`; `DeviceObservations.Calls`; `Fetch.File` is the bundle path for provisioning documents (never the token); `PathFirmware`, `FirmwarePath`, `MaxFirmwareFileSize`, `FirmwareUploadResponse`; `ProvisioningPathPrefix` (`/p/`) |
 | `api/v1alpha1` | control characters rejected in Phone/Softphone `label`, Person/Stream `name`; `ConditionLabelShortened`; `ReasonApplyPending`, `ReasonNumberNotInPlan` |
+| *review, `8971df8`* | `drivers.DeviceIDMaxLength` 63 → **30** (the 79x5 `authName` limit); `agentapi.DeviceInformation.VersionID` added and `AppLoadID` documented as the application image, never a load name; `PhoneObserved.Firmware`'s example is `SCCP45.9-4-2SR4-3S` |
 
 ---
 
@@ -488,45 +534,56 @@ test load (generated)", Models `cisco-7945`, `cisco-7965`, files
 - `ErrInvalidSpec`-wrapped: model not served; target load (`dev.Firmware` or
   the profile default) not in the manifest or not listing the model.
 - plain errors: `WindowsTimeZone(ctx.Timezone)` fails; `dev.MAC` not 12
-  upper-case hex; `ctx.SIPPassword` empty; a URL over 255 characters.
+  upper-case hex; `ctx.SIPPassword` empty; a URL over 255 characters; a
+  `ctx.PBXAddress` or `ctx.NTPServer` over 50 characters.
 
-SEP document — required values (the rest from usecallmanager.nz's
-`SEPMAC.cnf.xml` / `tftpboot` template, verified element by element against
-https://usecallmanager.nz/sepmac-cnf-xml.html; each element the template
-carries that this list does not is listed in the golden test's comment):
+SEP document — required values. Element paths and value meanings below were
+checked against https://usecallmanager.nz/sepmac-cnf-xml.html in review
+(2026-10-15); the rest of the document follows that page's sample, element
+by element, and each sample element this list leaves out (VPN, TVS, IPv6,
+video, add-on modules, ...) is named in the golden test's comment with why:
 
 | Element | Value |
 |---|---|
-| `deviceProtocol` | `SIP` |
+| `fullConfig`, `deviceProtocol` | `true`, `SIP` |
 | `devicePool/dateTimeSetting/timeZone` | `WindowsTimeZone(ctx.Timezone)` |
-| `…/ntps/ntp/name`, `ntpMode` | `ctx.NTPServer`, `Unicast` |
-| `devicePool/callManagerGroup/members/member[@priority=0]/callManager/processNodeName` | `ctx.PBXAddress` |
+| `…/ntps/ntp/name`, `ntpMode` | `ctx.NTPServer` (≤ 50), `unicast` (the page's spelling, lower case) |
+| `devicePool/callManagerGroup/members/member[@priority=0]/callManager/processNodeName` | `ctx.PBXAddress` (≤ 50) |
 | `…/ports/sipPort` | `ctx.SIPPort` |
-| `sipProfile/sipProxies/registerWithProxy` | `true` |
-| `sipProfile/sipStack/remotePartyID` (or wherever the template keeps it) | `true` |
-| `sipProfile/dtmfAvtPayload` | `101` |
+| `sipProfile/sipProxies/registerWithProxy` | `true` ("must be set to true") |
+| `sipProfile/sipCallFeatures/remoteCcEnable` | `true` ("must be set to true") |
+| `sipProfile/sipStack/remotePartyID` | `true` ("must be set to true") |
+| `sipProfile/sipStack/timerRegisterExpires` | `profile.Endpoint.RegistrationExpiry` in whole seconds (`600`) |
+| `sipProfile/dtmfAvtPayload`, `dtmfOutofBand` | `101`, `avt` |
 | `sipProfile/phoneLabel` | `ScreenLabel(dev.Label)` |
 | `sipProfile/dialTemplate` | `dialplan.xml` |
 | `sipProfile/startMediaPort`, `stopMediaPort` | `16384`, `32766` |
-| `sipLines/line[@button=1]/featureID` | `9` |
-| `…/featureLabel`, `displayName` | `LineLabel(dev.Label)` |
+| `sipProfile/natEnabled` | `false` |
+| `sipLines/line[@button=1][@lineIndex=1]/featureID` | `9` |
+| `…/featureLabel`, `displayName` | `LineLabel(dev.Label)` (≤ 30) |
 | `…/proxy` | `USECALLMANAGER` |
 | `…/port` | `ctx.SIPPort` |
 | `…/name`, `contact` | `dev.Number` |
-| `…/authName` | `dev.ID` |
-| `…/authPassword` | `ctx.SIPPassword` (the placeholder) |
+| `…/authName` | `dev.ID` (≤ 30: `drivers.DeviceIDMaxLength`) |
+| `…/authPassword` | `ctx.SIPPassword` (the placeholder; the password is 12) |
 | `loadInformation` | the target load name (no `.loads`) |
-| `vendorConfig/pcPort` | `1` |
-| `vendorConfig/webAccess` | `0` |
-| `vendorConfig/sshAccess` | `1` |
-| `vendorConfig/settingsAccess` | restricted (verify the value; the template documents 0/1/2) |
+| `vendorConfig/pcPort` | `1` (1 = disabled) |
+| `vendorConfig/webAccess` | `0` (0 = enabled) |
+| `vendorConfig/sshAccess` | `1` (1 = disabled) |
+| `vendorConfig/settingsAccess` | `2`, CUCM's "Restricted" (`settingsAccessRestricted` in sep.go). usecallmanager documents only `0` = disabled, `1` = enabled; §8 has the bench check and the fallback `1` |
 | `versionStamp` | `dev.ConfigVersion[:32]`, empty when `ConfigVersion` is empty |
-| `transportLayerProtocol` | `1` |
-| `advertiseG722Codec` | `1` |
-| `directoryURL` | `ctx.DirectoryURL` |
-| `userLocale` / `networkLocale` | English_United_States / United_States |
+| `transportLayerProtocol` | `1` (TCP; the profile's Transport) |
+| `advertiseG722Codec` | `1` (1 = enabled; 2 is "device default") |
+| `directoryURL` | `ctx.DirectoryURL` (≤ 255) |
+| `userLocale/name` / `networkLocale/name` | `English_United_States` / `United_States` |
 
-All text is XML-escaped by an XML encoder (never string concatenation).
+All text is XML-escaped by an XML encoder (never string concatenation). The
+document is UTF-8 with an XML declaration saying so. Whether the 79x5 shows
+non-ASCII label characters correctly (its English locale is ISO-8859-1) is
+a bench check (§8); the output is valid XML either way. Render returns a
+plain error for any value over its documented limit that the caller could
+have kept within it (a URL over 255, an address over 50); labels are cut by
+`ScreenLabel`/`LineLabel`, never refused.
 
 `WindowsTimeZone` table (at least): America/Los_Angeles → "Pacific
 Standard/Daylight Time"; America/Denver → "Mountain Standard/Daylight Time";
@@ -534,17 +591,38 @@ America/Phoenix → "US Mountain Standard Time"; America/Chicago → "Central
 Standard/Daylight Time"; America/New_York → "Eastern Standard/Daylight Time";
 America/Anchorage → "Alaskan Standard/Daylight Time"; Pacific/Honolulu →
 "Hawaiian Standard Time"; Europe/London → "GMT Standard/Daylight Time"; UTC
-and Etc/UTC → "Greenwich Standard Time". Verify each name against the list
-the template documents. Aliases (US/Pacific …) map like their canonical zone.
+and Etc/UTC → "Greenwich Standard Time". Every one of these names is in the
+time-zone list on usecallmanager's SEPMAC.cnf.xml page (checked in review);
+a name added later must be too. Aliases (US/Pacific …) map like their
+canonical zone.
 
-`DialTemplate(patterns)` converts each Asterisk pattern (in the order given:
-`NumberPlan.DialPatterns()` puts exact numbers first) to
-`<TEMPLATE MATCH="…" Timeout="0"/>` for fixed-length patterns (`X` → `.`),
-and to `MATCH="<prefix>.*" Timeout="3"` for a trailing `.` (one or more).
-**Patterns containing `*` or `#` are omitted** (safe default: Cisco reads
-`*` as a wildcard; `dialTemplateLiteralStar = false` is the bench switch, §8).
-Last comes a catch-all `MATCH="*" Timeout="5"`. Attribute names verified
-against https://usecallmanager.nz/dial-template.html.
+`DialTemplate(patterns)` writes the format of
+https://usecallmanager.nz/dial-template.html (checked in review,
+2026-10-15): root element **`<dialTemplate>`**, then a `<versionStamp>`,
+then one **`<TEMPLATE match="…" timeout="…"/>`** per pattern (the element
+name must be upper case; the attributes are lower case: `match`, `timeout`,
+and the unused `line`, `rewrite`, `tone`). In `match`, a digit or `#`
+matches itself, `.` matches one digit, `#` or `*`, `*` matches **zero or
+more** digits, `#` or `*`, and `\*` is a literal star; `timeout` is "the
+number of seconds to wait for more digits if this pattern matches". The
+conversion, in the order given (`NumberPlan.DialPatterns()` puts exact
+numbers first):
+
+- a fixed-length pattern → `match` with `X` → `.`, `timeout="0"`;
+- a trailing `.` (Asterisk: one or more) → `match="<prefix>.*"` (one, then
+  zero or more), `timeout="3"`;
+- **a pattern containing `*` or `#` is omitted.** usecallmanager documents
+  `\*` as a literal star, but if this firmware read `\*8` as the wildcard
+  `*` then `8`, any number would be dialled the moment an 8 is pressed
+  (`18` instead of `180`). Omitting `*8` costs only the catch-all's wait.
+  The switch is `dialTemplateLiteralStar = false` (§8);
+- last, the catch-all `<TEMPLATE match="*" timeout="5"/>`.
+
+`versionStamp` is the first 32 hex digits of the SHA-256 of the template
+lines, so the file depends only on the patterns and stays byte-identical
+across devices. The page does not say whether the phone takes the first
+matching template or the most specific one, so the generated template must
+not depend on it (tested below).
 
 **Fold** (`fold.go`): `fold(dev, obs, now, profile) drivers.Memory`, used by
 every row except Unknown. `d := obs.Device`.
@@ -553,9 +631,9 @@ every row except Unknown. `d := obs.Device`.
 |---|---|
 | `FirstSeen` | if nil and `d` has a fetch or a live contact: the earliest fetch `At`, else `now` |
 | `Address` | live contact's `Address`, else the latest fetch's `Source`, else unchanged |
-| `Firmware` | `d.Web.DeviceInformation.AppLoadID` when non-empty, else unchanged |
+| `Firmware` | from the latest successful scrape: `DeviceInformation.VersionID` when non-empty, else `AppLoadID` when non-empty, else unchanged (see *runsLoad*) |
 | `LastConfigFetch` | the latest fetch with `File == ConfigFileName(MAC)`, `Result == served`, `Version != ""`, if newer than the remembered one |
-| `LastRegistered` | if a live contact: set to `now` when nil or `now − LastRegistered ≥ 1 min` (coarse, so status is not rewritten every poll); else unchanged |
+| `LastRegistered` | if a live contact: set to `now` when nil, when `now − LastRegistered ≥ 1 min` (coarse, so status is not rewritten every poll), or when `fetchedAfter(LastRegistered)` (so a config fetch while registered never looks newer than the registration: rows 7 and 10 split on that order); else unchanged |
 | `UpgradeStartedAt` | non-nil exactly while the Upgrading predicate holds (set by that row, cleared by every other row except Invalid/Unknown) |
 | `LastAction`, `HandledRequest` | unchanged by the fold; rows change them |
 
@@ -566,9 +644,24 @@ whose `File` ends in `.sbn` or `.loads`. *sgn fetch* = any fetch of
 `ConfigFileName(MAC) + ".sgn"`. *target* = `dev.Firmware` or the profile
 default; *load* = its manifest entry; *available* = `len(load.Missing(obs.Firmware)) == 0`.
 *current* = `m.LastConfigFetch != nil && m.LastConfigFetch.Version == dev.ConfigVersion`.
-*fwWrong* = `m.Firmware != "" && m.Firmware != target`. *fetchedAfter(t)* =
+*runsLoad(reported, load)* (unexported) = `reported == load.Name`, or
+`reported` with any `.sbn` suffix removed equals the name, `.sbn` removed,
+of one of the load's `.sbn` files (so `jar45sip.9-4-2SR4-3.sbn` and
+`jar45sip.9-4-2SR4-3` both mean `SIP45.9-4-2SR4-3S`); the SCCP image
+`jar45sccp.…` and `SCCP45.…` never match a SIP load.
+*fwWrong* = `m.Firmware != "" && !runsLoad(m.Firmware, load)`.
+*fwRequested* = some fetch of a file named in *load* (its `.loads`, `.sbn`
+or Shared files) has `Result == notFound` and `At` at or after
+`m.LastConfigFetch.At` (any, if nil): the phone asked for the target load
+and it was not there. A phone fetches `<load>.loads` only when it runs
+another load, and `term45.default.loads` only after a factory reset, so
+this sees a wrong load even when the web page cannot be read (the Desk
+phone's went quiet after one response, design §2). *fetchedAfter(t)* =
 `m.LastConfigFetch != nil && m.LastConfigFetch.At.After(t)`.
-*lastFw* = time of the latest firmware fetch (zero if none).
+*lastFw* = time of the latest firmware fetch (zero if none). *upgradeRef* =
+the later of *lastFw* and `m.UpgradeStartedAt`, so an agent restart that
+empties the fetch log mid-upgrade does not end the upgrade on a config
+fetch from before it.
 
 **Standard conditions** (rows 3–10; fixed order: Ready, FirmwareAvailable,
 FirmwareCurrent, Provisioned, Registered, ConfigCurrent, NumberConflict,
@@ -577,7 +670,7 @@ MACConflict, Unsupported, LabelShortened):
 | Condition | True | False / Unknown |
 |---|---|---|
 | FirmwareAvailable | `Staged` | False `ManifestPending` (msg: pending files) if any pending, else False `NotStaged` (msg: `missing: a, b`) |
-| FirmwareCurrent | `Running` (msg: load) | Unknown `NotReported` when `m.Firmware == ""`; False `OtherLoad` (msg `running X, target Y`) |
+| FirmwareCurrent | `Running` (msg: target load) when `runsLoad(m.Firmware, load)` | Unknown `NotReported` when `m.Firmware == ""`; False `OtherLoad` (msg `running X, target Y`) |
 | Provisioned | `Fetched` | False `NotFetched` (no fetch) / `OldVersion` |
 | Registered | `Contact` (msg: contact, User-Agent) | False `NoContact` / `QualifyFailed` |
 | ConfigCurrent | `Current` (current and `ConfigLive()`) | False `ApplyFailed` (msg: `ApplyFailure()`) / `ApplyPending` / `Stale` (msg: versions, resync count, "waiting for the call to end") / `NotFetched` |
@@ -593,12 +686,12 @@ match wins; `outcome` may branch, and each branch is a test case):
 | 1 | `Invalid` | model not in `Models()` → `UnknownModel`; `dev.MACConflict`; `dev.NumberConflict`; `dev.NumberOutOfPlan` → `NumberNotInPlan`; target not in the manifest for the model → `UnknownFirmware` (checked in this order; the first gives Ready's reason) | Ready False `<reason>`, message = `dev.ClaimMessage` or text P1; NumberConflict / MACConflict True or False; FirmwareAvailable, FirmwareCurrent, Provisioned, Registered, ConfigCurrent **Unknown `Invalid`**; Unsupported False; LabelShortened standard. No actions. HumanAction = Ready's message. A pending request is marked handled. Memory = fold. Requeue 0. |
 | 2 | `Unknown` | `obs.AgentProblem(now, s.StaleAfter) != ""` | State = `dev.LastState`, or `Unknown` if empty. Conditions **only** Ready (Unknown `AgentUnreachable` / False `PBXDown`) and Registered (same status and reason). No actions; memory = `dev.Memory` unchanged; request untouched; HumanAction ""; requeue 0. |
 | 3 | `Unseen` | after the fold, `FirstSeen == nil` | Ready False `Unseen`; standard conditions. HumanAction P2. Requeue 10 min. |
-| 4 | `NeedsFirmware` | `fwWrong && !available` | Ready False `NeedsFirmware`. HumanAction P4 when the target load has pending digests, else P3. Requeue 0. |
+| 4 | `NeedsFirmware` | (`fwWrong` or `fwRequested`) and `!available` | Ready False `NeedsFirmware`. HumanAction P4 when the target load has pending digests, else P3. Requeue 0. |
 | 5 | `NeedsTrustReset` | no live contact, and either (a) *sgnFirst* (the earliest sgn fetch after `m.LastConfigFetch.At`, or ever) exists and `now − sgnFirst ≥ 3 min`, or (b) a `d.Web.DeviceLog` line matches `trustErrorPattern` and not `loadAuthPattern` (below) | Ready False `NeedsTrustReset`. HumanAction P5 when the **default** load (the profile's) is available, else P6. Requeue 0. |
-| 6 | `Upgrading` | `now − lastFw < 3 min`, or (`m.UpgradeStartedAt != nil` and no live contact and `!fetchedAfter(lastFw)`) | Set `UpgradeStartedAt` if nil to the earliest firmware fetch not older than 20 min (else `now`). Ready False `Upgrading`. HumanAction P8 once `now − UpgradeStartedAt ≥ 20 min`, else P7. **No actions ever** (a request is dropped). Requeue = the nearer of the 20-min mark and `lastFw + 3 min`, of those still ahead. |
-| 7 | `Registering` | no live contact and (`m.LastRegistered == nil` or `fetchedAfter(*m.LastRegistered)`) | *start* = `m.LastConfigFetch.At`, else `m.FirstSeen`. Ready False `Registering`. Before 5 min: HumanAction "", requeue per the requeue rule. From 5 min, the first that applies: Admin VLAN set → P9; `fwWrong` → P10; never fetched its config → P11; else P12 (with its two variants). |
-| 8 | `ConfigStale` | live contact and (`!current` or `fwWrong`) | Branches, in order: **(i)** `!obs.ConfigLive()` → no action; ConfigCurrent False `ApplyFailed` (requeue 0) or `ApplyPending` (requeue 15 s). **(ii)** `d.Calls > 0` → no action, request stays pending, ConfigCurrent False `Stale` "waiting for the call to end", requeue 30 s. **(iii)** a pending request → action `resync` (Version = `dev.ConfigVersion`), `HandledRequest = Request`, `LastAction = {resync, V, now, attempts-so-far-for-V}` (not incremented). **(iv)** `!profile.Provisioning.ResyncByNotify` → HumanAction P13, no action. **(v)** `LastAction` is a resync for V: `Attempts ≥ 2` and `now − At ≥ 5 min` → P13, no action; `now − At < 5 min` → wait, requeue the rest; `Attempts == 1` and `≥ 5 min` → `resync`, `Attempts = 2`. **(vi)** otherwise → `resync`, `LastAction = {resync, V, now, 1}`, requeue 5 min. Ready False `ConfigStale` in every branch. |
-| 9 | `Registered` | live contact (and so `current && !fwWrong`) | Ready True `Registered`; standard conditions (FirmwareCurrent may be Unknown `NotReported`). A pending request with no call → `resync` (as 8.iii); during a call it stays pending. Requeue 10 min. |
+| 6 | `Upgrading` | `now − lastFw < 3 min`, or (`m.UpgradeStartedAt != nil` and no live contact and `!fetchedAfter(upgradeRef)`) | Set `UpgradeStartedAt` if nil to the earliest firmware fetch not older than 20 min (else `now`). Ready False `Upgrading`. HumanAction P8 once `now − UpgradeStartedAt ≥ 20 min`, else P7. **No actions ever** (a request is dropped). Requeue = the nearer of the 20-min mark and `lastFw + 3 min`, of those still ahead. |
+| 7 | `Registering` | no live contact and (`m.LastRegistered == nil` or `fetchedAfter(*m.LastRegistered)`) | *start* = `m.LastConfigFetch.At`, else `m.FirstSeen`. Ready False `Registering`. Before 5 min: HumanAction "", requeue per the requeue rule. From 5 min, the first that applies: never fetched its config → P11; `fwWrong` → P10; Admin VLAN set → P9; else P12 (with its two variants). |
+| 8 | `ConfigStale` | live contact and (`!current` or `fwWrong`) | Branches, in order: **(i)** `!obs.ConfigLive()` → no action; ConfigCurrent False `ApplyFailed` (requeue 0) or `ApplyPending` (requeue 15 s). **(ii)** `d.Calls > 0` → no action, request stays pending, ConfigCurrent False `Stale` "waiting for the call to end", requeue 30 s. **(iii)** a pending request → action `resync` (Version = `dev.ConfigVersion`), `HandledRequest = Request`, `LastAction = {resync, V, now, A}` where `A` is `LastAction.Attempts` if `LastAction` is a resync for V, else 0 (a requested resync is not counted). **(iv)** `!profile.Provisioning.ResyncByNotify` → HumanAction P13, no action. **(v)** `LastAction` is a resync for V: `now − At < 5 min` → wait, requeue the rest (any `Attempts`); else `Attempts ≥ 2` → P13, no action; else `Attempts == 1` → `resync`, `Attempts = 2`; else (`Attempts == 0`: only requested resyncs so far) fall through to (vi). **(vi)** otherwise → `resync`, `LastAction = {resync, V, now, 1}`, requeue 5 min. Ready False `ConfigStale` in every branch. |
+| 9 | `Registered` | live contact (and so `current && !fwWrong`) | Ready True `Registered`; standard conditions (FirmwareCurrent may be Unknown `NotReported`). A pending request with no call and `obs.ConfigLive()` → `resync` (as 8.iii); otherwise it stays pending (a call, or a new bundle not yet live). Requeue 10 min. |
 | 10 | `Unreachable` | no live contact, `m.LastRegistered != nil`, `!fetchedAfter(*m.LastRegistered)` | Ready False `Unreachable`; Registered False `NoContact`/`QualifyFailed`. HumanAction P14 once `now − LastRegistered ≥ 10 min`; before, "" and requeue the rest. |
 
 Rows 7–10 partition every seen device (no contact: 7 or 10; contact: 8 or
@@ -624,12 +717,13 @@ in P12 is a literal separator):
 P1  no firmware load <target> for <model> in the cisco79x5 manifest
 P2  connect it to a VLAN 20 switch port; it will request SEP<MAC>.cnf.xml from <PBXAddress>
 P3  run `patchbay firmware load <zip>` with <Source>; missing: <files>
-P4  the cisco79x5 firmware manifest has no SHA-256 yet for <files>: take them from <Source> into internal/drivers/cisco79x5/firmware.go, then run `patchbay firmware load <zip>`
+P4  the cisco79x5 firmware manifest has no SHA-256 yet for <files>: put each file's sha256sum from <Source> into internal/drivers/cisco79x5/firmware.go, release patchbay with it, then run `patchbay firmware load <zip>`
 P5  factory reset: hold # while powering on, then 123456789*0#
 P6  stage firmware first: run `patchbay firmware load <zip>` with <Source>; a factory reset with nothing to download leaves the phone stuck
 P7  upgrading: do not unplug
 P8  upgrade stuck: check the phone's screen
-P9  clear its Admin. VLAN ID (Settings > Network Configuration): it is <v>, and the switch port is untagged
+P9  its Admin. VLAN ID is <v> but its switch port is untagged; clear it with a factory reset (its settings menu is restricted): hold # while powering on, then 123456789*0#
+    (variant when the default load is not available: "…untagged; stage firmware first with `patchbay firmware load <zip>` (<Source>), then factory-reset it: hold # while powering on, then 123456789*0#")
 P10 it runs <running>, not <target>: power-cycle it so it fetches its config and upgrades
 P11 it has not fetched SEP<MAC>.cnf.xml from <PBXAddress>: check its TFTP server (DHCP option 66)
 P12 fetched its config <N> min ago but has not registered; its log says: <line> | <line> | <line>
@@ -643,42 +737,70 @@ S3  Linphone fetched its settings <N> min ago but has not registered: is it on t
 
 P2, P5, P7, P8, P13 and P14 are the design's words (§8.3); P3 and P6 extend
 its "run `patchbay firmware load <zip>`" and "stage firmware first" with what
-to load.
+to load. *Review:* P9 used to say "clear its Admin. VLAN ID (Settings >
+Network Configuration)", which the phone's own config forbids once it has
+fetched it: `settingsAccess` is restricted (design §4), and a restricted
+menu shows only the user preferences. A factory reset clears the network
+settings, and P9 now uses the same reset texts as P5/P6. P9 is also asked
+after P11 and P10 rather than first: a phone that fetched its config over
+the network has a working VLAN, so the Admin VLAN is the least likely
+reason it has not registered.
 
 **Tests (T1):**
 
 - `TestProfiles`: every model has a profile that passes
   `drivers.ValidateProfile`; the 7945 values above, field by field; the
   Features table.
-- `TestManifest`: `ValidateFirmware` passes; 8 files with the §1.5 sizes;
-  every digest pending in the default build; `term45`/`term65` Shared;
-  `TestManifestHasNoE2ELoad` (untagged) and, under `e2e`, that the test load
-  is present and its digests match `E2ELoadFile`.
+- `TestManifest`: `ValidateFirmware` passes; the Cisco load has 8 files with
+  the §1.5 sizes, every digest pending, `term45`/`term65` Shared.
+  `TestManifestHasNoE2ELoad` lives in a file constrained `//go:build !e2e`
+  (an unconstrained one would fail W1's own `go test -tags e2e` run), and
+  its twin under `//go:build e2e` checks the test load is present with
+  digests and sizes matching `E2ELoadFile`.
 - `TestScreenLabel` / `TestLineLabel`: `Desk` → `Desk`; `Front Door` →
   `FrontDoor` (changed); 12, 13 and 31 characters at the boundaries;
   multi-byte runes (`Küche Oben` → `KücheOben`, never a split rune).
 - `TestWindowsTimeZone`: every row of the table; aliases; unknown →
   `("", false)`.
-- `TestDialTemplate` (golden) and `TestDialTemplateMatching`: a 30-line
-  simulator of Cisco matching (templates in order; a full match with
-  Timeout 0 dials at once) asserts `100`, `150`, `301`, `600`, `911`, `705`,
-  `0` dial at once with exactly those digits; `912` and `9206555` wait; `*8`
-  is not in the template; `911` is never cut short by the `9.` pattern.
+- `TestDialTemplate` (golden; the root is `dialTemplate`, every element
+  `TEMPLATE` with lower-case `match` and `timeout`, parsed back with
+  `encoding/xml`) and `TestDialTemplateMatching`: a small simulator of the
+  documented matching (`.` one of `0-9#*`, `*` zero or more, `\*` literal;
+  after each digit, a template whose `match` covers all the digits dialled
+  is a full match, and a full match with `timeout="0"` dials at once). It
+  evaluates every case under **both** readings of the undocumented choice,
+  first full match in file order and most specific full match (fewest
+  wildcards), and fails if they differ. It asserts `100`, `150`, `301`,
+  `600`, `911`, `705`, `0` dial at once with exactly those digits, no
+  shorter prefix of any of them dials at once, `912` and `9206555` wait on
+  `timeout="3"`, `*8` is not in the template, and `911` is never cut short
+  by the `9.` pattern.
 - `TestRenderGolden` cases: `desk` (house values), `lab-7965` (term65, line
   keys irrelevant), `hostile-label` (`R&D; "Lab" <1> Küche`), `long-label`
   (`Upstairs Office Phone` → 12/30), `new-york` (time zone), `explicit-firmware`
   (`spec.firmware` = default), and errors: unknown model, unknown load,
   7975 (default not in manifest) → `errors.Is(err, drivers.ErrInvalidSpec)`;
-  unknown time zone, lower-case MAC, empty password placeholder → plain
+  unknown time zone, lower-case MAC, empty password placeholder, a 256-character
+  directory URL, a 51-character PBX address → plain
   errors.
 - `TestRenderProperties`: every output parses with `encoding/xml`; only paths
   under `tftp/`; the two-pass property (`ConfigVersion` empty vs set differ
   only inside `<versionStamp>`); dialplan.xml is identical for any two
   devices with the same ctx; no character of the password placeholder is
-  escaped.
+  escaped; every element with a documented limit is within it, for every
+  golden device and for a Phone whose name is 253 characters (`authName`,
+  `name`, `displayName`, `featureLabel` ≤ 30; `phoneLabel` ≤ 12 runes;
+  `processNodeName` ≤ 50); `timerRegisterExpires` equals the profile's
+  expiry in seconds.
 - `TestFold`: one case per table row above, including `LastRegistered` at 59 s
-  (unchanged) and 60 s (advanced); `ExpiresAt == now` is not live, `now+1s`
-  is; qualify unreachable counts only when `QualifyFrequency > 0`.
+  (unchanged) and 60 s (advanced), and at 10 s with a config fetch after it
+  (advanced); `ExpiresAt == now` is not live, `now+1s` is; qualify
+  unreachable counts only when `QualifyFrequency > 0`; `Firmware` from
+  `VersionID` when both fields are set, from `AppLoadID` when only it is,
+  unchanged by a failed scrape. `TestRunsLoad`: `SIP45.9-4-2SR4-3S`,
+  `jar45sip.9-4-2SR4-3.sbn` and `jar45sip.9-4-2SR4-3` run the default load;
+  `SCCP45.9-4-2SR4-3S`, `jar45sccp.9-4-2SR4-3.sbn`, another load's image
+  (`jar45sip.9-4-2ES26.sbn`), `term45.default.loads` and `""` do not.
 - `TestDecide/<row>/<case>` — table tests, each asserting the **whole**
   Decision (State, Conditions in order, Actions, StatusPatch, HumanAction,
   RequeueAfter). Required cases and boundaries:
@@ -688,12 +810,12 @@ to load.
   | 1 Invalid | each reason alone; two reasons at once (order); a MAC loser with `obs.Device == nil`; a pending request → handled, no action; 7975 |
   | 2 Unknown | `PolledAt = now − StaleAfter` (not Unknown) / `− StaleAfter − 1ns` (Unknown); `AgentReachable=false`; `AsteriskUp=false` → PBXDown with Ready False; `LastState == ""` → `Unknown`; memory and request untouched |
   | 3 Unseen | no observations; observations with only another device's MAC (nil); `FirstSeen` set but no observations (agent restarted) → not Unseen; human text with MAC and address |
-  | 4 NeedsFirmware | SCCP load (`jar45sccp.9-4-2SR4-3`), store empty (lists all 8 files); manifest pending (pending text); partially staged (lists the rest); available → not this row |
+  | 4 NeedsFirmware | SCCP load reported as `SCCP45.9-4-2SR4-3S` and as `jar45sccp.9-4-2SR4-3.sbn`, store empty (lists all 8 files); web page never read but a `notFound` fetch of `SIP45.9-4-2SR4-3S.loads` after the last config fetch (match), the same fetch before it (no match); a `notFound` `term45.default.loads` (match); manifest pending (pending text); partially staged (lists the rest); available → not this row; the phone reports `jar45sip.9-4-2SR4-3.sbn` (the target: not this row) |
   | 5 NeedsTrustReset | sgnFirst at `now−3m+1s` (→ row 7, requeue 1 s), `now−3m`, `now−3m−1s`; served SEP after the sgn → not; contact → not; trust log line → at once; "Load Authentication Failed" → not; default load available vs not (two texts) |
-  | 6 Upgrading | lastFw at `now−3m+1s` (match), `now−3m` with `UpgradeStartedAt` already set and no fetch after (still match via in-progress), `now−3m` with `UpgradeStartedAt` nil (→ row 7), served SEP after lastFw → row 7; UpgradeStartedAt at `now−20m+1s` ("do not unplug", requeue 1 s), `now−20m`, `now−20m−1s` ("stuck"); first sight sets UpgradeStartedAt; a request is dropped; row 7 clears UpgradeStartedAt |
-  | 7 Registering | start at `now−5m+1s` (requeue 1 s), `now−5m`, `now−5m−1s`; each human variant (Admin VLAN, wrong firmware, never fetched, log lines, web error, not scraped); `LastRegistered` before the last fetch (rebooted) |
-  | 8 ConfigStale | (i) pending (15 s) and failed (message is the agent's error, failure about an older version ignored); (ii) `Calls=1`, also with a pending request (stays pending); (iii) request (attempts not incremented, HandledRequest set); (iv) `ResyncByNotify=false`; (v) attempt 1 at `now−5m+1s` (wait 1 s) / `now−5m` (resync, attempts 2); attempt 2 at `now−5m+1s` (wait) / `now−5m` (human); an older version's resync → fresh attempt 1; (vi) first resync; config current but `fwWrong` with firmware available → resync |
-  | 9 Registered | plain; firmware not reported; LabelShortened True; pending request → resync; pending request during a call → stays pending |
+  | 6 Upgrading | lastFw at `now−3m+1s` (match), `now−3m` with `UpgradeStartedAt` already set and no fetch after (still match via in-progress), `now−3m` with `UpgradeStartedAt` nil (→ row 7), served SEP after lastFw → row 7; UpgradeStartedAt at `now−20m+1s` ("do not unplug", requeue 1 s), `now−20m`, `now−20m−1s` ("stuck"); first sight sets UpgradeStartedAt; a request is dropped; row 7 clears UpgradeStartedAt; agent restarted mid-upgrade (`UpgradeStartedAt` set, no fetches, a config fetch from before it) → still Upgrading |
+  | 7 Registering | start at `now−5m+1s` (requeue 1 s), `now−5m`, `now−5m−1s`; each human variant in order (never fetched, wrong firmware, Admin VLAN with the default load available and not, log lines, web error, not scraped; and the first applies when several do); `LastRegistered` before the last fetch (rebooted) |
+  | 8 ConfigStale | (i) pending (15 s) and failed (message is the agent's error, failure about an older version ignored); (ii) `Calls=1`, also with a pending request (stays pending); (iii) request (attempts not incremented, HandledRequest set); (iv) `ResyncByNotify=false`; (v) attempt 1 at `now−5m+1s` (wait 1 s) / `now−5m` (resync, attempts 2); attempt 2 at `now−5m+1s` (wait) / `now−5m` (human); an older version's resync → fresh attempt 1; a requested resync of V (`Attempts` 0) at `now−5m+1s` (wait) / `now−5m` (resync, `Attempts` 1); (vi) first resync; config current but `fwWrong` with firmware available → resync |
+  | 9 Registered | plain; firmware not reported; LabelShortened True; pending request → resync; pending request during a call, or while `!ConfigLive()`, → stays pending; a correctly upgraded phone reporting only `AppLoadID = jar45sip.9-4-2SR4-3.sbn` → Registered, FirmwareCurrent True |
   | 10 Unreachable | `LastRegistered` at `now−10m+1s` (requeue 1 s), `now−10m`, `now−10m−1s`; contact lost via qualify |
 
 - `TestDecideTotal`: a generated grid (agent health × observations ×
@@ -739,10 +861,23 @@ provisioning documentation and liblinphone's lpconfig keys):
 
 - `sip/default_proxy` = 0;
 - `proxy_0`: `reg_proxy` = `<sip:<PBXAddress>:<SIPPort>;transport=udp>`,
-  `reg_identity` = `"<label>" <sip:<Number>@<PBXAddress>>`, `reg_expires` =
-  600, `reg_sendregister` = 1, `publish` = 0;
+  `reg_identity` = `<sip:<Number>@<PBXAddress>>` (**no display name**:
+  what others see is the endpoint's `callerid`, which Compile sets from the
+  label, so a label change must not change this document; it would make
+  the softphone stale and ask its owner to scan a QR code again for a
+  cosmetic edit), `reg_expires` = the profile's `RegistrationExpiry` in
+  seconds (600), `reg_sendregister` = 1, `publish` = 0;
 - `auth_info_0`: `username` = Number, `userid` = ID, `passwd` = the
-  placeholder, `domain` = PBXAddress;
+  placeholder, `domain` = PBXAddress. *Review:* liblinphone's published
+  key reference (download.linphone.org, "Provisioning configuration keys")
+  lists `username`, `passwd`, `realm`, `domain`, `ha1` and `algorithm` for
+  `auth_info_N`, but not `userid`, and nothing in `sip`, `misc` or `video`
+  (it says it is incomplete). T2 confirms each of those key names in
+  liblinphone's source (the code that reads an `[auth_info_N]` section,
+  and `misc/config-uri`) and cites file and line in the test comment.
+  `userid` is load-bearing: without it Linphone authenticates as `150`,
+  which identifies no endpoint, and never registers. The e2e fake reads the
+  same document, so only the `[real]` Linphone check (§9) proves the names;
 - `video`: capture, display, automatically_initiate, automatically_accept
   all 0;
 - **`misc/config-uri` = "" (overwrite)**, so Linphone does not re-fetch the
@@ -752,7 +887,12 @@ No token in the document. Errors: `ErrInvalidSpec` when `dev.Model !=
 ModelSoftphone`; plain errors for an empty placeholder or address.
 
 **Fold:** as T1's, with *config fetch* = a served fetch whose `File ==
-ProvisioningFile(dev.ID)`; no firmware fields.
+ProvisioningFile(dev.ID)`; no firmware fields. One rule more: when
+`m.LastConfigFetch` is nil and `m.LastAction` is a `rotateToken`, only a
+fetch **after** `LastAction.At` may become `LastConfigFetch`. S3 clears
+`LastConfigFetch` to send a reissued softphone back to Issued, but the old
+fetch is still in the agent's ring buffer; without this rule the next fold
+would restore it and the softphone would leave Issued one poll later.
 
 **Rule table** (conditions in order: Ready, Provisioned, Registered,
 ConfigCurrent, NumberConflict):
@@ -771,8 +911,10 @@ ConfigCurrent, NumberConflict):
 **Tests (T2):** `TestProfile`; `TestRenderGolden` (`chris-laptop`,
 `hostile-label`, `long-name` ID) and properties (XML parses; only
 `provisioning/`; `config-uri` cleared; placeholder present once; no `@@`
-other than it); `TestDecide/<row>/<case>` with: S3 while registered (→
-Issued, Registered True); S4 fetch `At == LastAction.At` (no rotate) and
+other than it; two devices that differ only in label render identical
+documents); `TestDecide/<row>/<case>` with: S3 while registered (→
+Issued, Registered True); S3 then the next Decide with the pre-reissue
+fetch still in the observations (stays Issued); S4 fetch `At == LastAction.At` (no rotate) and
 `+1ns` (rotate); no prior rotation; S5 with contact and a changed password
 (stale); S6 at `5m−1s`/`5m`/`5m+1s`; S6 vs S8 with `LastRegistered ==
 LastConfigFetch.At` (S6) and `+1s` (S8); S7; S2 boundaries as T1;
@@ -908,7 +1050,19 @@ secrets they reference.
   `type = acl`, `deny = 0.0.0.0/0.0.0.0`, one `permit` per allowed network;
   per routed, rendered device: `[<ID>] type = endpoint` with the compiler's
   options (§2a) and the profile's, `callerid = "<name>" <<number>>`; `[<ID>]
-  type = auth`; `[<number>] type = aor`.
+  type = auth`; `[<number>] type = aor` with `max_contacts = 1`,
+  `remove_existing = yes`, `default_expiration` and `maximum_expiration` =
+  the profile's `RegistrationExpiry` in seconds, and `qualify_frequency`
+  from the profile. Every section carries its `type =` line (`[global]`
+  too). Checked in review against the Asterisk 22 res_pjsip reference:
+  `identify_by = auth_username` matches "the username and realm in the
+  Authentication header", which "is not present on the first message of a
+  dialog", so a device is identified only after the challenge; the default
+  `endpoint_identifier_order` is `ip,username,anonymous`, which is why the
+  compiled `[global]` names `auth_username`; `default_realm` (default
+  `asterisk`) is the challenge's realm; `force_rport` defaults to **yes**,
+  so the 79x5's `no` must be written out (render every boolean option
+  explicitly, never rely on a default).
 - **Escaping** (one function, tested): in Asterisk values `;` → `\;`; in a
   caller ID name `"` → `'` and `\` → `/` (Asterisk's caller ID parser has no
   quote escape); caller ID name = the label cut to the profile's
@@ -978,7 +1132,7 @@ func Registry() (*drivers.Registry, error) // cisco79x5.New(), softphone.New(), 
 | Case | Inputs | Pins |
 |---|---|---|
 | `empty` | settings only | every Asterisk file, built-ins, no endpoints |
-| `house` | Phone `desk` (cisco-7945, `D0C78915E8C8`, `100`, `Desk`), Softphone `chris-laptop` (`150`, `Chris (laptop)`), Person `chris` (`301` → desk, chris-laptop) | the release A deployment: SEP, dialplan.xml, Linphone XML, pjsip.conf with `identify_by`, `send_rpid`, TCP, `force_rport = no`, `rewrite_contact = no`, `media_address`, extensions with 100/150/301/600/911/reserved, directory |
+| `house` | Phone `desk` (cisco-7945, `D0C78915E8C8`, `100`, `Desk`), Softphone `chris-laptop` (`150`, `Chris (laptop)`), Person `chris` (`301` → desk, chris-laptop) | the release A deployment: SEP, dialplan.xml, Linphone XML, pjsip.conf with `identify_by`, `send_rpid`, TCP, `force_rport = no`, `rewrite_contact = no`, `media_address`, AOR expiry 600 matching the SEP `timerRegisterExpires` and Linphone `reg_expires`, extensions with 100/150/301/600/911/reserved, directory |
 | `conflicts` | two Phones on `100` (older wins), two Phones with one MAC (one lower case), Softphone `1500` (out of plan), Phone on `600`, Person ringing a missing and a conflicted device | index entries for losers, nothing rendered for them, Person dials only the routed target |
 | `hostile-labels` | labels `R&D; "Lab" <1> Küche`, `Mom & Dad's`, a 64-character label | escaping in SEP, Linphone XML, pjsip.conf, directory |
 | `second-phone` | `desk` plus Phone `kitchen` (cisco-7965, `D0C78915EBB5`, `101`) | shared dialplan.xml once, two SEP files, term65 path unaffected |
@@ -991,7 +1145,7 @@ cross-checks on every golden: `Validate`; `ConfigMapData` round trip;
 encoded size under 64 KiB for `house`; no secret value from `input.yaml` in
 any file; every placeholder names `PasswordRef(id)` of a rendered device or
 the AMI secret; every rendered device's endpoint, auth and AOR present in
-pjsip.conf, and its number in extensions.conf; no placeholder in `http/`.
+pjsip.conf, and its number in extensions.conf; no placeholder in `http/`; every phone's SEP `authName` is its endpoint's auth `username` and its `name` its AOR, and every device's requested expiry (SEP `timerRegisterExpires`, Linphone `reg_expires`) equals its AOR's `maximum_expiration`.
 
 ### W1 acceptance
 
@@ -1017,15 +1171,15 @@ CLAUDE.md "Deviations" updated for anything W1 changed.
 | # | Component | What it does | Key tests |
 |---|---|---|---|
 | W2.1 | **Bundle intake** | Informer on ConfigMap `pbx-config` and Secret `pbx-secrets` (resourceNames, field selector on name). Decodes with `compile.BundleFromConfigMap`; resolves placeholders from `pbx-secrets` (§7.2); refuses the whole version on any unresolved placeholder (`LastApplyError = "unresolved placeholder <name>/<key>"`). A version that failed is retried only when `pbx-secrets` changes or after 5 min. | unit: decode/resolve/refuse; retry policy |
-| W2.2 | **Apply / verify / rollback** | Writes `v<version>/` (dirs 0750, files 0640, group fsGroup), swaps `current` by renaming a temp symlink, keeps the 3 newest versions. Over AMI: reload `res_pjsip.so`, then `pbx_config.so` (dialplan), and `manager` when the AMI account changed. Verify: `PJSIPShowEndpoints` = the bundle's rendered device IDs, and `ShowDialPlan` has `patchbay-devices` and `patchbay-unavailable`. Mismatch → swap back, reload, `LastApplyError`. First version (Asterisk not yet started): write + swap only, `/readyz` passes, verify once AMI connects (failure reported, nothing to roll back to). Sets `AppliedVersion`, `LastApplyVersion`, `LastApplyError`, `LastApplyAt`. | unit with a fake AMI (success, mismatch → rollback, reload error); e2e rollback (§9) |
+| W2.2 | **Apply / verify / rollback** | Writes `v<version>/` (dirs 0750, files 0640, group fsGroup), swaps `current` by renaming a temp symlink, keeps the 3 newest versions. Over AMI: reload `res_pjsip.so`, then `pbx_config.so` (dialplan), and `manager` when the AMI account changed; any other changed file reloads its owner (`rtp.conf` → `res_rtp_asterisk.so`, `pjsip_notify.conf` → `res_pjsip_notify.so`, `indications.conf` → `indications`, `logger.conf` → `logger`). **Not reloadable** (Asterisk docs: "Transport configuration is not affected by reloads"): the PJSIP transports, `asterisk.conf`, `modules.conf`. Only settings change them (address, SIP port, the module list), and the chart rolls the PBX pod when those values change (the address and ports are already in the pod spec; W2.10 adds a checksum annotation over the rest), so the agent only applies the files and lets the restart load them. Verify: `PJSIPShowEndpoints` = the bundle's rendered device IDs, and `ShowDialPlan` has `patchbay-devices` and `patchbay-unavailable`. Mismatch → swap back, reload, `LastApplyError`. First version (Asterisk not yet started): write + swap only, `/readyz` passes, verify once AMI connects (failure reported, nothing to roll back to). Sets `AppliedVersion`, `LastApplyVersion`, `LastApplyError`, `LastApplyAt`. | unit with a fake AMI (success, mismatch → rollback, reload error); e2e rollback (§9) |
 | W2.3 | **File servers** | TFTP :69 and HTTP :6970 serve `current/tftp/` and the firmware store (by name; a Shared file only from the default load; never a pending or unverified file). Each transfer → fetch log (W2.6). The port-69 privilege per §5.1. | unit: pin/tftp client against the server; 6970 parity; Shared resolution; no path escapes (os.Root) |
 | W2.4 | **Device HTTP :8088** | `current/http/<p>` at `/<p>` (`text/xml` for `.xml`); `ProvisioningPathPrefix + token` → the softphone's document, constant-time token compare, **one use per token** (the agent marks it spent at once; the controller rotates it), unknown/spent → 404 with no difference; logs and fetch log never contain the token (`Fetch.File` = bundle path). | unit: single use; 404 equality; no token in logs (capture logr) |
-| W2.5 | **AMI client** | Login as the bundle's AMI account; reconnect with backoff; `AsteriskUp`, `AsteriskVersion`. Contacts (`PJSIPShowContacts`: URI, address, User-Agent, Call-ID, expiry, qualify), channels per endpoint (`CoreShowChannels` → `Calls`). Actions: `PJSIPNotify` to the endpoint with `Event: service-control`, `Content-Type: text/plain`, body `action=restart` (resync) / `action=reset` (restart), `RegisterCallId={<Call-ID>}` and the version-stamp lines usecallmanager's `sip_notify` sample carries. | unit with a fake AMI server; e2e: fakephone receives the NOTIFY and refetches |
-| W2.6 | **Observations** | Ring buffer of 64 fetches per device; attribution: `SEP<MAC>.cnf.xml(.sgn)` by MAC from the index, provisioning by token → device, anything else by source IP (the device that last fetched its config or registered from it). `File` = requested name without a leading `/`. `UnknownDevices` for SEP requests of MACs not in the index. Registration from AMI, web scrape (W2.7), Calls. Firmware store sensor. | unit: attribution matrix; JSON shape (`api.Empty` lists) |
-| W2.7 | **Phone web scraper** | `GET http://<ip>/DeviceInformationX`, `/NetworkConfigurationX`, `/DeviceLogX` (5 s timeout; XML twins), every 60 s for phones without a live contact, every 5 min with one. Parses AppLoadID, BootLoadID, hardware revision, serial, model, Admin VLAN, Unified CM 1, last 20 log lines. | unit against httptest fakes built from the documented XML shapes (generated, not copied) |
+| W2.5 | **AMI client** | Login as the bundle's AMI account; reconnect with backoff; `AsteriskUp`, `AsteriskVersion`. Contacts (`PJSIPShowContacts`: URI, address, User-Agent, Call-ID, expiry, qualify), channels per endpoint (`CoreShowChannels` → `Calls`). Actions: `PJSIPNotify` to the endpoint with `Event: service-control`, `Subscription-State: active`, `Content-Type: text/plain`, and the body of usecallmanager's `[cisco-restart]` stanza (its Asterisk 20.20.0 patch, `sip_notify.conf`), one line each: `action=restart` (resync; `action=reset` for restart), `RegisterCallId={<the contact's REGISTER Call-ID>}`, then `ConfigVersionStamp`, `DialplanVersionStamp`, `SoftkeyVersionStamp` and `FeatureControlVersionStamp`, each `={00000000-0000-0000-0000-000000000000}`, and `HeadsetVersionStamp={0-0000000000}`. W2 confirms `PJSIPShowContacts` reports the Call-ID; without it no NOTIFY is sent (`Sent=false`, "no Call-ID"). | unit with a fake AMI server (the exact body); e2e: fakephone receives the NOTIFY and refetches |
+| W2.6 | **Observations** | Ring buffer of 64 fetches per device; attribution: `SEP<MAC>.cnf.xml(.sgn)`, `CTLSEP<MAC>.tlv` and `ITLSEP<MAC>.tlv` (asked for first at boot) by MAC from the index, provisioning by token → device, anything else by source IP (the device that last fetched its config or registered from it). `File` = requested name without a leading `/`. `UnknownDevices` for SEP requests of MACs not in the index. Registration from AMI, web scrape (W2.7), Calls. Firmware store sensor. | unit: attribution matrix; JSON shape (`api.Empty` lists) |
+| W2.7 | **Phone web scraper** | `GET http://<ip>/DeviceInformationX`, `/NetworkConfigurationX`, `/DeviceLogX` (5 s timeout; XML twins), every 60 s for phones without a live contact, every 5 min with one. Parses `versionID` and `appLoadID` (both, as the phone gives them: `api.DeviceInformation`), BootLoadID, hardware revision, serial, model, Admin VLAN, Unified CM 1, last 20 log lines. | unit against httptest fakes built from the documented XML shapes (generated, not copied) |
 | W2.8 | **Firmware store + upload** | Store at `/var/lib/patchbay/firmware/<load>/<name>`. `PUT FirmwarePath(load, name)`: stream to a temp file with SHA-256, compare with the manifest from `builtin.Registry()`, atomic rename; codes as in `api.PathFirmware` (201/200/404/412/413/422). Store sensor: hash every manifest file present at start and after each upload (cache by size+mtime). | unit: every status code; pending → 412 stores nothing; mismatch → 422 stores nothing |
-| W2.9 | **Sound prompts** | §2(c): `hack/gen-sounds.sh`, `make sounds`, espeak-ng in `flake.nix`, Dockerfile COPY, agent installs into `SoundsDir` before `/readyz`. | unit: install copies both formats; e2e: 911 and 0 return non-silent audio |
-| W2.10 | **Chart** | Agent ServiceAccount token mounted; Role: `get,list,watch` on `configmaps` resourceNames `[<fullname>-pbx-config]`, `secrets` resourceNames `[<fullname>-pbx-secrets]`. Port 69 per §5.1, recorded in docs/e2e.md. `sounds` emptyDir. `--bundle-configmap`, `--secrets` flags. **Retire `pbx.staticConfig`** (template, values, e2e values). Update `TestChartUsesTheLiveLayout` for the sounds mount. | helm lint; `TestChartUsesTheLiveLayout`; e2e |
+| W2.9 | **Sound prompts** | §2(c): `hack/gen-sounds.sh`, `make sounds`, espeak-ng in `flake.nix`, `!build/sounds/` in `.dockerignore`, `/build/` in `.gitignore`, Dockerfile COPY, agent installs into `SoundsDir` before `/readyz` and refuses to report ready if a prompt is missing from the image. | unit: install copies both formats; e2e: 911 and 0 return non-silent audio |
+| W2.10 | **Chart** | Agent ServiceAccount token mounted; Role: `get,list,watch` on `configmaps` resourceNames `[<fullname>-pbx-config]`, `secrets` resourceNames `[<fullname>-pbx-secrets]`. Port 69 per §5.1, recorded in docs/e2e.md. `sounds` emptyDir. A checksum annotation on the PBX pod over the settings that compile into non-reloadable files (W2.2). `--bundle-configmap`, `--secrets` flags. **Retire `pbx.staticConfig`** (template, values, e2e values). Update `TestChartUsesTheLiveLayout` for the sounds mount. | helm lint; `TestChartUsesTheLiveLayout`; e2e |
 | W2.11 | **Agent metrics** | `patchbay_agent_applied_version_info{version}`, `patchbay_agent_apply_failures_total`, `patchbay_agent_fetches_total{transport,result}`, `patchbay_agent_registered_endpoints`. PodMonitor gains the agent. | unit |
 
 W2's e2e, before W3 exists: with the controller scaled to 0, the harness
@@ -1033,7 +1187,11 @@ itself compiles a bundle (`compile.Compile` with `builtin.Registry()` and
 fixed inputs), creates the device Secrets and `pbx-secrets`, and writes
 `pbx-config`; the existing register/echo tests then run against compiled
 config instead of `staticConfig`. W3 replaces the harness's compile with the
-real controller.
+real controller. The e2e settings' `AllowedNetworks` must include kind's
+pod CIDR (`10.244.0.0/16`), since fakephone registers from the pod network
+and the compiled `[patchbay-acl]` denies everything else; and fakephone
+needs `--auth-user` (the device ID) separate from `--user` (the number)
+from this point, because the compiled endpoints identify by auth username.
 
 ### 5.1 Open decisions in W2, with recommendations
 
@@ -1058,8 +1216,8 @@ real controller.
 | W3.6 | **Person and Stream reconcilers** | Claims → `NumberConflict` / Ready reason `NumberNotInPlan`; Person: Ready False `MissingRingTargets` (message lists them) when a target is missing or unrouted. |
 | W3.7 | **Discovery** | An `UnknownDevices` entry → Event on the `pbx-config` ConfigMap, reason `UnknownPhone`, message `unknown phone <MAC> requested config from <IP>`, once per MAC per agent `StartedAt`. |
 | W3.8 | **Metrics** | `patchbay_devices{kind,state}`, `patchbay_registered_endpoints`, `patchbay_config_version_info{version}`, `patchbay_apply_failures_total`, `patchbay_observation_age_seconds`. |
-| W3.9 | **CLI** | `status` (resources' state, conditions, human action; unknown phones via a port-forwarded `GET /v1/observations`); `softphone qr <name> [--reissue]` (QR of `status.provisioningURL` in the terminal; `--reissue` sets the annotation to the current RFC 3339 time and waits up to 30 s for a new URL); `phone resync <name>` (annotation; warns unless the phone is Registered or ConfigStale); `firmware load <zip>` (match zip entries by base name against every load of every driver, case-sensitive, ignoring directories; local SHA-256; refuse pending digests and mismatches with the file named; port-forward to the agent pod (`pods/portforward`), PUT each match, print each result; exit non-zero if any file failed or no file matched); `models` (profiles, endpoint options, features, loads with pending markers). Every CLI test passes a `--kubeconfig` that does not exist. |
-| W3.10 | **e2e loop** | §9. fakephone gains: `--auth-user` (ID) separate from `--user` (number); a `run` script mode (fetch SEP over TFTP, parse it, register with its credentials, answer service-control NOTIFY by refetching, serve fake `/DeviceInformationX` etc. with a scripted AppLoadID, request `.sgn`, fetch firmware files, stop refreshing); a Linphone mode (GET the provisioning URL, parse the lpconfig XML, register over UDP). The e2e image and CLI are built with `GO_TAGS=e2e`. The harness stops creating the agent token. |
+| W3.9 | **CLI** | `status` (resources' state, conditions, human action; unknown phones via a port-forwarded `GET /v1/observations`); `softphone qr <name> [--reissue]` (QR of `status.provisioningURL` in the terminal; `--reissue` sets the annotation to the current RFC 3339 time and waits up to 30 s for a new URL); `phone resync <name>` (annotation; warns unless the phone is Registered or ConfigStale); `firmware load <zip>` (match zip entries by base name against every load of every driver, case-sensitive, ignoring directories; local SHA-256; a name several loads carry (Shared `term45.default.loads`) goes to the load whose digest it matches, never to the others; refuse pending digests and mismatches with the file named; port-forward to the agent pod (`pods/portforward`), PUT each match, print each result; exit non-zero if any file failed or no file matched); `models` (profiles, endpoint options, features, loads with pending markers). Every CLI test passes a `--kubeconfig` that does not exist. |
+| W3.10 | **e2e loop** | §9. fakephone gains (`--auth-user` arrives with W2): a `run` script mode (fetch SEP over TFTP, parse it, register with its credentials for the `timerRegisterExpires` it carries, answer service-control NOTIFY by refetching, serve fake `/DeviceInformationX` etc. with a scripted `versionID` and `appLoadID`, request `.sgn`, fetch firmware files, stop refreshing); a blind transfer (in-dialog REFER to another number); a Linphone mode (GET the provisioning URL, parse the lpconfig XML, register over UDP). The e2e image and CLI are built with `GO_TAGS=e2e`. The harness stops creating the agent token. |
 
 ### 6.1 Open decisions in W3, with recommendations
 
@@ -1109,14 +1267,17 @@ change.
 |---|---|---|---|
 | Does the phone request `.cnf.xml.sgn`? | `trustErrorPattern` and row 5 (cisco79x5/decide.go) | row on; it fires only on what is observed | refine the predicate or the pattern |
 | Does it try tcp 6970 first? | not in code: 6970 is always served; router rule in luma-homeops | serve it | add the allow rule, or turn the drop into a reject (Ansible, commit-confirm) |
-| Does `PJSIPNotify` service-control make it re-read config? | `Provisioning.ResyncByNotify` (cisco79x5/profile.go) | `true` (try; a human after 2 attempts) | `false` sends ConfigStale straight to the human step |
+| Does `PJSIPNotify` service-control make it re-read config? | `Provisioning.ResyncByNotify` (cisco79x5/profile.go) | `true` (try; a human after 2 attempts) | `false` sends ConfigStale straight to the human step. Before giving up, try the body without the version-stamp lines, and `Event: check-sync` (usecallmanager's `[cisco-check-cfg]`); a body change is W2's, not a contract change |
 | Highest password length that registers | `Provisioning.Password.Length` | `12` | the largest tested value ≤ 12 |
 | Does it answer OPTIONS? | `Endpoint.QualifyFrequency` | `0` (off: a failed qualify would skip the contact when dialling) | `60s`; Unreachable then uses qualify |
 | Blind and attended transfer on stock PJSIP | `Features[pjsip][transfer]` | `Untested` | `Supported` or `Unsupported` |
 | `RTPRx` push on SIP 9.4(2) | `Features[pjsip][rtpRx]` | `Untested` | `Supported` or `Unsupported` (release C) |
-| *(plan)* Does it honour a shorter granted Expires? | `Endpoint.RegistrationExpiry` | `3600s` (its own default: no risk of lapsing between refreshes) | `300s` for faster Unreachable |
-| *(plan)* Does `\*` match a literal star in the dial template? | `dialTemplateLiteralStar` (cisco79x5/dialtemplate.go) | `false` (omit `*8`) | `true` adds `MATCH="\*8"` |
-| *(plan)* Value of "restricted" for `settingsAccess` | constant in sep.go | per the template's documentation | the value the phone honours |
+| *(review)* Does the REGISTER carry `Expires: 600`? | `Endpoint.RegistrationExpiry`, rendered as `timerRegisterExpires` | `600s` | read it from `PJSIPShowContacts`; if the phone ignores the element, Asterisk still grants at most 600 and the phone must honour that |
+| *(plan)* Does `\*` match a literal star in the dial template? | `dialTemplateLiteralStar` (cisco79x5/dialtemplate.go) | `false` (omit `*8`) | `true` adds `match="\*8"` (usecallmanager documents `\*` as literal; the bench confirms dialling `180` still waits for its third digit) |
+| *(review)* Does `settingsAccess=2` give a restricted menu? | `settingsAccessRestricted` (cisco79x5/sep.go) | `2` (CUCM's Restricted; not on usecallmanager's page, which lists 0 and 1) | if the phone treats 2 as disabled or enabled, decide with Chris between `0` and `1`, and fix P9 to match |
+| *(review)* Which `/DeviceInformationX` field holds the load ID? | none: the fold reads `versionID`, then `appLoadID`, through `runsLoad` | both accepted | record what the real phone reports in the research notes; `FirmwareCurrent` must be True on the bench |
+| *(review)* Does the screen show non-ASCII labels? | none (rendered as UTF-8 XML) | as written | if they show garbled, `ScreenLabel`/`LineLabel` transliterate to ASCII and `LabelShortened` reports it |
+| *(review)* Does Linphone honour `userid`, `misc/config-uri` and the `video` keys? | the provisioning document (softphone/render.go) | as in T2 | fix the key names; the golden changes |
 
 ---
 
@@ -1147,7 +1308,7 @@ to that point.
 | Rollback: broken config stays off, `ApplyFailed` reported | e2e `TestRollback` (controller scaled to 0, broken ConfigMap → old config still registers and echoes; agent reports `LastApplyVersion` + error) (W2); envtest: agent document with that failure → `ConfigCurrent=False ApplyFailed` + Event (W3) | — |
 | Second phone appears as "unknown phone" before a resource | e2e `TestDiscovery`: fakephone with an unknown MAC → Event + `patchbay status` lists it (W3) | `[real]` second 7945 |
 | … reaches `Registered` once a Phone is written | e2e (W3) | `[real]` |
-| Phone↔phone calls and transfer | e2e calls between two fakephones (W3) | `[real]` transfer (bench) |
+| Phone↔phone calls and transfer | e2e calls between two fakephones (W3); e2e `TestTransfer`: A calls B, B sends an in-dialog REFER to `150`, the softphone fakephone rings and A's audio reaches it (proves `res_pjsip_refer.so` loads and the transfer lands in `patchbay-devices`) (W3) | `[real]` blind and attended transfer on the 7945 (bench) |
 
 ---
 
@@ -1164,10 +1325,12 @@ The five inputs most likely to break a real user that no test covers yet.
    (W1-T1, W1-T2); control characters are already refused by the schema
    (landed, envtest).
 2. **Dialling 911 on the 79x5.** The dial template mixes an exact `911` with
-   the reserved `9.` and a literal-star `*8`, and Cisco reads `*` as a
-   wildcard: a wrong order or conversion sends `9` alone, and the caller
-   hears "not available" instead of the emergency announcement. *Pinned
-   by:* `TestDialTemplateMatching` (W1-T1) and the e2e 911 call (W3).
+   the reserved `9.` and a literal-star `*8`, and Cisco reads `*` as "zero
+   or more": a wrong order or conversion sends `91` or `9` early, and the
+   caller hears "not available" instead of the emergency announcement.
+   Whether the phone takes the first or the most specific matching template
+   is undocumented. *Pinned by:* `TestDialTemplateMatching` under both
+   readings (W1-T1) and the e2e 911 call (W3).
 3. **The real Cisco firmware zip.** It may hold a top-level folder, extra
    files (readme, `.cop.sgn`), names in another case, or files of another
    load, and its digests are pending until Chris fills them. `firmware load`
@@ -1195,9 +1358,28 @@ The five inputs most likely to break a real user that no test covers yet.
 - **Renumbering a phone** renames its AOR; the phone's next REGISTER (old
   number) gets 404 and it needs a power-cycle (its row reaches Registering
   or Unreachable with that instruction). Rare; documented in the runbook.
-- **Unreachable detection** waits for the registration to lapse (up to an
-  hour on the 79x5) plus the 10 min grace, until the qualify and expiry bench
-  answers allow shortening it.
+- **Unreachable detection** waits for the registration to lapse (at most
+  600 s) plus the 10 min grace, until the qualify bench answer allows
+  shortening it.
+- **After the PBX pod is recreated** (chart or Asterisk upgrade, node
+  restart) Asterisk has no contacts, because astdb lives on an emptyDir:
+  calls to a device fail until it re-registers, which takes at most the
+  600 s expiry (the 79x5 over TCP should notice the dropped connection
+  sooner; bench).
+- **Staging Cisco firmware needs a patchbay release.** The manifest is code
+  and starts with pending digests, so the first `patchbay firmware load` of
+  the real zip waits for a commit that fills them in and an image built
+  from it. That is the price of nothing outside the binary deciding what is
+  genuine.
+- **Hold plays silence**: `res_musiconhold` is not loaded and there are no
+  music files.
+- **Long resource names**: a Phone name over 24 characters, or a Softphone
+  name over 20, gets a shortened device ID with a hash (`phone-<15
+  characters>-1a2b3c4d`), visible as its Secret and endpoint names.
 - **A 7975** is Invalid until its load is added to the manifest.
 - **More than 32 directory entries** are dropped (Cisco's object limit).
 - The SEP file carries the line password in clear over TFTP (design §5).
+- **In CUCM mode the 79x5 may send Cisco-proprietary requests** (out-of-dialog
+  `x-cisco-remotecc` REFERs, SUBSCRIBEs for features it was not given);
+  stock PJSIP answers them with errors. Expected, and harmless unless the
+  bench shows otherwise.
