@@ -3688,9 +3688,11 @@ The five inputs most likely to break a real user that no test covers yet.
   error until a new version arrives.
 - *(W3)* **The controller's objects outlive `helm uninstall`**:
   `pbx-config`, `pbx-secrets`, `<fullname>-ami` and `<fullname>-agent-token`
-  have no owner (device Secrets go with their resources). Delete them with
-  `kubectl -n <namespace> delete configmap,secret -l
-  app.kubernetes.io/managed-by=patchbay-controller`.
+  have no owner (device Secrets go with their resources). Delete them by
+  name (NOTES prints the commands), never by the managed-by label: every
+  device Secret carries it too, and with the Phones kept (the CRDs survive
+  uninstall) a reinstall would then re-provision every phone (final
+  review).
 - *(W3)* **A controller restart reports each unknown phone again**, once:
   discovery remembers which MACs it reported for the agent's current
   process in memory only, and only while the agent lists them (its 64

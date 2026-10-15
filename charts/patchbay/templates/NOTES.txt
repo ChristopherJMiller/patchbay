@@ -20,6 +20,15 @@ Check the PBX:
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "patchbay.fullname" . }}-pbx -c asterisk -- \
     asterisk -C /var/lib/patchbay/config/current/asterisk/asterisk.conf -rx 'pjsip show endpoints'
 
-The controller's own objects (pbx-config, pbx-secrets, the AMI and agent
-token Secrets) are not Helm's: `helm uninstall` leaves them. Remove them with
-  kubectl -n {{ .Release.Namespace }} delete configmap,secret -l app.kubernetes.io/managed-by=patchbay-controller
+The controller's own install objects are not Helm's: `helm uninstall` leaves
+them. Once the controller is gone, remove them by name:
+  kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config
+  kubectl -n {{ .Release.Namespace }} delete secret {{ include "patchbay.fullname" . }}-pbx-secrets {{ include "patchbay.fullname" . }}-ami {{ include "patchbay.agentTokenSecretName" . }}
+Not by label: each device's Secret (patchbay-<id>: its SIP password, a
+softphone's provisioning token) carries the same labels, and goes with its
+Phone or Softphone. The CRDs, and so the Phones, survive uninstall; delete
+the device Secrets too and every phone needs re-provisioning after a
+reinstall (a 7945 a power-cycle, a softphone `qr --reissue`).
+
+Runbook (symptoms, causes, what to do): docs/operations.md in the patchbay
+repository.
