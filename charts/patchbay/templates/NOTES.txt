@@ -3,12 +3,23 @@ patchbay {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace
 The PBX pod runs on node {{ .Values.pbx.nodeName }} (host network); phones reach
 SIP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.sip }} and TFTP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.tftp }}.
 
-The PBX pod starts once the agent token Secret exists:
-  kubectl -n {{ .Release.Namespace }} get secret {{ include "patchbay.agentTokenSecretName" . }}
-Asterisk then starts once the agent has applied the first compiled bundle
-({{ include "patchbay.fullname" . }}-pbx-config with {{ include "patchbay.fullname" . }}-pbx-secrets).
+The controller mints the install's Secrets (the agent token
+{{ include "patchbay.agentTokenSecretName" . }}, the AMI password, one per device) and
+compiles every Phone, Softphone, Person and Stream into
+{{ include "patchbay.fullname" . }}-pbx-secrets, then {{ include "patchbay.fullname" . }}-pbx-config. The PBX pod waits
+in ContainerCreating until the token exists, and Asterisk starts once the
+agent has applied the first bundle. Nothing to create by hand.
+
+Add phones as resources (config/samples has one of each), then:
+  patchbay status -n {{ .Release.Namespace }}
+  patchbay softphone qr <name> -n {{ .Release.Namespace }}
+  patchbay firmware load <cisco-firmware.zip> -n {{ .Release.Namespace }}
 
 Check the PBX:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "patchbay.fullname" . }}-pbx -c asterisk -- \
     asterisk -C /var/lib/patchbay/config/current/asterisk/asterisk.conf -rx 'pjsip show endpoints'
+
+The controller's own objects (pbx-config, pbx-secrets, the AMI and agent
+token Secrets) are not Helm's: `helm uninstall` leaves them. Remove them with
+  kubectl -n {{ .Release.Namespace }} delete configmap,secret -l app.kubernetes.io/managed-by=patchbay-controller

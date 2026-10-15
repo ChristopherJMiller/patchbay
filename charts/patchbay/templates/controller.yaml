@@ -20,35 +20,60 @@ metadata:
     {{- include "patchbay.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
 rules:
-  # Its resources: read spec, write status. Finalizers: needed to set
-  # blockOwnerDeletion on the Secrets each resource owns.
+  # Least privilege (docs/plans/release-a.md §7.2 lists who writes what).
+  # It never deletes anything: owned Secrets go with their resource
+  # (ownerReference GC), and nothing may remove Helm's release Secrets.
+  #
+  # Its resources: read only. It never edits their spec or metadata (a
+  # request annotation is acted on once, recorded in status).
   - apiGroups: [patchbay.chrismiller.xyz]
     resources: [phones, softphones, people, streams]
-    verbs: [get, list, watch, update, patch]
+    verbs: [get, list, watch]
+  # Their status: it is the only writer (Status().Update).
   - apiGroups: [patchbay.chrismiller.xyz]
     resources: [phones/status, softphones/status, people/status, streams/status]
-    verbs: [get, update, patch]
-  - apiGroups: [patchbay.chrismiller.xyz]
-    resources: [phones/finalizers, softphones/finalizers, people/finalizers, streams/finalizers]
     verbs: [update]
-  # The compiled bundle (ConfigMap pbx-config) and the generated secrets.
-  # No delete: owned Secrets go with their resource (ownerReference GC), a
-  # rotation updates in place, and nothing may delete Helm's release Secrets
-  # or a hand-made token in this namespace.
+  # The device Secrets it creates are owned by their Phone or Softphone with
+  # blockOwnerDeletion, which the API server allows only to whoever may
+  # update the owner's finalizers.
+  - apiGroups: [patchbay.chrismiller.xyz]
+    resources: [phones/finalizers, softphones/finalizers]
+    verbs: [update]
+  # Its cache lists and watches every ConfigMap of the namespace (pbx-config,
+  # and the settings an Event may regard); it creates pbx-config, and
+  # updates only that one.
   - apiGroups: [""]
-    resources: [configmaps, secrets]
-    verbs: [get, list, watch, create, update, patch]
-  # Discovery and state-change Events.
+    resources: [configmaps]
+    verbs: [get, list, watch, create]
   - apiGroups: [""]
-    resources: [events]
-    verbs: [create, patch]
+    resources: [configmaps]
+    resourceNames: [{{ $fullname }}-pbx-config]
+    verbs: [update]
+  # Secrets: it creates and completes the device Secrets
+  # (patchbay-<device ID>, one name per resource, so no resourceNames),
+  # <fullname>-ami, <fullname>-agent-token and <fullname>-pbx-secrets; its
+  # cache watches them all, and a softphone's token rotation updates one in
+  # place.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update]
+  # Events: discovery, state changes, actions, the bundle (events.k8s.io),
+  # and leader election (the core API).
   - apiGroups: [events.k8s.io]
     resources: [events]
     verbs: [create, patch]
-  # Leader election: client-go's Lease lock only gets, creates and updates.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  # Leader election: client-go's Lease lock creates the install's Lease,
+  # then gets and renews only it.
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
-    verbs: [get, create, update]
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [{{ $fullname }}-controller.patchbay.chrismiller.xyz]
+    verbs: [get, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -85,10 +110,12 @@ spec:
       labels:
         {{- include "patchbay.labels" . | nindent 8 }}
         app.kubernetes.io/component: controller
-      {{- with .Values.controller.podAnnotations }}
       annotations:
+        # The controller reads its settings once, at start: a change rolls it.
+        checksum/settings: {{ include "patchbay.settingsJSON" . | sha256sum }}
+        {{- with .Values.controller.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       serviceAccountName: {{ $sa }}
       enableServiceLinks: false
@@ -109,6 +136,9 @@ spec:
           args:
             - controller
             - --namespace=$(POD_NAMESPACE)
+            - --fullname={{ $fullname }}
+            - --settings-file=/etc/patchbay/settings/settings.json
+            - --agent-url=http://{{ $fullname }}-agent.{{ .Release.Namespace }}.svc:{{ .Values.pbx.ports.control }}
             - --leader-elect={{ .Values.controller.leaderElect }}
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
@@ -150,6 +180,17 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/patchbay/settings
+              readOnly: true
+      volumes:
+        - name: settings
+          configMap:
+            name: {{ $fullname }}-settings
+            items:
+              - key: settings.json
+                path: settings.json
       {{- with .Values.controller.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

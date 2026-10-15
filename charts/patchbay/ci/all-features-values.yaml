@@ -4,6 +4,19 @@ image:
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
 imagePullSecrets:
   - name: regcred
+# Settings other than the defaults, some of the number plan written as YAML
+# numbers (the chart renders every entry as a string).
+timezone: America/Los_Angeles
+ntpServer: 192.0.2.1
+numberPlan:
+  devices: "1XX"
+  people: "3XX"
+  streams: "7XX"
+  echoTest: 600
+  emergency: 911
+  reserved: ["2XX", 0, "9.", "*8"]
+allowedNetworks:
+  - 192.0.2.0/24
 controller:
   replicas: 2
   nodeSelector:
@@ -15,8 +28,8 @@ controller:
 pbx:
   nodeName: top
   address: 192.0.2.10
-  agent:
-    tokenSecretName: my-agent-token
+  ports:
+    control: 9450
 firmware:
   persistence:
     storageClassName: fast

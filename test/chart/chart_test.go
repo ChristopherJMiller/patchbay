@@ -7,10 +7,7 @@
 package chart_test
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -40,37 +37,7 @@ type manifest struct {
 // render runs helm template with the chart's minimal ci values plus sets.
 func render(t *testing.T, sets ...string) manifest {
 	t.Helper()
-	helm, err := exec.LookPath("helm")
-	if err != nil {
-		t.Fatal("helm is not on PATH: run the tests inside `nix develop`")
-	}
-	args := []string{"template", release, chartDir, "--namespace", "telephony",
-		"--values", filepath.Join(chartDir, "ci", "minimal-values.yaml")}
-	for _, s := range sets {
-		args = append(args, "--set", s)
-	}
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(context.Background(), helm, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("helm %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	m := manifest{raw: stdout.String(), docs: map[string][]byte{}}
-	for doc := range strings.SplitSeq(m.raw, "\n---\n") {
-		var meta struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		}
-		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
-			t.Fatalf("rendered YAML: %v\n%s", err, doc)
-		}
-		if meta.Kind != "" {
-			m.docs[meta.Kind+"/"+meta.Metadata.Name] = []byte(doc)
-		}
-	}
-	return m
+	return renderFile(t, filepath.Join(chartDir, "ci", "minimal-values.yaml"), sets...)
 }
 
 func get[T any](t *testing.T, m manifest, kind, name string) *T {

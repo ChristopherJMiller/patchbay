@@ -64,9 +64,47 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s-agent" (include "patchbay.fullname" .) -}}
 {{- end -}}
 
-{{/* The Secret holding the agent's control API token (key "token"). */}}
+{{/*
+The Secret holding the agent's control API token (key "token"). The
+controller mints it (install.Names.AgentTokenSecret); the name is fixed.
+*/}}
 {{- define "patchbay.agentTokenSecretName" -}}
-{{- default (printf "%s-agent-token" (include "patchbay.fullname" .)) .Values.pbx.agent.tokenSecretName -}}
+{{- printf "%s-agent-token" (include "patchbay.fullname" .) -}}
+{{- end -}}
+
+{{/*
+The install's settings, as the controller reads them: compile.Settings in
+JSON (internal/controller/settings parses it strictly; test/chart compares
+the default with its fixture). Every number-plan entry is a string, whatever
+YAML made of it. streamBridge stays unset until release B. The AMI Secret is
+the one the controller mints, <fullname>-ami (install.CheckSettings).
+*/}}
+{{- define "patchbay.settingsJSON" -}}
+{{- $p := .Values.pbx -}}
+{{- $plan := .Values.numberPlan -}}
+{{- $reserved := list -}}
+{{- range $plan.reserved -}}{{- $reserved = append $reserved (toString .) -}}{{- end -}}
+{{- $networks := list -}}
+{{- range .Values.allowedNetworks -}}{{- $networks = append $networks (toString .) -}}{{- end -}}
+{{- $settings := dict
+  "pbxAddress" (include "patchbay.pbxAddress" .)
+  "sipPort" (int $p.ports.sip)
+  "rtpPorts" (dict "first" (int $p.ports.rtpStart) "last" (int $p.ports.rtpEnd))
+  "deviceHTTPPort" (int $p.ports.deviceHTTP)
+  "ntpServer" (toString .Values.ntpServer)
+  "timezone" (toString .Values.timezone)
+  "signalling" (toString $p.signalling)
+  "numberPlan" (dict
+    "devices" (toString $plan.devices)
+    "people" (toString $plan.people)
+    "streams" (toString $plan.streams)
+    "echoTest" (toString $plan.echoTest)
+    "emergency" (toString $plan.emergency)
+    "reserved" $reserved)
+  "allowedNetworks" $networks
+  "amiSecret" (dict "name" (printf "%s-ami" (include "patchbay.fullname" .)) "key" "password")
+-}}
+{{- toPrettyJson $settings -}}
 {{- end -}}
 
 {{/* The PBX's SIP address, required: Asterisk binds it and advertises it in SDP. */}}

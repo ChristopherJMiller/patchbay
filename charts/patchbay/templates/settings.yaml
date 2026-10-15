@@ -1,0 +1,16 @@
+{{- $fullname := include "patchbay.fullname" . -}}
+# The install's settings (docs/plans/release-a.md W3.1): compile.Settings as
+# JSON, which the controller reads once at start from this ConfigMap,
+# mounted. A change rolls the controller (checksum/settings), which then
+# recompiles every device's config with it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-settings
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+data:
+  settings.json: |
+    {{- include "patchbay.settingsJSON" . | nindent 4 }}

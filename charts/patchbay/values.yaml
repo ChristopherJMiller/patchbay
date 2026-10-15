@@ -20,6 +20,37 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# The install's settings: the chart renders them, with pbx.address and
+# pbx.ports, into <fullname>-settings (settings.json), which the controller
+# reads at start and compiles every phone's config from. Changing one
+# restarts the controller (a checksum annotation), which recompiles.
+
+# The time zone phones show, as an IANA name (America/Los_Angeles).
+timezone: UTC
+# The NTP server phones use, as an IP address: the voice VLAN's gateway.
+ntpServer: 192.168.20.1
+# Which numbers mean what (design §4). Patterns use Asterisk's notation: X
+# is one digit, a trailing "." one or more digits, "*" and "#" are literal.
+# Quote every value: they are strings ("0" and "600", not numbers).
+numberPlan:
+  # Phones and softphones.
+  devices: "1XX"
+  # People (ring several devices).
+  people: "3XX"
+  # Streams (release B).
+  streams: "7XX"
+  # The echo test.
+  echoTest: "600"
+  # Plays "this phone cannot call emergency services".
+  emergency: "911"
+  # Each plays "not available".
+  reserved: ["2XX", "0", "9.", "*8"]
+# The networks phones register from: the PJSIP ACL refuses every other
+# source and contact (the voice VLAN and the LAN).
+allowedNetworks:
+  - 192.168.20.0/24
+  - 192.168.0.0/24
+
 controller:
   # One replica decides at a time (leader election); a second only speeds
   # up failover.
@@ -68,6 +99,9 @@ pbx:
     # Agent: control API for the controller (token-protected), TCP.
     control: 9440
 
+  # The signalling backend (design §8.5): only pjsip exists.
+  signalling: pjsip
+
   # The pod's fsGroup: the group the agent gives every live config file
   # Asterisk must read (Asterisk's own group). The file server drops it.
   fsGroup: 1000
@@ -98,16 +132,13 @@ pbx:
         memory: 512Mi
 
   agent:
-    # The Secret holding the control API bearer token under the key "token".
-    # Default: <fullname>-agent-token. The controller will mint it (design
-    # §4); until it does, create it before installing:
-    #   kubectl create secret generic <fullname>-agent-token \
-    #     --from-literal=token="$(head -c 32 /dev/urandom | base64)"
-    # The PBX pod waits in ContainerCreating until the Secret exists. The
-    # agent then waits for <fullname>-pbx-config and <fullname>-pbx-secrets,
-    # the compiled bundle the controller writes; Asterisk starts once the
-    # first version is applied.
-    tokenSecretName: ""
+    # The agent's control API token is minted by the controller into
+    # <fullname>-agent-token (32 random bytes, design §4): nothing to
+    # create. Until the controller has written it, the PBX pod waits in
+    # ContainerCreating (the kubelet retries the Secret volume); the agent
+    # then waits for <fullname>-pbx-config and <fullname>-pbx-secrets, the
+    # compiled bundle, and Asterisk starts once the first version is
+    # applied.
     logLevel: info
     resources:
       requests:

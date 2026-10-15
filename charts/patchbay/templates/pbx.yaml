@@ -92,9 +92,8 @@ spec:
       annotations:
         # What compiles into files Asterisk cannot reload (asterisk.conf,
         # modules.conf, the PJSIP transports): the agent applies those files
-        # but only a restart loads them, so a change rolls the pod. Today
-        # each is also in the pod spec; the annotation keeps that true when
-        # the controller's settings (W3) feed the bundle.
+        # but only a restart loads them, so a change rolls the pod. The
+        # controller compiles them from the same values (<fullname>-settings).
         checksum/asterisk-restart: {{ dict "address" $address "sipPort" (int $p.ports.sip) "modules" $modules | toJson | sha256sum }}
         {{- with $p.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -394,6 +393,10 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        # The control API token, which the controller mints. Not optional:
+        # until the Secret exists the pod waits in ContainerCreating (the
+        # kubelet retries the mount), rather than start an agent that could
+        # never answer the controller.
         - name: agent-token
           secret:
             secretName: {{ include "patchbay.agentTokenSecretName" . }}
