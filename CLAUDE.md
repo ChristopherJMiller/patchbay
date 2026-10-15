@@ -50,8 +50,16 @@ events, the file server's socket format, the scrape and firmware sensors),
 (mounts, uids, file modes, version directories), `internal/agent/ami/ami.go`
 (the AMI client interface), `internal/agent/firmware/store.go` (the
 firmware store interface) and `agent.Options` (what the control API
-serves). Change them deliberately: the controller, agent, drivers and e2e
-fake phone all build on them. The release A plan, with the reasoning behind
+serves); and the controller's (W3): `internal/controller/install` (the
+install's object names, keys, labels, the compiled bundle written as
+pbx-secrets then pbx-config and read back with `ReadCompiled`, secret
+generation, Event reasons), `internal/controller/agentview` (the poller's
+`Snapshot`, `Observer`/`Holder`, the `Changes` enqueue channels,
+`SnapshotFunc`, the `Actor` the device reconcilers send actions through),
+`internal/controller/ctrltest` (the shared envtest harness),
+`internal/cli/env.go` (the CLI's seams) and `test/e2e/fakephone/script`
+(what `fakephone run` does and reports). Change them deliberately: the
+controller, agent, drivers and e2e fake phone all build on them. The release A plan, with the reasoning behind
 each contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
 
 ## Deviations from the design
