@@ -23,9 +23,12 @@ COPY internal/ internal/
 
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev COMMIT=unknown DATE=unknown
+# Go build tags: empty for every real image. `make e2e-images` passes e2e,
+# which adds the e2e test firmware load (docs/plans/release-a.md §2(b)).
+ARG GO_TAGS=""
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags "${GO_TAGS}" \
       -ldflags "-s -w \
         -X github.com/ChristopherJMiller/patchbay/internal/version.Version=${VERSION} \
         -X github.com/ChristopherJMiller/patchbay/internal/version.Commit=${COMMIT} \
@@ -39,5 +42,9 @@ LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/pat
       org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=build /out/patchbay /patchbay
+# The sound prompts, rendered by `make sounds` (hack/gen-sounds.sh) before
+# the build; the agent installs them into the sounds volume at start and
+# is not ready without them.
+COPY build/sounds/ /usr/share/patchbay/sounds/
 USER 65532:65532
 ENTRYPOINT ["/patchbay"]

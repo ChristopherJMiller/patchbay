@@ -1,5 +1,6 @@
-# Build output
+# Build output (build/sounds: the generated prompts, never committed)
 /bin/
+/build/
 /dist/
 cover.out
 *.test

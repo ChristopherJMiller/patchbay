@@ -71,6 +71,10 @@
               sipp
               tftp-hpa
               ffmpeg-headless
+
+              # The sound prompts (make sounds, hack/gen-sounds.sh): text to
+              # speech with espeak-ng's own voices, converted by ffmpeg.
+              espeak-ng
             ];
 
             KUBEBUILDER_ASSETS = "${self.packages.${system}.envtest-assets}";

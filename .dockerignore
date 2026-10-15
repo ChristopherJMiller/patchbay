@@ -1,8 +1,11 @@
-# Only go.mod, go.sum, api/, cmd/ and internal/ are needed to build.
+# Only go.mod, go.sum, api/, cmd/ and internal/ are needed to build, plus
+# the sound prompts `make sounds` renders into build/sounds/ (copied into
+# the image as they are).
 *
 !go.mod
 !go.sum
 !api/
 !cmd/
 !internal/
+!build/sounds/
 **/*_test.go

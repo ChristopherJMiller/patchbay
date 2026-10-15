@@ -50,6 +50,7 @@ tools-versions: ## Print the version of every tool in the dev shell.
 	@{ sipp -v 2>&1 || true; } | grep SIPp | sed -n 1p
 	@{ tftp -V 2>&1 || true; } | sed -n 1p
 	@ffmpeg -version | sed -n 1p
+	@espeak-ng --version
 	@echo "envtest: $$KUBEBUILDER_ASSETS"
 	@"$$KUBEBUILDER_ASSETS/kube-apiserver" --version
 	@"$$KUBEBUILDER_ASSETS/etcd" --version | sed -n 1p
@@ -86,7 +87,7 @@ fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
 vet: ## go vet (including the e2e-tagged code and the asterisk-check).
 	go vet ./...
 	go vet -tags e2e ./...
-	go vet -tags asterisk ./internal/compile/
+	go vet -tags asterisk ./internal/compile/ ./internal/agent/ami/
 
 .PHONY: lint
 lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
@@ -120,17 +121,27 @@ envtest-assets:
 build: ## Build bin/patchbay.
 	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o bin/patchbay ./cmd/patchbay
 
+# Go build tags for the image. Empty for every real image; `make e2e-images`
+# passes e2e, which adds cisco79x5's e2e test load to the firmware manifest
+# (docs/plans/release-a.md §2(b)): never ship an image built with it.
+GO_TAGS ?=
+
+.PHONY: sounds
+sounds: ## Render the sound prompts into build/sounds (espeak-ng + ffmpeg; the image copies them).
+	hack/gen-sounds.sh build/sounds
+
 .PHONY: image
-image: ## Build the container image (IMG, default ghcr.io/christopherjmiller/patchbay:dev).
+image: sounds ## Build the container image (IMG, default ghcr.io/christopherjmiller/patchbay:dev; GO_TAGS for build tags).
 	docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg DATE=$(DATE) \
+		--build-arg GO_TAGS=$(GO_TAGS) \
 		-t $(IMG) .
 
 .PHONY: clean
 clean: ## Remove build output.
-	rm -rf bin/ cover.out
+	rm -rf bin/ build/ cover.out
 
 ##@ Real Asterisk (docker, no cluster)
 
@@ -189,8 +200,9 @@ e2e-down: ## Delete the e2e kind cluster.
 	kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_KUBECONFIG)
 
 .PHONY: e2e-images
-e2e-images: ## Build the patchbay and fakephone images; pull the chart's Asterisk image by digest.
-	$(MAKE) image IMG=$(E2E_IMG)
+e2e-images: ## Build the patchbay (GO_TAGS=e2e) and fakephone images; pull the chart's Asterisk image by digest.
+	@# The e2e tag gives the agent the e2e firmware load (E2E45.0-0-1S).
+	$(MAKE) image IMG=$(E2E_IMG) GO_TAGS=e2e
 	docker build -f test/e2e/fakephone/Dockerfile -t $(E2E_TOOLS_IMG) .
 	@# Pulled by digest, then tagged so `kind load` can carry it (kind load
 	@# drops registry digests; the e2e values reference the tag).
