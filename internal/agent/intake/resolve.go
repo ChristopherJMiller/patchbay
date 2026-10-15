@@ -20,6 +20,22 @@ type Resolved struct {
 	Tokens map[string]string
 }
 
+// errSecretMismatch marks a Secret that is not the one written for the
+// bundle: a value its version covers is missing, or the values are not the
+// ones it was compiled with (compile.Bundle.VersionWith).
+var errSecretMismatch = errors.New("pbx-secrets does not hold the secret values this bundle version was compiled with")
+
+// unresolvedError is a secret the bundle references that has no value.
+type unresolvedError struct{ ref compile.SecretRef }
+
+func (e unresolvedError) Error() string {
+	return "unresolved placeholder " + e.ref.Name + "/" + e.ref.Key
+}
+
+// Is makes a missing value a Secret mismatch: the Secret written for the
+// version holds every value.
+func (e unresolvedError) Is(target error) bool { return target == errSecretMismatch }
+
 // Resolve resolves every placeholder of b with the projected Secret's data
 // (keys compile.SecretRef.ProjectedKey). It is pure. Each file is scanned
 // once with compile.PlaceholderPattern and each match replaced by its value,
@@ -43,7 +59,7 @@ func Resolve(b compile.Bundle, secretData map[string][]byte) (Resolved, error) {
 		}
 		v := secretData[key]
 		if len(v) == 0 {
-			return Resolved{}, fmt.Errorf("unresolved placeholder %s/%s", r.Name, r.Key)
+			return Resolved{}, unresolvedError{r}
 		}
 		values[r] = v
 	}
@@ -58,7 +74,7 @@ func Resolve(b compile.Bundle, secretData map[string][]byte) (Resolved, error) {
 			if !ok && missing == nil {
 				// SecretRefs lists every placeholder, so this cannot
 				// happen; refuse rather than write the placeholder.
-				missing = fmt.Errorf("unresolved placeholder %s/%s", r.Name, r.Key)
+				missing = unresolvedError{r}
 			}
 			return v
 		})
@@ -78,4 +94,32 @@ func Resolve(b compile.Bundle, secretData map[string][]byte) (Resolved, error) {
 		}
 	}
 	return r, nil
+}
+
+// secretsMatch is nil when secretData holds exactly the secret values b's
+// version was compiled with, and errSecretMismatch when it holds others
+// (or lacks one): pbx-secrets written for another version.
+func secretsMatch(b compile.Bundle, secretData map[string][]byte) error {
+	refs, err := b.SecretRefs()
+	if err != nil {
+		return err
+	}
+	values := make(map[compile.SecretRef][]byte, len(refs))
+	for _, r := range refs {
+		key, err := r.ProjectedKey()
+		if err != nil {
+			return err
+		}
+		values[r] = secretData[key]
+	}
+	v, err := b.VersionWith(values)
+	switch {
+	case errors.Is(err, compile.ErrMissingSecret):
+		return errSecretMismatch
+	case err != nil:
+		return err
+	case v != b.Version:
+		return errSecretMismatch
+	}
+	return nil
 }

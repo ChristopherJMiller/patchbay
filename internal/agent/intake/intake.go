@@ -10,6 +10,18 @@
 // (Applier.Refuse, so LastApplyVersion and LastApplyError show it); a
 // resolved bundle goes to Applier.Apply.
 //
+// A version is applied only with the secret values it was compiled with
+// (compile.Bundle.VersionWith): the controller writes pbx-secrets before
+// pbx-config, and the two informers deliver independently, so the intake
+// may see one version's ConfigMap beside another version's Secret. A
+// Secret that does not belong to the version last applied is the next
+// version's, arriving first: it is ignored until its ConfigMap follows. A
+// ConfigMap whose Secret has not arrived waits SecretGrace for it, and is
+// refused only if it never comes (missing values or other values alike).
+// So a rotated AMI password never reaches the AMI client before Asterisk's
+// manager.conf has it, and removing a device never refuses the live
+// version.
+//
 // Retries (docs/plans/release-a.md §5.2.1): an attempt is keyed by the
 // bundle version and the Secret's resourceVersion. A pair that failed is
 // tried again when either changes, or RetryAfter after it failed; the
@@ -54,6 +66,9 @@ type Config struct {
 	// RetryAfter is how long a failed pair waits before it is tried again
 	// unchanged; 0 means 5 minutes.
 	RetryAfter time.Duration
+	// SecretGrace is how long a new version waits for the Secret written
+	// for it before it is refused; 0 means 30 seconds.
+	SecretGrace time.Duration
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 	// Log receives what the intake does.
@@ -69,8 +84,13 @@ type Applier interface {
 	Refuse(version string, reason error)
 }
 
-// DefaultRetryAfter is Config.RetryAfter's default.
-const DefaultRetryAfter = 5 * time.Minute
+// Defaults.
+const (
+	// DefaultRetryAfter is Config.RetryAfter's default.
+	DefaultRetryAfter = 5 * time.Minute
+	// DefaultSecretGrace is Config.SecretGrace's default.
+	DefaultSecretGrace = 30 * time.Second
+)
 
 // Intake watches the two objects and feeds the applier.
 type Intake struct {
@@ -90,6 +110,10 @@ type Intake struct {
 	failed   pair
 	failedAt time.Time
 	waiting  string // what the intake last said it waits for
+	// mismatch is the pair last seen with a Secret written for another
+	// version, since mismatchAt.
+	mismatch   pair
+	mismatchAt time.Time
 }
 
 // pair keys an attempt: the bundle (its version, or the ConfigMap's
@@ -112,6 +136,9 @@ func New(cfg Config) (*Intake, error) {
 	}
 	if cfg.RetryAfter <= 0 {
 		cfg.RetryAfter = DefaultRetryAfter
+	}
+	if cfg.SecretGrace <= 0 {
+		cfg.SecretGrace = DefaultSecretGrace
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -218,7 +245,22 @@ func (i *Intake) sync(ctx context.Context) time.Duration {
 		i.cfg.Applier.Refuse(version, err)
 	} else {
 		var r Resolved
-		if r, err = Resolve(b, secret.Data); err != nil {
+		r, err = Resolve(b, secret.Data)
+		if err == nil {
+			err = secretsMatch(b, secret.Data)
+		}
+		if errors.Is(err, errSecretMismatch) {
+			if version == i.applied.bundle {
+				// The next version's Secret, written before its ConfigMap:
+				// the applied version keeps its own values.
+				i.cfg.Log.V(1).Info("pbx-secrets is ahead of the applied version; waiting for pbx-config", "version", version)
+				return 0
+			}
+			if wait := i.awaitSecret(key, version, err); wait > 0 {
+				return wait
+			}
+		}
+		if err != nil {
 			i.cfg.Log.Info("bundle refused: its secrets do not resolve", "version", version, "error", err.Error())
 			i.cfg.Applier.Refuse(version, err)
 		} else {
@@ -234,6 +276,19 @@ func (i *Intake) sync(ctx context.Context) time.Duration {
 	}
 	i.applied, i.failed = key, pair{}
 	return 0
+}
+
+// awaitSecret is how long a new version still waits for its own Secret
+// (0 or less: refuse it now). The grace starts when the pair is first seen
+// without its Secret.
+func (i *Intake) awaitSecret(key pair, version string, reason error) time.Duration {
+	now := i.cfg.Now()
+	if i.mismatch != key {
+		i.mismatch, i.mismatchAt = key, now
+		i.cfg.Log.Info("waiting for the Secret written for this bundle version", "version", version,
+			"reason", reason.Error(), "grace", i.cfg.SecretGrace.String())
+	}
+	return i.mismatchAt.Add(i.cfg.SecretGrace).Sub(now)
 }
 
 // wait logs once that an object is missing, until it appears.

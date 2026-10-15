@@ -283,8 +283,9 @@ func TestRetryPolicy(t *testing.T) {
 func (h *harness) failNext(errs ...error) { h.applier.failNext(errs...) }
 
 // TestRefusals: a bundle that does not decode, has a bad version or does
-// not resolve is refused, never applied; a refused pair waits like a failed
-// one, and a Secret change retries it.
+// not resolve is refused, never applied (one whose Secret lacks a value
+// once the grace for its own Secret has passed); a refused pair waits like
+// a failed one, and a Secret change retries it.
 func TestRefusals(t *testing.T) {
 	in := intaketest.House()
 	b := in.Compile(t)
@@ -299,6 +300,9 @@ func TestRefusals(t *testing.T) {
 
 	h := newHarness(t, logr.Discard(), intaketest.ConfigMap(t, ns, cmName, b))
 	h.putSecret(intaketest.Secret(ns, secretName, "1", partial))
+	h.expectCalls()
+	h.advance(intake.DefaultSecretGrace)
+	h.fireLast()
 	h.expectCalls("refuse " + v)
 	if err := h.applier.refused[0]; err == nil || err.Error() != "unresolved placeholder patchbay-phone-desk/sip-password" {
 		t.Errorf("refusal = %v", err)
@@ -411,6 +415,9 @@ func TestNoSecretInLogs(t *testing.T) {
 
 	h := newHarness(t, log, intaketest.ConfigMap(t, ns, cmName, b))
 	h.putSecret(intaketest.Secret(ns, secretName, "1", partial))
+	h.expectCalls()
+	h.advance(intake.DefaultSecretGrace)
+	h.fireLast()
 	h.expectCalls("refuse " + b.Version[:4])
 	h.failNext(errors.New("verify: endpoints missing phone-desk"))
 	h.putSecret(intaketest.Secret(ns, secretName, "2", data))
@@ -451,4 +458,11 @@ func TestNewChecksTheConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+}
+
+// timerCount is how many retry timers were set so far.
+func (h *harness) timerCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.timers)
 }
