@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
@@ -19,11 +20,15 @@ import (
 type sipOptions struct {
 	Server    string // the PBX, host:port
 	Transport string // tcp (the 79x5's choice) or udp
-	User      string // endpoint and auth username
+	User      string // the SIP user: the phone's number (AOR, From, To, Contact)
+	AuthUser  string // the digest username (the device ID); empty means User
 	Password  string
 	LocalIP   string // the address put in Via, Contact and SDP; detected when empty
-	SIPPort   int    // the local SIP port the phone listens on
-	UserAgent string
+	// ContactHost replaces LocalIP in the Contact only (a contact the PBX's
+	// contact ACL refuses, while the request itself comes from LocalIP).
+	ContactHost string
+	SIPPort     int // the local SIP port the phone listens on
+	UserAgent   string
 }
 
 // phone is one simulated phone: a SIP user agent listening like a real
@@ -40,6 +45,9 @@ type phone struct {
 	client  *sipgo.Client
 	dialogs *sipgo.DialogClientCache
 	contact sip.ContactHeader
+
+	// notifies receives every NOTIFY the PBX sends this phone.
+	notifies chan *sip.Request
 
 	closeOnce sync.Once
 	closers   []func() error
@@ -64,7 +72,8 @@ func newPhone(ctx context.Context, opts sipOptions, log *slog.Logger) (*phone, e
 		return nil, err
 	}
 
-	p := &phone{opts: opts, log: log, server: server, transport: transport, localIP: local}
+	p := &phone{opts: opts, log: log, server: server, transport: transport, localIP: local,
+		notifies: make(chan *sip.Request, 8)}
 	p.ua, err = sipgo.NewUA(
 		sipgo.WithUserAgent(opts.User),
 		sipgo.WithUserAgentHostname(local.String()),
@@ -86,10 +95,14 @@ func newPhone(ctx context.Context, opts sipOptions, log *slog.Logger) (*phone, e
 		return nil, err
 	}
 
+	contactHost := local.String()
+	if opts.ContactHost != "" {
+		contactHost = opts.ContactHost
+	}
 	p.contact = sip.ContactHeader{Address: sip.Uri{
 		Scheme:    "sip",
 		User:      opts.User,
-		Host:      local.String(),
+		Host:      contactHost,
 		Port:      opts.SIPPort,
 		UriParams: sip.HeaderParams{{K: "transport", V: transport}},
 	}}
@@ -115,6 +128,11 @@ func newPhone(ctx context.Context, opts sipOptions, log *slog.Logger) (*phone, e
 		}
 		p.log.Info("NOTIFY", "event", ev, "body", string(req.Body()))
 		p.respond(req, tx, sip.StatusOK, "OK")
+		select {
+		case p.notifies <- req:
+		default:
+			p.log.Warn("NOTIFY dropped: nobody is waiting")
+		}
 	})
 
 	listen := net.JoinHostPort(local.String(), strconv.Itoa(opts.SIPPort))
@@ -174,6 +192,15 @@ func (p *phone) aor() sip.Uri {
 	return sip.Uri{Scheme: "sip", User: p.opts.User, Host: p.server.Addr().String()}
 }
 
+// authUser is the digest username: the device ID, which is not the SIP
+// user on compiled config (a device's number is its SIP user).
+func (p *phone) authUser() string {
+	if p.opts.AuthUser != "" {
+		return p.opts.AuthUser
+	}
+	return p.opts.User
+}
+
 func (p *phone) userAgent() sip.Header {
 	return sip.NewHeader("User-Agent", p.opts.UserAgent)
 }
@@ -202,7 +229,7 @@ func (p *phone) register(ctx context.Context, expires int) (res *sip.Response, c
 		p.log.Debug("REGISTER challenged", "status", res.StatusCode)
 		challenged = true
 		res, err = p.client.DoDigestAuth(ctx, req, res, sipgo.DigestAuth{
-			Username: p.opts.User,
+			Username: p.authUser(),
 			Password: p.opts.Password,
 		})
 		if err != nil {
@@ -237,7 +264,7 @@ func (p *phone) invite(ctx context.Context, number string, rtpPort int) (*call, 
 		return nil, fmt.Errorf("INVITE %s: %w", number, err)
 	}
 	err = d.WaitAnswer(ctx, sipgo.AnswerOptions{
-		Username: p.opts.User,
+		Username: p.authUser(),
 		Password: p.opts.Password,
 		OnResponse: func(res *sip.Response) error {
 			p.log.Debug("INVITE response", "status", res.StatusCode, "reason", res.Reason)
@@ -286,4 +313,28 @@ func localAddrFor(explicit string, server netip.AddrPort) (netip.Addr, error) {
 	}
 	defer func() { _ = c.Close() }()
 	return c.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), nil
+}
+
+// waitNotify waits up to d for a NOTIFY whose Event is event (another
+// event is logged and skipped).
+func (p *phone) waitNotify(ctx context.Context, event string, d time.Duration) (*sip.Request, error) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	for {
+		select {
+		case req := <-p.notifies:
+			ev := ""
+			if h := req.GetHeader("Event"); h != nil {
+				ev = h.Value()
+			}
+			if ev == event {
+				return req, nil
+			}
+			p.log.Info("ignoring a NOTIFY", "event", ev, "want", event)
+		case <-timer.C:
+			return nil, fmt.Errorf("no NOTIFY with Event %s within %s", event, d)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for a NOTIFY: %w", ctx.Err())
+		}
+	}
 }

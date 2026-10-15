@@ -120,3 +120,26 @@ func analyse(samples []float64, freq float64) toneAnalysis {
 func (a toneAnalysis) toneDetected() bool {
 	return a.Ratio >= 0.6 && a.RMS >= 200
 }
+
+// loud reports whether a frame carries sound at all: comfort noise and
+// Asterisk's silence stay below this level.
+func (a toneAnalysis) loud() bool { return a.RMS >= 200 }
+
+// sitFrequencies are the special information tone's three tones (950, 1400
+// and 1800 Hz), which Asterisk plays before a prompt.
+var sitFrequencies = []float64{950, 1400, 1800}
+
+// classifyULaw sorts a µ-law frame into loud or not, and, if loud, into the
+// SIT tone or anything else (a spoken prompt).
+func classifyULaw(payload []byte) (loud, sit bool) {
+	for _, f := range sitFrequencies {
+		a := analyseULaw(payload, f)
+		if !a.loud() {
+			return false, false
+		}
+		if a.toneDetected() {
+			return true, true
+		}
+	}
+	return true, false
+}

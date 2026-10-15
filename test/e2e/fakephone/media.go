@@ -33,6 +33,8 @@ type mediaResult struct {
 	PCMU       int     // received packets carrying PCMU
 	ToneFrames int     // received PCMU packets in which the tone was detected
 	MaxRatio   float64 // best tone ratio seen in one packet
+	Loud       int     // received PCMU packets that are not silence
+	Voice      int     // loud packets that are not the SIT tone: a prompt
 	Source     string  // where the received audio came from
 	// FirstTone is how long after the first packet was sent the tone first
 	// came back: the echo path's latency. Zero if it never did.
@@ -40,8 +42,8 @@ type mediaResult struct {
 }
 
 func (r mediaResult) String() string {
-	return fmt.Sprintf("sent=%d received=%d pcmu=%d toneFrames=%d maxRatio=%.3f firstTone=%s source=%s",
-		r.Sent, r.Received, r.PCMU, r.ToneFrames, r.MaxRatio, r.FirstTone, r.Source)
+	return fmt.Sprintf("sent=%d received=%d pcmu=%d toneFrames=%d maxRatio=%.3f firstTone=%s source=%s loud=%d voice=%d",
+		r.Sent, r.Received, r.PCMU, r.ToneFrames, r.MaxRatio, r.FirstTone, r.Source, r.Loud, r.Voice)
 }
 
 // runMedia sends a PCMU tone from conn to remote for opts.Duration, paced
@@ -143,6 +145,12 @@ func receive(conn *net.UDPConn, toneHz float64, start time.Time, mu *sync.Mutex,
 				res.ToneFrames++
 				if res.FirstTone == 0 {
 					res.FirstTone = time.Since(start)
+				}
+			}
+			if loud, sit := classifyULaw(pkt.Payload); loud {
+				res.Loud++
+				if !sit {
+					res.Voice++
 				}
 			}
 		}

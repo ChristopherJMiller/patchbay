@@ -203,3 +203,94 @@ func TestNewPhoneRejectsBadOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestRegisterWithAuthUser: on compiled config the SIP user is the number
+// and the digest username the device ID; --contact-host replaces only the
+// Contact's host.
+func TestRegisterWithAuthUser(t *testing.T) {
+	reg := startRegistrar(t, "phone-desk", "s3cret")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	port := freePort(t)
+	p, err := newPhone(ctx, sipOptions{
+		Server: reg.addr, Transport: "tcp", User: "100", AuthUser: "phone-desk", Password: "s3cret",
+		LocalIP: "127.0.0.1", ContactHost: "192.0.2.7", SIPPort: port, UserAgent: "unit-test",
+	}, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	res, challenged, err := p.register(ctx, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != sip.StatusOK || !challenged {
+		t.Fatalf("REGISTER: %d, challenged=%t", res.StatusCode, challenged)
+	}
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if want := fmt.Sprintf("<sip:100@192.0.2.7:%d;transport=tcp>", port); len(reg.contacts) != 1 || reg.contacts[0] != want {
+		t.Fatalf("registrar saw contacts %q, want [%q]", reg.contacts, want)
+	}
+}
+
+// sendNotify sends one NOTIFY with event and body to a phone listening on
+// 127.0.0.1:port over UDP, and returns the response code.
+func sendNotify(t *testing.T, port int, event, body string) int {
+	t.Helper()
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent("test-pbx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ua.Close() }()
+	client, err := sipgo.NewClient(ua, sipgo.WithClientHostname("127.0.0.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := sip.NewRequest(sip.NOTIFY, sip.Uri{Scheme: "sip", User: "100", Host: "127.0.0.1", Port: port})
+	req.AppendHeader(sip.NewHeader("Event", event))
+	req.AppendHeader(sip.NewHeader("Subscription-State", "active"))
+	ct := sip.ContentTypeHeader("text/plain")
+	req.AppendHeader(&ct)
+	req.SetBody([]byte(body))
+	req.SetTransport("UDP")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := client.Do(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res.StatusCode
+}
+
+// TestWaitNotify: a phone answers every NOTIFY with 200, skips other
+// events, and hands the service-control one to the waiting command.
+func TestWaitNotify(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	port := freePort(t)
+	p, err := newPhone(ctx, sipOptions{
+		Server: "127.0.0.1:5060", Transport: "udp", User: "100", LocalIP: "127.0.0.1", SIPPort: port,
+	}, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	if code := sendNotify(t, port, "check-sync", "x"); code != sip.StatusOK {
+		t.Fatalf("NOTIFY answered %d", code)
+	}
+	body := "action=restart\r\nRegisterCallId={abc}"
+	if code := sendNotify(t, port, "service-control", body); code != sip.StatusOK {
+		t.Fatalf("NOTIFY answered %d", code)
+	}
+	req, err := p.waitNotify(ctx, "service-control", 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(req.Body()) != body || fmt.Sprint(headerValues(req, "Subscription-State")) != "[active]" {
+		t.Fatalf("NOTIFY body %q, Subscription-State %v", req.Body(), headerValues(req, "Subscription-State"))
+	}
+	if _, err := p.waitNotify(ctx, "service-control", 100*time.Millisecond); err == nil {
+		t.Fatal("a second NOTIFY appeared from nowhere")
+	}
+}
