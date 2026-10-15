@@ -25,8 +25,12 @@ import (
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 )
 
-// LeaderElectionID names the Lease the controller replicas compete for.
-const LeaderElectionID = "patchbay-controller.patchbay.chrismiller.xyz"
+// LeaderElectionID names the Lease the controller replicas of one install
+// compete for: one per fullname, so two installs in one namespace never
+// share a leader. The chart's Role names it (resourceNames).
+func LeaderElectionID(fullname string) string {
+	return fullname + "-controller.patchbay.chrismiller.xyz"
+}
 
 // Options configures the controller manager.
 type Options struct {
@@ -78,10 +82,14 @@ func NewScheme() (*runtime.Scheme, error) {
 
 // NewManager builds the controller-runtime manager: v1alpha1 scheme, a cache
 // scoped to opts.Namespace, metrics, health probes and optional leader
-// election. No reconcilers are registered yet.
+// election (the Lease LeaderElectionID(opts.Fullname)). Setup registers the
+// reconcilers.
 func NewManager(cfg *rest.Config, opts Options) (ctrl.Manager, error) {
 	if opts.Namespace == "" {
 		return nil, errors.New("controller: namespace is required (set --namespace or POD_NAMESPACE)")
+	}
+	if opts.LeaderElection && opts.Fullname == "" {
+		return nil, errors.New("controller: leader election needs the fullname, which names its Lease")
 	}
 	scheme, err := NewScheme()
 	if err != nil {
@@ -92,7 +100,7 @@ func NewManager(cfg *rest.Config, opts Options) (ctrl.Manager, error) {
 		Metrics:                metricsserver.Options{BindAddress: opts.MetricsAddr},
 		HealthProbeBindAddress: opts.ProbeAddr,
 		LeaderElection:         opts.LeaderElection,
-		LeaderElectionID:       LeaderElectionID,
+		LeaderElectionID:       LeaderElectionID(opts.Fullname),
 		// The binary exits as soon as the manager stops, so handing the
 		// Lease back early is safe and speeds up failover on rollout.
 		LeaderElectionReleaseOnCancel: true,

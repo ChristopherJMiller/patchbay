@@ -514,7 +514,7 @@ func TestController(t *testing.T) {
 		Assess("holds its leader-election Lease", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			var lease *coordinationv1.Lease
 			err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
-				l, err := h.cs.CoordinationV1().Leases(namespace).Get(ctx, controller.LeaderElectionID, metav1.GetOptions{})
+				l, err := h.cs.CoordinationV1().Leases(namespace).Get(ctx, controller.LeaderElectionID(release), metav1.GetOptions{})
 				if apierrors.IsNotFound(err) {
 					return false, nil
 				}
@@ -525,9 +525,9 @@ func TestController(t *testing.T) {
 				return l.Spec.HolderIdentity != nil && *l.Spec.HolderIdentity != "", nil
 			})
 			if err != nil {
-				t.Fatalf("no holder of Lease %s/%s within a minute: %v (lease %+v)", namespace, controller.LeaderElectionID, err, lease)
+				t.Fatalf("no holder of Lease %s/%s within a minute: %v (lease %+v)", namespace, controller.LeaderElectionID(release), err, lease)
 			}
-			t.Logf("Lease %s held by %s", controller.LeaderElectionID, *lease.Spec.HolderIdentity)
+			t.Logf("Lease %s held by %s", controller.LeaderElectionID(release), *lease.Spec.HolderIdentity)
 			return ctx
 		}).
 		Feature()

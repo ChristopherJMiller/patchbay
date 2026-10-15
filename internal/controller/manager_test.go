@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/ChristopherJMiller/patchbay/internal/controller"
 )
 
@@ -15,6 +18,19 @@ func TestNewManagerRequiresNamespace(t *testing.T) {
 	if _, err := controller.NewManager(nil, controller.Options{}); err == nil ||
 		!strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("want a namespace error, got %v", err)
+	}
+	if _, err := controller.NewManager(nil, controller.Options{Namespace: "ns", LeaderElection: true}); err == nil ||
+		!strings.Contains(err.Error(), "fullname") {
+		t.Fatalf("leader election without a fullname: want an error naming it, got %v", err)
+	}
+}
+
+func TestLeaderElectionIDPerInstall(t *testing.T) {
+	if got := controller.LeaderElectionID("patchbay"); got != "patchbay-controller.patchbay.chrismiller.xyz" {
+		t.Errorf("LeaderElectionID(patchbay) = %s", got)
+	}
+	if controller.LeaderElectionID("a") == controller.LeaderElectionID("b") {
+		t.Error("two installs share a Lease")
 	}
 }
 
@@ -30,6 +46,7 @@ func TestManagerStartsAndElects(t *testing.T) {
 		MetricsAddr:    "0",
 		ProbeAddr:      probeAddr,
 		LeaderElection: true,
+		Fullname:       "patchbay",
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -49,6 +66,10 @@ func TestManagerStartsAndElects(t *testing.T) {
 	case <-mgr.Elected():
 	case <-time.After(30 * time.Second):
 		t.Fatal("manager was not elected leader within 30s")
+	}
+	var lease coordinationv1.Lease
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: controller.LeaderElectionID("patchbay")}, &lease); err != nil {
+		t.Fatalf("the install's Lease: %v", err)
 	}
 
 	deadline := time.Now().Add(15 * time.Second)
