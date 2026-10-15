@@ -7,12 +7,23 @@
     ":semanticCommitsDisabled"
   ],
   "commitMessagePrefix": "deps:",
+  "labels": ["dependencies"],
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "vulnerabilityAlerts": {
+    "description": "Fixes for a known vulnerability are proposed at once (no minimumReleaseAge) and merge themselves once ci-ok passes.",
+    "labels": ["dependencies", "security"],
+    "automerge": true
+  },
+  "osvVulnerabilityAlerts": true,
   "ignorePaths": ["**/node_modules/**", "**/vendor/**"],
   "postUpdateOptions": ["gomodTidy"],
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
       "enabled": true,
+      "automerge": true,
       "schedule": ["* 0-3 1 * *"],
       "commitMessageAction": "Update nixpkgs (flake.lock)"
     }
@@ -69,6 +80,12 @@
       "description": "Not Renovate's to move: our own image (released by CI), and kind node images (they must match the kind from the flake).",
       "matchPackageNames": ["ghcr.io/christopherjmiller/patchbay", "kindest/node", "docker.io/kindest/node"],
       "enabled": false
+    },
+    {
+      "description": "A major update waits for a human. Everything else merges itself once ci-ok (check, e2e, image) passes: GitHub does the merge (platformAutomerge), so the main ruleset decides what passing means (docs/releasing.md).",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major"]
     }
   ]
 }
