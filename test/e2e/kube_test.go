@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -180,12 +181,13 @@ func deviceEnv(id, number string) []corev1.EnvVar {
 	}
 }
 
-// runFakephone runs fakephone with args as Phone desk on the pod network
+// runFakephone runs fakephone with args as Phone kitchen (the W2 tests'
+// phone: TestDeskLoop owns desk) on the pod network
 // (like a phone, it reaches the PBX at the node's address from elsewhere),
 // waits for it to finish and returns its logs.
 func runFakephone(ctx context.Context, t *testing.T, name string, wantSuccess bool, args ...string) fakephoneResult {
 	t.Helper()
-	return runTool(ctx, t, toolPod{name: name, args: args, env: deviceEnv(deskID, deskNumber)}, wantSuccess)
+	return runTool(ctx, t, toolPod{name: name, args: args, env: kitchenEnv()}, wantSuccess)
 }
 
 // pbxPod returns the running PBX pod.
@@ -396,6 +398,9 @@ func (h *harness) agentDo(ctx context.Context, t *testing.T, method, path string
 	return 0, nil
 }
 
+// kitchenEnv is fakephone's environment as Phone kitchen.
+func kitchenEnv() []corev1.EnvVar { return deviceEnv(kitchenID, kitchenNumber) }
+
 // observations fetches GET /v1/observations.
 func (h *harness) observations(ctx context.Context, t *testing.T) agentapi.Observations {
 	t.Helper()
@@ -442,4 +447,94 @@ func device(obs agentapi.Observations, id string) *agentapi.DeviceObservations {
 		}
 	}
 	return nil
+}
+
+// tryObservations fetches GET /v1/observations once, without a test:
+// through a fresh port-forward, which it closes.
+func (h *harness) tryObservations(ctx context.Context) (agentapi.Observations, error) {
+	var obs agentapi.Observations
+	list, err := h.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/instance=" + release + ",app.kubernetes.io/component=pbx",
+	})
+	if err != nil {
+		return obs, err
+	}
+	pod := ""
+	for _, p := range list.Items {
+		if p.DeletionTimestamp == nil && p.Status.Phase == corev1.PodRunning {
+			pod = p.Name
+		}
+	}
+	if pod == "" {
+		return obs, errors.New("no running PBX pod")
+	}
+	transport, upgrader, err := spdy.RoundTripperFor(h.rest)
+	if err != nil {
+		return obs, err
+	}
+	url := h.cs.CoreV1().RESTClient().Post().Resource("pods").Namespace(namespace).Name(pod).SubResource("portforward").URL()
+	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, url)
+	stop, ready := make(chan struct{}), make(chan struct{})
+	defer close(stop)
+	fw, err := portforward.NewOnAddresses(dialer, []string{"127.0.0.1"}, []string{fmt.Sprintf("0:%d", controlPort)},
+		stop, ready, io.Discard, io.Discard)
+	if err != nil {
+		return obs, err
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- fw.ForwardPorts() }()
+	select {
+	case <-ready:
+	case err := <-errc:
+		return obs, fmt.Errorf("port-forward: %w", err)
+	case <-time.After(30 * time.Second):
+		return obs, errors.New("port-forward: not ready within 30 s")
+	}
+	ports, err := fw.GetPorts()
+	if err != nil || len(ports) != 1 {
+		return obs, fmt.Errorf("port-forward: ports %v: %w", ports, err)
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d%s", ports[0].Local, agentapi.PathObservations), nil)
+	if err != nil {
+		return obs, err
+	}
+	req.Header.Set("Authorization", "Bearer "+h.agentToken)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return obs, err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return obs, fmt.Errorf("GET %s: %d", agentapi.PathObservations, res.StatusCode)
+	}
+	return obs, json.NewDecoder(res.Body).Decode(&obs)
+}
+
+// secretValue reads one key of one Secret (an error if it is missing or
+// empty).
+func (h *harness) secretValue(ctx context.Context, ref compile.SecretRef) ([]byte, error) {
+	sec, err := h.cs.CoreV1().Secrets(namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	v, ok := sec.Data[ref.Key]
+	if !ok || len(v) == 0 {
+		return nil, fmt.Errorf("secret %s has no key %s", ref.Name, ref.Key)
+	}
+	return v, nil
+}
+
+// deviceEnvWithout is deviceEnv without the password, for a caller that
+// sets its own.
+func deviceEnvWithout(id, number string) []corev1.EnvVar {
+	var out []corev1.EnvVar
+	for _, e := range deviceEnv(id, number) {
+		if e.Name != "FAKEPHONE_PASSWORD" {
+			out = append(out, e)
+		}
+	}
+	return out
 }

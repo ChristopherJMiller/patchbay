@@ -18,9 +18,11 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -30,6 +32,7 @@ import (
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/controller"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 )
 
 type ctxKey string
@@ -245,8 +248,8 @@ func TestPBXUp(t *testing.T) {
 			pod := pbxPod(ctx, t)
 			hostDir := fmt.Sprintf("/var/lib/kubelet/pods/%s/volumes/kubernetes.io~empty-dir/config", pod.UID)
 			cur := compile.LiveDir + "/" + compile.CurrentLink
-			laptop := h.bundle.Devices[laptopID].ConfigFile
-			readable := []string{cur + "/tftp/" + deskSEP}
+			laptop := h.compiled(ctx, t).Devices[laptopID].ConfigFile
+			readable := []string{cur + "/tftp/" + kitchenSEP}
 			unreadable := []string{
 				cur + "/asterisk/manager.conf", cur + "/asterisk/pjsip.conf",
 				cur + "/" + laptop, cur + "/bundle.json",
@@ -285,7 +288,7 @@ func TestPBXUp(t *testing.T) {
 				}
 			}
 			endpoints := asterisk(ctx, t, cfg, "pjsip show endpoints")
-			for _, id := range []string{deskID, laptopID} {
+			for _, id := range []string{deskID, kitchenID, laptopID} {
 				if !strings.Contains(endpoints, " "+id+" ") && !strings.Contains(endpoints, " "+id+"/") {
 					t.Errorf("no endpoint %s:\n%s", id, endpoints)
 				}
@@ -334,15 +337,20 @@ func TestPBXUp(t *testing.T) {
 			if err := json.Unmarshal([]byte(body), &obs); err != nil {
 				t.Fatalf("observations are not an Observations document: %v\n%s", err, r.Logs)
 			}
-			if obs.Agent.StartedAt.IsZero() || obs.Devices == nil || obs.Agent.AppliedVersion != h.bundle.Version {
-				t.Errorf("observations: %+v, want version %s applied", obs.Agent, h.bundle.Version)
+			if obs.Agent.StartedAt.IsZero() || obs.Devices == nil || obs.Agent.AppliedVersion == "" {
+				t.Errorf("observations: %+v, want a version applied", obs.Agent)
 			}
-			// And through the port-forward the CLI will use: Asterisk is up
-			// over AMI and the version is verified (no apply error).
+			// And through the port-forward the CLI uses: Asterisk is up over
+			// AMI, and the version the controller compiled last is applied and
+			// verified (no apply error).
 			h.eventually(ctx, t, "AMI up", time.Minute, func(o agentapi.Observations) (bool, string) {
 				a := o.Agent
+				b, err := h.readCompiled(ctx)
+				if err != nil {
+					return false, err.Error()
+				}
 				return a.AsteriskUp && strings.HasPrefix(a.AsteriskVersion, "22.") && a.LastApplyError == "" &&
-					a.AppliedVersion == h.bundle.Version, fmt.Sprintf("%+v", a)
+					a.AppliedVersion == b.Version, fmt.Sprintf("compiled %.12s; %+v", b.Version, a)
 			})
 			return ctx
 		}).
@@ -381,21 +389,24 @@ func splitProcs(logs string) []map[string]string {
 	return out
 }
 
-// TestRegister registers fakephone on the compiled config: the Phone over
-// TCP (what the 79x5 uses) and the Softphone over UDP, each with its number
-// as SIP user and its device ID as digest username; Asterisk challenged
-// first and holds the pod's contact, and the agent reports it with its
-// Call-ID. Then the refusals: a wrong password and a contact outside the
+// TestRegister registers fakephone on the compiled config as Phone kitchen
+// over TCP (what the 79x5 uses), its number as SIP user and its device ID
+// as digest username; Asterisk challenged first and holds the pod's
+// contact, and the agent reports it with its Call-ID. (A Softphone over
+// UDP, whose contact Asterisk rewrites, is TestDeskLoop's laptop.) Then
+// the refusals: a wrong password and a contact outside the
 // allowed networks end on 401 (Asterisk re-challenges an endpoint's own
 // refusals), and only a source outside them meets the global ACL's 403.
 func TestRegister(t *testing.T) {
+	t.Parallel()
+	kitchenContact.Lock()
+	defer kitchenContact.Unlock()
 	f := features.New("REGISTER")
 	for _, tc := range []struct {
 		transport, id, number string
 		rewritten             bool
 	}{
-		{"tcp", deskID, deskNumber, false},
-		{"udp", laptopID, laptopNumber, true},
+		{"tcp", kitchenID, kitchenNumber, false},
 	} {
 		f = f.Assess(tc.id+" over "+tc.transport, func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			r := runTool(ctx, t, toolPod{
@@ -470,7 +481,7 @@ func TestRegister(t *testing.T) {
 		// On the host network, fakephone's REGISTER comes from the node's
 		// own address, which is not in the allowed pod CIDR.
 		r := runTool(ctx, t, toolPod{
-			name: "register-global-acl", hostNetwork: true, env: deviceEnv(deskID, deskNumber),
+			name: "register-global-acl", hostNetwork: true, env: kitchenEnv(),
 			args: []string{"register", "--sip-port", "5099", "--expires", "300"},
 		}, false)
 		if r.Succeeded || !strings.Contains(r.Logs, "REGISTER: 403") || !strings.Contains(r.Logs, "challenged=false") {
@@ -481,10 +492,11 @@ func TestRegister(t *testing.T) {
 	testenv.Test(t, f.Feature())
 }
 
-// TestEchoCall calls the echo test from a pod as Phone desk: SIP to the
+// TestEchoCall calls the echo test from a pod as Phone kitchen: SIP to the
 // node's address, RTP between the pod network and the host network, and a
 // 1 kHz tone that must come back from the node's own address.
 func TestEchoCall(t *testing.T) {
+	t.Parallel()
 	f := features.New("echo call").
 		Assess("600 echoes a 1 kHz tone", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			r := runFakephone(ctx, t, "call-echo", true, "call", echoNumber, "--duration", "3s")
@@ -507,8 +519,12 @@ func TestEchoCall(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// TestController checks that the controller runs under the chart's RBAC:
-// with only the Lease verbs the Role grants, it wins leader election.
+// TestController checks the controller as the chart runs it, under its
+// least-privilege Role: it holds its install's Lease; it minted the
+// install's Secrets (the agent token the PBX pod waited for, the AMI
+// password, one per device, owned by its resource) with its labels; it
+// compiled the site into pbx-secrets and pbx-config at one version, which
+// the agent applied; and it decided the Person routed.
 func TestController(t *testing.T) {
 	f := features.New("controller").
 		Assess("holds its leader-election Lease", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
@@ -528,6 +544,92 @@ func TestController(t *testing.T) {
 				t.Fatalf("no holder of Lease %s/%s within a minute: %v (lease %+v)", namespace, controller.LeaderElectionID(release), err, lease)
 			}
 			t.Logf("Lease %s held by %s", controller.LeaderElectionID(release), *lease.Spec.HolderIdentity)
+			return ctx
+		}).
+		Assess("minted the install's Secrets, with its labels", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			owners := map[string]string{
+				names.AgentTokenSecret:              "",
+				names.AMISecret:                     "",
+				names.ProjectedSecret:               "",
+				compile.DeviceSecretName(deskID):    "Phone/" + deskName,
+				compile.DeviceSecretName(kitchenID): "Phone/" + kitchenName,
+				compile.DeviceSecretName(laptopID):  "Softphone/" + laptopName,
+			}
+			for name, owner := range owners {
+				sec, err := h.cs.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+				if err != nil {
+					t.Errorf("Secret %s: %v", name, err)
+					continue
+				}
+				for k, v := range install.ManagedLabels() {
+					if sec.Labels[k] != v {
+						t.Errorf("Secret %s has %s=%q, want %q", name, k, sec.Labels[k], v)
+					}
+				}
+				var got string
+				for _, ref := range sec.OwnerReferences {
+					if ptr.Deref(ref.Controller, false) && ptr.Deref(ref.BlockOwnerDeletion, false) {
+						got = ref.Kind + "/" + ref.Name
+					}
+				}
+				if got != owner || (owner == "" && len(sec.OwnerReferences) > 0) {
+					t.Errorf("Secret %s is owned by %q (%+v), want %q", name, got, sec.OwnerReferences, owner)
+				}
+			}
+			tok, err := h.secretValue(ctx, names.AgentTokenRef())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(tok)) != h.agentToken || h.agentToken == "" {
+				t.Error("the agent token the harness uses is not the minted one")
+			}
+			return ctx
+		}).
+		Assess("compiled the site into pbx-secrets, then pbx-config, which the agent applied", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			b := h.waitApplied(ctx, t, time.Minute)
+			cm, err := h.cs.CoreV1().ConfigMaps(namespace).Get(ctx, names.ConfigMap, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v := cm.Annotations[install.AnnotationBundleVersion]; v != b.Version {
+				t.Errorf("pbx-config's %s is %q, its index %s", install.AnnotationBundleVersion, v, b.Version)
+			}
+			for k, v := range install.ManagedLabels() {
+				if cm.Labels[k] != v {
+					t.Errorf("pbx-config has %s=%q, want %q", k, cm.Labels[k], v)
+				}
+			}
+			// pbx-secrets holds exactly what the bundle references, with the
+			// values it was compiled with (the agent's own check).
+			refs, err := b.SecretRefs()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(b.projected) != len(refs) {
+				t.Errorf("pbx-secrets holds %d keys, the bundle references %d", len(b.projected), len(refs))
+			}
+			if v, err := b.VersionWith(b.values); err != nil || v != b.Version {
+				t.Errorf("pbx-secrets' values give version %s (%v), want %s", v, err, b.Version)
+			}
+			for _, id := range []string{deskID, kitchenID, laptopID} {
+				if d, ok := b.Devices[id]; !ok || d.Version == "" || d.Number == "" {
+					t.Errorf("%s is not compiled and routed: %+v", id, d)
+				}
+			}
+			return ctx
+		}).
+		Assess("decided Person chris routed to desk and laptop", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+				var p v1alpha1.Person
+				if err := h.kube.Get(ctx, client.ObjectKey{Namespace: namespace, Name: personName}, &p); err != nil {
+					return false, err
+				}
+				c := meta.FindStatusCondition(p.Status.Conditions, v1alpha1.ConditionReady)
+				return p.Status.State == "Ready" && c != nil && c.Status == metav1.ConditionTrue && c.Reason == v1alpha1.ReasonRouted, nil
+			})
+			if err != nil {
+				t.Errorf("Person %s is not Ready (Routed): %v", personName, err)
+			}
 			return ctx
 		}).
 		Feature()

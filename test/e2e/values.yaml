@@ -2,11 +2,15 @@
 #   pbx.nodeName, pbx.address   the kind node's name and InternalIP
 #   *.podAnnotations            the loaded images' IDs, so a rebuilt image
 #                               rolls the pods even though its tag is unchanged
+#   allowedNetworks             the node's pod CIDR, where the phones run
 image:
   repository: ghcr.io/christopherjmiller/patchbay
   tag: e2e
   # Loaded with `kind load docker-image`; never pulled.
   pullPolicy: Never
+
+# The phones' clock (the chart's default is UTC).
+timezone: America/Los_Angeles
 
 controller:
   logLevel: debug

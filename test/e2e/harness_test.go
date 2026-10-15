@@ -1,8 +1,9 @@
 //go:build e2e
 
 // Package e2e is patchbay's end-to-end suite (design §6): a kind cluster, the
-// real chart, real Asterisk 22 on the host network, and fakephone, a
-// simulated Cisco 79x5, running as an ordinary Pod.
+// real chart, the controller, real Asterisk 22 on the host network, the
+// CLI, and fakephone, a simulated Cisco 79x5 and Linphone, running as
+// ordinary Pods.
 //
 // Run it with `nix develop -c make e2e`; docs/e2e.md explains the knobs
 // (PATCHBAY_E2E_REUSE, PATCHBAY_E2E_KEEP) and how to debug a failure.
@@ -37,11 +38,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
 
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
+	"github.com/ChristopherJMiller/patchbay/internal/controller"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/settings"
 )
 
 const (
@@ -94,8 +99,13 @@ type harness struct {
 	podCIDR  string // its pod CIDR, where fakephone runs (the allowed network)
 	cs       *kubernetes.Clientset
 	rest     *rest.Config
+	// kube and kubeWatch know the patchbay types (the site resources,
+	// status); kubeWatch also watches (tracker).
+	kube      client.Client
+	kubeWatch client.WithWatch
 
-	bundle *e2eBundle // the compiled install the agent applies
+	cli      string           // <root>/.e2e/bin/patchbay, the e2e build of the CLI
+	settings compile.Settings // what the chart rendered into <fullname>-settings
 	// On a reused cluster, the PBX pod found at install and its
 	// containers' restarts so far: a previous run's TestProvisioningOneTime
 	// restarts the agent on purpose, and the pod survives an unchanged
@@ -158,7 +168,7 @@ func runSuite(m *testing.M) int {
 		log.Printf("e2e: %v", err)
 		return 1
 	}
-	testenv.Setup(h.setupCluster, h.loadImages, h.install, h.waitForRollout)
+	testenv.Setup(h.setupCluster, h.loadImages, h.install, h.waitForRollout, h.ready)
 	testenv.AfterEachTest(h.diagnoseFailure)
 	testenv.Finish(h.teardown)
 	code := testenv.Run(m)
@@ -217,6 +227,10 @@ func newHarness() (*harness, error) {
 		reuse:      os.Getenv("PATCHBAY_E2E_REUSE") == "1",
 		keep:       os.Getenv("PATCHBAY_E2E_KEEP") == "1",
 		imageIDs:   map[string]string{},
+		cli:        filepath.Join(root, ".e2e", "bin", "patchbay"),
+	}
+	if _, err := os.Stat(h.cli); err != nil {
+		return nil, fmt.Errorf("the e2e CLI is missing: run `nix develop -c make e2e-images` (make e2e does): %w", err)
 	}
 	h.asteriskImage, err = chartAsteriskImage(filepath.Join(root, "charts", "patchbay", "values.yaml"))
 	if err != nil {
@@ -323,6 +337,14 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 	if err != nil {
 		return ctx, err
 	}
+	scheme, err := controller.NewScheme()
+	if err != nil {
+		return ctx, err
+	}
+	if h.kubeWatch, err = client.NewWithWatch(h.rest, client.Options{Scheme: scheme}); err != nil {
+		return ctx, err
+	}
+	h.kube = h.kubeWatch
 	nodes, err := h.cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return ctx, err
@@ -372,9 +394,11 @@ func (h *harness) loadImages(ctx context.Context, _ *envconf.Config) (context.Co
 	return ctx, nil
 }
 
-// install creates the namespace, the agent token and the compiled bundle
-// (the controller's part until W3: applyBundle), then installs the chart
-// with the e2e values plus what only runtime knows (node, address, image IDs).
+// install creates the namespace and installs the chart with the e2e values
+// plus what only runtime knows (node, address, the allowed network, image
+// IDs), then the site resources (siteResources) once the CRDs are served.
+// The controller then mints the install's Secrets and compiles the site,
+// and the PBX pod starts on that bundle (waitForRollout, ready).
 func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Context, error) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: namespace,
@@ -385,47 +409,22 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 	if _, err := h.cs.CoreV1().Namespaces().Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return ctx, err
 	}
-	// A reused cluster starts without the previous run's fakephone pods, so
-	// their logs never show up in this run's diagnostics.
+	// A reused cluster starts without the previous run's fakephone pods (and
+	// their scripts), so their logs never show up in this run's
+	// diagnostics.
 	if err := h.cs.CoreV1().Pods(namespace).DeleteCollection(ctx, metav1.DeleteOptions{},
 		metav1.ListOptions{LabelSelector: fakephoneSelector}); err != nil {
 		return ctx, fmt.Errorf("deleting old fakephone pods: %w", err)
+	}
+	if err := h.cs.CoreV1().Secrets(namespace).DeleteCollection(ctx, metav1.DeleteOptions{},
+		metav1.ListOptions{LabelSelector: phonePodLabel}); err != nil {
+		return ctx, fmt.Errorf("deleting old phone scripts: %w", err)
 	}
 
 	if h.reuse {
 		if err := h.notePriorPBX(ctx); err != nil {
 			return ctx, err
 		}
-	}
-
-	// The controller will mint the agent token (design §4). Until it does,
-	// the harness stands in for it. An existing token is kept, so a reused
-	// cluster does not restart the PBX for nothing.
-	if _, err := h.cs.CoreV1().Secrets(namespace).Get(ctx, agentTokenSecret, metav1.GetOptions{}); apierrors.IsNotFound(err) {
-		tok, err := randomHex(32)
-		if err != nil {
-			return ctx, err
-		}
-		sec := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: agentTokenSecret, Namespace: namespace},
-			StringData: map[string]string{"token": tok},
-		}
-		if _, err := h.cs.CoreV1().Secrets(namespace).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
-			return ctx, err
-		}
-	} else if err != nil {
-		return ctx, err
-	}
-	tok, err := h.secretValue(ctx, compile.SecretRef{Name: agentTokenSecret, Key: "token"})
-	if err != nil {
-		return ctx, err
-	}
-	h.agentToken = string(tok)
-
-	// The compiled bundle, before the chart: the agent applies it as soon
-	// as it starts, and Asterisk starts only once it has.
-	if h.bundle, err = h.applyBundle(ctx); err != nil {
-		return ctx, err
 	}
 
 	runtimeValues := map[string]any{
@@ -440,6 +439,10 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 				"e2e.patchbay.chrismiller.xyz/asterisk-image-id": h.imageIDs[h.asteriskImage],
 			},
 		},
+		// Only the pod network, where the phones run, may register: the
+		// compiled ACL refuses every other source (TestRegister's
+		// host-network REGISTER).
+		"allowedNetworks": []string{h.podCIDR},
 	}
 	raw, err := yaml.Marshal(runtimeValues)
 	if err != nil {
@@ -449,11 +452,65 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 	if err := os.WriteFile(runtimeFile, raw, 0o600); err != nil {
 		return ctx, err
 	}
-	_, err = h.run(ctx, "helm", "upgrade", "--install", release, filepath.Join("charts", "patchbay"),
+	if _, err = h.run(ctx, "helm", "upgrade", "--install", release, filepath.Join("charts", "patchbay"),
 		"--kubeconfig", h.kubeconfig, "--namespace", namespace,
 		"--values", filepath.Join("test", "e2e", "values.yaml"),
-		"--values", runtimeFile)
-	return ctx, err
+		"--values", runtimeFile); err != nil {
+		return ctx, err
+	}
+
+	if err := h.waitForCRDs(ctx); err != nil {
+		return ctx, err
+	}
+	for _, obj := range siteResources() {
+		if err := h.applyResource(ctx, obj); err != nil {
+			return ctx, fmt.Errorf("site resource %s: %w", obj.GetName(), err)
+		}
+	}
+	log.Printf("site resources written: Phones %s and %s, Softphone %s, Person %s", deskName, kitchenName, laptopName, personName)
+	return ctx, nil
+}
+
+// ready reads what the tests share once both Deployments run: the settings
+// the chart rendered, and the agent token the controller minted; then it
+// waits until the agent has applied the controller's bundle.
+func (h *harness) ready(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+	cm, err := h.cs.CoreV1().ConfigMaps(namespace).Get(ctx, names.Settings, metav1.GetOptions{})
+	if err != nil {
+		return ctx, err
+	}
+	if h.settings, err = settings.Parse([]byte(cm.Data[install.SettingsKey])); err != nil {
+		return ctx, fmt.Errorf("%s: %w", names.Settings, err)
+	}
+	tok, err := h.secretValue(ctx, names.AgentTokenRef())
+	if err != nil {
+		return ctx, fmt.Errorf("the agent token the controller mints: %w", err)
+	}
+	h.agentToken = strings.TrimSpace(string(tok))
+
+	start := time.Now()
+	var last string
+	err = wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		b, err := h.readCompiled(ctx)
+		if err != nil {
+			last = err.Error()
+			return false, nil //nolint:nilerr // not written yet: keep polling
+		}
+		obs, err := h.tryObservations(ctx)
+		if err != nil {
+			last = err.Error()
+			return false, nil //nolint:nilerr // the agent is starting: keep polling
+		}
+		a := obs.Agent
+		last = fmt.Sprintf("compiled %.12s; agent applied %.12s, last apply %.12s %q", b.Version, a.AppliedVersion, a.LastApplyVersion, a.LastApplyError)
+		return a.AsteriskUp && a.AppliedVersion == b.Version, nil
+	})
+	if err != nil {
+		path := h.saveDiagnostics(context.WithoutCancel(ctx), "setup-ready")
+		return ctx, fmt.Errorf("the agent never applied the controller's bundle: %w (%s); diagnostics: %s", err, last, path)
+	}
+	log.Printf("the agent applied the controller's bundle (%s after the rollout)", time.Since(start).Round(time.Second))
+	return ctx, nil
 }
 
 // notePriorPBX records the running PBX pod of a reused cluster, if any,
@@ -555,6 +612,9 @@ func (h *harness) saveDiagnostics(ctx context.Context, label string) string {
 	var b strings.Builder
 	for _, args := range [][]string{
 		{"get", "all,pvc,events", "--namespace", namespace, "-o", "wide"},
+		{"get", "phones,softphones,people,streams,configmaps,secrets", "--namespace", namespace, "-o", "wide"},
+		{"get", "phones,softphones,people,streams", "--namespace", namespace, "-o", "yaml"},
+		{"get", "events.events.k8s.io", "--namespace", namespace, "--sort-by=.metadata.creationTimestamp"},
 		{"describe", "pods", "--namespace", namespace},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--tail=300"},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--previous", "--tail=100"},

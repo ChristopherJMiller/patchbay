@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
@@ -26,6 +28,7 @@ import (
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/intake"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
@@ -36,6 +39,7 @@ import (
 // ModuleLoad, cannot load one that runs commands, not even by a relative
 // path into the image's own directory (docs/plans/release-a.md §5.2.1).
 func TestModulesNarrowed(t *testing.T) {
+	t.Parallel()
 	f := features.New("narrowed modules").
 		Assess("the module directory and the loaded modules are exactly compile.Modules()", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			want := slices.Sorted(slices.Values(compile.Modules()))
@@ -91,23 +95,11 @@ func TestModulesNarrowed(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// resolvedFile is a bundle file with its placeholders resolved, as the
-// agent writes it.
-func resolvedFile(t *testing.T, path string) []byte {
+// resolvedFile is a file of the compiled bundle with its placeholders
+// resolved from pbx-secrets, as the agent writes it.
+func resolvedFile(t *testing.T, b compiledBundle, path string) []byte {
 	t.Helper()
-	refs, err := h.bundle.SecretRefs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := map[string][]byte{}
-	for _, r := range refs {
-		key, err := r.ProjectedKey()
-		if err != nil {
-			t.Fatal(err)
-		}
-		data[key] = h.bundle.secrets[r]
-	}
-	res, err := intake.Resolve(h.bundle.Bundle, data)
+	res, err := intake.Resolve(b.Bundle, b.projected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,22 +132,24 @@ func fetched(d *agentapi.DeviceObservations, transport agentapi.Transport, file 
 // observations, attributed to the device (with its config version for what
 // was served) or listed as an unknown phone.
 func TestTFTPAndHTTP6970(t *testing.T) {
+	t.Parallel()
 	f := features.New("TFTP and HTTP 6970").
 		Assess("the SEP file, resolved, over both; the misses; all in the observations", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			want := resolvedFile(t, "tftp/"+deskSEP)
-			password := h.bundle.secrets[compile.PasswordRef(deskID)]
+			b := h.waitApplied(ctx, t, time.Minute)
+			want := resolvedFile(t, b, "tftp/"+kitchenSEP)
+			password := b.values[compile.PasswordRef(kitchenID)]
 			if !bytes.Contains(want, password) || bytes.Contains(want, []byte("@@secret:")) {
 				t.Fatal("the resolved SEP file does not carry the phone's password")
 			}
-			index := h.bundle.Devices[deskID]
+			index := b.Devices[kitchenID]
 
-			tftp := startTool(ctx, t, toolPod{name: "tftp-sep", env: deviceEnv(deskID, deskNumber),
-				args: []string{"tftp", "get", "-o", "/dev/null", deskSEP}})
+			tftp := startTool(ctx, t, toolPod{name: "tftp-sep", env: kitchenEnv(),
+				args: []string{"tftp", "get", "-o", "/dev/null", kitchenSEP}})
 			web := startTool(ctx, t, toolPod{name: "http6970-sep",
-				args: []string{"http", "get", "--print-body=false", fmt.Sprintf("http://%s:%d/%s", h.nodeIP, ciscoHTTPPort, deskSEP)}})
-			sgn := startTool(ctx, t, toolPod{name: "tftp-sgn", env: deviceEnv(deskID, deskNumber),
-				args: []string{"tftp", "get", "-o", "/dev/null", deskSEP + ".sgn"}})
-			unknown := startTool(ctx, t, toolPod{name: "tftp-unknown", env: deviceEnv(deskID, deskNumber),
+				args: []string{"http", "get", "--print-body=false", fmt.Sprintf("http://%s:%d/%s", h.nodeIP, ciscoHTTPPort, kitchenSEP)}})
+			sgn := startTool(ctx, t, toolPod{name: "tftp-sgn", env: kitchenEnv(),
+				args: []string{"tftp", "get", "-o", "/dev/null", kitchenSEP + ".sgn"}})
+			unknown := startTool(ctx, t, toolPod{name: "tftp-unknown", env: kitchenEnv(),
 				args: []string{"tftp", "get", "-o", "/dev/null", "SEP" + unknownMAC + ".cnf.xml"}})
 
 			rt := waitTool(ctx, t, tftp, true)
@@ -172,10 +166,10 @@ func TestTFTPAndHTTP6970(t *testing.T) {
 			}
 
 			h.eventually(ctx, t, "the fetches in the observations", 30*time.Second, func(o agentapi.Observations) (bool, string) {
-				d := device(o, deskID)
-				ok := fetched(d, agentapi.TransportTFTP, deskSEP, agentapi.FetchServed, index.Version, rt.Pod.Status.PodIP) &&
-					fetched(d, agentapi.TransportHTTP6970, deskSEP, agentapi.FetchServed, index.Version, rw.Pod.Status.PodIP) &&
-					fetched(d, agentapi.TransportTFTP, deskSEP+".sgn", agentapi.FetchNotFound, "", rs.Pod.Status.PodIP) &&
+				d := device(o, kitchenID)
+				ok := fetched(d, agentapi.TransportTFTP, kitchenSEP, agentapi.FetchServed, index.Version, rt.Pod.Status.PodIP) &&
+					fetched(d, agentapi.TransportHTTP6970, kitchenSEP, agentapi.FetchServed, index.Version, rw.Pod.Status.PodIP) &&
+					fetched(d, agentapi.TransportTFTP, kitchenSEP+".sgn", agentapi.FetchNotFound, "", rs.Pod.Status.PodIP) &&
 					slices.ContainsFunc(o.UnknownDevices, func(u agentapi.UnknownDevice) bool {
 						return u.MAC == unknownMAC && u.Source == ru.Pod.Status.PodIP
 					})
@@ -183,7 +177,7 @@ func TestTFTPAndHTTP6970(t *testing.T) {
 				if d != nil {
 					fetches = d.Fetches
 				}
-				return ok, fmt.Sprintf("desk fetches %+v; unknown %+v", fetches, o.UnknownDevices)
+				return ok, fmt.Sprintf("kitchen fetches %+v; unknown %+v", fetches, o.UnknownDevices)
 			})
 			return ctx
 		}).
@@ -276,7 +270,7 @@ func TestFirmwareUploadAndServe(t *testing.T) {
 				}
 			}
 
-			tftp := startTool(ctx, t, toolPod{name: "tftp-firmware", env: deviceEnv(deskID, deskNumber),
+			tftp := startTool(ctx, t, toolPod{name: "tftp-firmware", env: kitchenEnv(),
 				args: []string{"tftp", "get", "-o", "/dev/null", sbn}})
 			web := startTool(ctx, t, toolPod{name: "http6970-firmware",
 				args: []string{"http", "get", "--print-body=false", fmt.Sprintf("http://%s:%d/%s", h.nodeIP, ciscoHTTPPort, sbn)}})
@@ -291,16 +285,17 @@ func TestFirmwareUploadAndServe(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// TestPrompts calls 911, a reserved number (0) and an unassigned one (199):
-// each is answered and plays its announcement, at least 2 s of non-silent
+// TestPrompts calls 911, the reserved numbers 0, 999 (9.) and 205 (2XX), and
+// an unassigned one (199), as kitchen: each is answered and plays its announcement, at least 2 s of non-silent
 // audio, of which at least 1 s is not the SIT tone (the prompt itself, which
 // the agent installed from the image).
 func TestPrompts(t *testing.T) {
+	t.Parallel()
 	f := features.New("prompts").
-		Assess("911, 0 and 199 are answered with their announcements", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		Assess("911, 0, 999, 205 and 199 are answered with their announcements", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			pods := map[string]string{}
-			for _, number := range []string{"911", "0", "199"} {
-				pods[number] = startTool(ctx, t, toolPod{name: "call-" + number, env: deviceEnv(deskID, deskNumber), args: []string{
+			for _, number := range []string{"911", "0", "999", "205", "199"} {
+				pods[number] = startTool(ctx, t, toolPod{name: "call-" + number, env: kitchenEnv(), args: []string{
 					"call", number, "--expect-tone=false", "--expect-audio", "2s", "--min-voice", "1s", "--duration", "4s",
 				}})
 			}
@@ -321,12 +316,17 @@ func TestPrompts(t *testing.T) {
 
 // TestResyncNotify: POST /v1/actions/resync makes the agent send the
 // registered phone a service-control NOTIFY with the plan's body (quoting
-// the Call-ID of its REGISTER); the phone refetches its SEP file.
+// the Call-ID of its REGISTER); the phone refetches its SEP file. As kitchen,
+// whose contact TestRegister must not replace meanwhile (kitchenContact).
 func TestResyncNotify(t *testing.T) {
+	t.Parallel()
+	kitchenContact.Lock()
+	defer kitchenContact.Unlock()
 	f := features.New("resync").
 		Assess("the phone gets the service-control NOTIFY and refetches", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			name := startTool(ctx, t, toolPod{name: "notify", env: deviceEnv(deskID, deskNumber), args: []string{
-				"register", "--expires", "300", "--wait-notify", "90s", "--refetch", deskSEP,
+			version := h.waitApplied(ctx, t, time.Minute).Devices[kitchenID].Version
+			name := startTool(ctx, t, toolPod{name: "notify", env: kitchenEnv(), args: []string{
+				"register", "--expires", "300", "--wait-notify", "90s", "--refetch", kitchenSEP,
 			}})
 			waitLog(ctx, t, name, "registered ", time.Minute)
 			pod, err := h.cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -336,7 +336,7 @@ func TestResyncNotify(t *testing.T) {
 			ip := pod.Status.PodIP
 			var callID string
 			h.eventually(ctx, t, "the waiting phone's registration", 30*time.Second, func(o agentapi.Observations) (bool, string) {
-				d := device(o, deskID)
+				d := device(o, kitchenID)
 				if d == nil || d.Registration == nil {
 					return false, "no registration"
 				}
@@ -344,7 +344,7 @@ func TestResyncNotify(t *testing.T) {
 				return d.Registration.Address == ip && callID != "", fmt.Sprintf("%+v", *d.Registration)
 			})
 
-			req, _ := json.Marshal(agentapi.ActionRequest{Device: deskID, Version: h.bundle.Devices[deskID].Version})
+			req, _ := json.Marshal(agentapi.ActionRequest{Device: kitchenID, Version: version})
 			code, body := h.agentDo(ctx, t, http.MethodPost, agentapi.PathActionResync, req)
 			var resp agentapi.ActionResponse
 			if err := json.Unmarshal(body, &resp); code != http.StatusOK || err != nil || !resp.Sent {
@@ -367,7 +367,7 @@ func TestResyncNotify(t *testing.T) {
 			if !strings.Contains(r.Logs, `"active"`) {
 				t.Error("the NOTIFY has no Subscription-State: active")
 			}
-			if !strings.Contains(r.Logs, "refetched "+deskSEP+" ") {
+			if !strings.Contains(r.Logs, "refetched "+kitchenSEP+" ") {
 				t.Error("the phone did not refetch its SEP file")
 			}
 			return ctx
@@ -413,25 +413,38 @@ func agentRestarts(ctx context.Context, t *testing.T) int32 {
 	return 0
 }
 
-// TestProvisioningOneTime: a softphone's provisioning URL serves its
-// document once over the pod network, then 404, and still 404 after the
-// agent restarts (the spend is on the persistent volume); the served fetch,
-// with the softphone's version, is back in the restarted agent's
-// observations.
+// TestProvisioningOneTime: Softphone laptop's provisioning URL, as the
+// controller shows it in laptop's status, serves its document once over
+// the pod network, then 404, and still 404 after the agent restarts (the
+// spend is on the persistent volume); the served fetch, with the
+// softphone's version, is back in the restarted agent's observations; and
+// the controller replaces the spent token (Provisioned, lastAction
+// rotateToken, a new URL).
 func TestProvisioningOneTime(t *testing.T) {
 	f := features.New("one-time provisioning").
-		Assess("200, 404, agent restart, 404, served fetch remembered", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			// A fresh token (a reused cluster's was spent by the last run), as
-			// the controller rotates it: pbx-secrets, then pbx-config.
-			h.rotateProvisioningToken(ctx, t)
-			index := h.bundle.Devices[laptopID]
-			want := resolvedFile(t, index.ConfigFile)
-			env := []corev1.EnvVar{secretEnv("TOKEN", compile.DeviceSecretName(laptopID), compile.SecretKeyProvisioningToken)}
+		Assess("200, 404, agent restart, 404, served fetch remembered, token rotated", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			laptop := h.track(ctx, t, "Softphone", laptopName)
+			before := laptop.wait(ctx, t, "a provisioning URL the agent serves", 2*time.Minute, func(d deviceView) (bool, string) {
+				return d.ProvisioningURL != "" && d.cond(v1alpha1.ConditionConfigCurrent).Reason != v1alpha1.ReasonApplyPending, ""
+			})
+			b := h.waitApplied(ctx, t, time.Minute)
+			index := b.Devices[laptopID]
+			if index.ProvisioningToken == nil {
+				t.Fatalf("%s has no provisioning token in the index", laptopID)
+			}
+			token := b.values[*index.ProvisioningToken]
+			if install.ProvisioningURL(h.settings, string(token)) != before.ProvisioningURL {
+				t.Fatal("laptop's status shows a URL other than its compiled token's")
+			}
+			// The URL's token, fixed in a Secret of its own: the controller
+			// rotates the device Secret's as soon as the first GET spends it.
+			env := []corev1.EnvVar{secretEnv("TOKEN", h.holdSecret(ctx, t, "laptop-token", token), "value")}
 			url := fmt.Sprintf("http://%s:%d%s$(TOKEN)", h.nodeIP, deviceHTTPPort, agentapi.ProvisioningPathPrefix)
 			get := func(name, status string, want bool) fakephoneResult {
 				return runTool(ctx, t, toolPod{name: name, env: env,
 					args: []string{"http", "get", "--print-body=false", "--expect-status", status, url}}, want)
 			}
+			want := resolvedFile(t, b, index.ConfigFile)
 			if r := get("provision", "200", true); !r.Succeeded || !strings.Contains(r.Logs, "sha256="+sha(want)) {
 				t.Fatalf("the first fetch did not serve the softphone's document (sha256 %s)", sha(want))
 			}
@@ -450,60 +463,90 @@ func TestProvisioningOneTime(t *testing.T) {
 				})
 				return ok, fmt.Sprintf("%+v", d)
 			})
-			if strings.Contains(fmt.Sprint(obs), string(h.bundle.secrets[compile.ProvisioningTokenRef(laptopID)])) {
+			if strings.Contains(fmt.Sprint(obs), string(token)) {
 				t.Error("the observations carry the token")
 			}
+			laptop.wait(ctx, t, "Provisioned, its spent token rotated", time.Minute, func(d deviceView) (bool, string) {
+				return d.LastAction != nil && d.LastAction.Kind == v1alpha1.ActionRotateToken &&
+					d.ProvisioningURL != "" && d.ProvisioningURL != before.ProvisioningURL, ""
+			})
 			return ctx
 		}).
 		Feature()
 	testenv.Test(t, f)
 }
 
-// TestRollback writes a pbx-config Asterisk does not take as given (Phone
-// desk's endpoint renamed): the agent applies it, fails verification, swaps
-// the previous version back and reloads, and reports the refused version
-// and why; the old config still registers and echoes.
+// holdSecret keeps value in a Secret of its own (key "value") for the
+// test's tools pods, deleted when the test ends, and returns its name.
+func (h *harness) holdSecret(ctx context.Context, t *testing.T, label string, value []byte) string {
+	t.Helper()
+	suffix, err := randomHex(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "e2e-" + label + "-" + suffix
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{phonePodLabel: label}},
+		Data:       map[string][]byte{"value": value},
+	}
+	if _, err := h.cs.CoreV1().Secrets(namespace).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = h.cs.CoreV1().Secrets(namespace).Delete(context.WithoutCancel(ctx), name, metav1.DeleteOptions{})
+	})
+	return name
+}
+
+// TestRollback is §9's rollback, the agent half (the controller half is
+// controller-devices' TestApplyFailedControllerHalf). With the controller
+// scaled to 0, a bundle Asterisk does not take as given (kitchen's endpoint
+// renamed) is written as the controller writes, pbx-secrets first: the
+// agent applies it, fails verification, swaps the previous version back
+// and reloads, and reports the refused version and why; the old config
+// still registers and echoes. Scaled back up, the controller writes its own
+// version again, and a reissued laptop token (a new version) leaves the
+// agent's last apply a success. No device reports ApplyFailed for a version
+// the controller compiled: a restarted controller reads pbx-config as it
+// finds it (install.ReadCompiled), so until its own compile replaces the
+// test's, a device may report the refusal of the broken version, and only
+// that one (plan 6.2.11).
 func TestRollback(t *testing.T) {
+	start := metav1.Now()
 	f := features.New("rollback").
 		Assess("a broken bundle is rolled back and reported", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			good := h.bundle.Bundle
-			broken := good
-			broken.Files = map[string][]byte{}
-			for p, b := range good.Files {
-				broken.Files[p] = b
-			}
-			from := []byte("\n[" + deskID + "]\ntype = endpoint\n")
+			good := h.waitApplied(ctx, t, time.Minute)
+			h.scaleController(ctx, t, 0)
+
+			broken := good.Bundle
+			broken.Files = maps.Clone(good.Files)
+			from := []byte("\n[" + kitchenID + "]\ntype = endpoint\n")
 			pjsip := good.Files["asterisk/pjsip.conf"]
 			if bytes.Count(pjsip, from) != 1 {
 				t.Fatalf("pjsip.conf does not hold %q once", from)
 			}
-			broken.Files["asterisk/pjsip.conf"] = bytes.Replace(pjsip, from, []byte("\n["+deskID+"-broken]\ntype = endpoint\n"), 1)
+			broken.Files["asterisk/pjsip.conf"] = bytes.Replace(pjsip, from, []byte("\n["+kitchenID+"-broken]\ntype = endpoint\n"), 1)
 			// Its own version, as Compile would give it: the agent applies a
 			// version only with the secret values it was compiled with.
-			v, err := broken.VersionWith(h.bundle.secrets)
+			v, err := broken.VersionWith(good.values)
 			if err != nil {
 				t.Fatal(err)
 			}
 			broken.Version = v
-			data, binary, err := broken.ConfigMapData()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := h.upsertConfigMap(ctx, pbxConfigMap, data, binary); err != nil {
-				t.Fatal(err)
-			}
+			h.writeBundle(ctx, t, broken, good.values)
+
 			// Verification retries for 30 s before it gives up.
 			obs := h.eventually(ctx, t, "the broken version refused", 2*time.Minute, func(o agentapi.Observations) (bool, string) {
 				a := o.Agent
 				return a.LastApplyVersion == broken.Version && a.LastApplyError != "", fmt.Sprintf("%+v", a)
 			})
-			t.Logf("after the broken version: applied %s, last apply %s: %s", obs.Agent.AppliedVersion, obs.Agent.LastApplyVersion, obs.Agent.LastApplyError)
+			t.Logf("after the broken version: applied %.12s, last apply %.12s: %s", obs.Agent.AppliedVersion, obs.Agent.LastApplyVersion, obs.Agent.LastApplyError)
 			if a := obs.Agent; a.AppliedVersion != good.Version || !strings.Contains(a.LastApplyError, "verify") ||
-				!strings.Contains(a.LastApplyError, deskID) {
-				t.Errorf("after the rollback: %+v, want version %s still applied and a verify error naming %s", a, good.Version, deskID)
+				!strings.Contains(a.LastApplyError, kitchenID) {
+				t.Errorf("after the rollback: %+v, want version %s still applied and a verify error naming %s", a, good.Version, kitchenID)
 			}
-			if endpoints := asterisk(ctx, t, cfg, "pjsip show endpoints"); !strings.Contains(endpoints, " "+deskID+"/") ||
-				strings.Contains(endpoints, deskID+"-broken") {
+			if endpoints := asterisk(ctx, t, cfg, "pjsip show endpoints"); !strings.Contains(endpoints, " "+kitchenID+"/") ||
+				strings.Contains(endpoints, kitchenID+"-broken") {
 				t.Errorf("Asterisk was not reloaded with the old config:\n%s", endpoints)
 			}
 
@@ -514,16 +557,149 @@ func TestRollback(t *testing.T) {
 			if !r.Succeeded {
 				t.Error("the old config does not echo")
 			}
+			return context.WithValue(context.WithValue(ctx, rollbackGoodKey, good.Version), rollbackBrokenKey, broken.Version)
+		}).
+		Assess("the controller, back, writes its own version; a reissued token applies cleanly", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			goodVersion, _ := ctx.Value(rollbackGoodKey).(string)
+			h.scaleController(ctx, t, 1)
+			err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
+				b, err := h.readCompiled(ctx)
+				return err == nil && b.Version == goodVersion, nil
+			})
+			if err != nil {
+				t.Fatalf("the controller did not write its own version %.12s back: %v", goodVersion, err)
+			}
+			// The controller wrote pbx-secrets (its version's annotation)
+			// before pbx-config: if the agent's intake saw the new Secret
+			// while pbx-config still held the refused version, it applies
+			// that version again and spends its 30 s verifying it (plan
+			// §11), and the reissue waits behind it, past the CLI's 30 s.
+			// Then a second reissue finds the agent idle.
+			if _, err := h.patchbay(ctx, "softphone", "qr", laptopName, "--reissue"); err != nil {
+				t.Logf("the first reissue timed out behind the agent's re-verification: %v", err)
+				if _, err := h.patchbay(ctx, "softphone", "qr", laptopName, "--reissue"); err != nil {
+					t.Fatalf("patchbay softphone qr --reissue: %v", err)
+				}
+			}
+			b := h.waitApplied(ctx, t, 2*time.Minute)
+			if b.Version == goodVersion {
+				t.Errorf("the reissue made no new version")
+			}
+			return ctx
+		}).
+		Assess("no device reported ApplyFailed for a compiled version, and none shows it", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			broken, _ := ctx.Value(rollbackBrokenKey).(string)
+			for _, e := range h.eventsSince(ctx, t, start, install.EventReasonApplyFailed) {
+				if broken == "" || !strings.Contains(e, "config version "+broken[:12]+" was not applied") {
+					t.Errorf("ApplyFailed Event for a version other than the test's broken one: %s", e)
+				}
+			}
+			var phones v1alpha1.PhoneList
+			var softphones v1alpha1.SoftphoneList
+			if err := h.kube.List(ctx, &phones, client.InNamespace(namespace)); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.kube.List(ctx, &softphones, client.InNamespace(namespace)); err != nil {
+				t.Fatal(err)
+			}
+			var views []deviceView
+			for i := range phones.Items {
+				views = append(views, phoneView(&phones.Items[i]))
+			}
+			for i := range softphones.Items {
+				views = append(views, softphoneView(&softphones.Items[i]))
+			}
+			for _, d := range views {
+				if d.cond(v1alpha1.ConditionConfigCurrent).Reason == v1alpha1.ReasonApplyFailed {
+					t.Errorf("%v", d)
+				}
+			}
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			// pbx-config back to a good version, as a new one (the laptop's
-			// token rotated), so the agent's last apply is a success again:
-			// the live version written back would change nothing, and a
-			// reused cluster would start with this test's apply error.
-			h.rotateProvisioningToken(ctx, t)
+			// Never leave the controller scaled down for the tests after.
+			h.scaleController(context.WithoutCancel(ctx), t, 1)
 			return ctx
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+const rollbackGoodKey ctxKey = "rollback-good-version"
+
+const rollbackBrokenKey ctxKey = "rollback-broken-version"
+
+// scaleController scales the controller Deployment and waits: for 0, until
+// its pods are gone; otherwise until it has rolled out.
+func (h *harness) scaleController(ctx context.Context, t *testing.T, replicas int) {
+	t.Helper()
+	if _, err := h.kubectl(ctx, "scale", "deployment/"+controllerDeployment, "--namespace", namespace,
+		fmt.Sprintf("--replicas=%d", replicas)); err != nil {
+		t.Fatal(err)
+	}
+	err := wait.PollUntilContextTimeout(ctx, time.Second, rolloutTimeout, true, func(ctx context.Context) (bool, error) {
+		if replicas == 0 {
+			pods, err := h.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "app.kubernetes.io/instance=" + release + ",app.kubernetes.io/component=controller",
+			})
+			return err == nil && len(pods.Items) == 0, nil
+		}
+		d, err := h.cs.AppsV1().Deployments(namespace).Get(ctx, controllerDeployment, metav1.GetOptions{})
+		if err != nil {
+			return false, nil //nolint:nilerr // keep polling
+		}
+		done, _ := rolledOut(d)
+		return done && d.Status.ReadyReplicas == int32(replicas), nil
+	})
+	if err != nil {
+		t.Fatalf("scaling the controller to %d: %v", replicas, err)
+	}
+	t.Logf("controller scaled to %d", replicas)
+}
+
+// writeBundle writes b as the controller does (install.ProjectedSecret,
+// then install.ConfigMap), over pbx-secrets and pbx-config.
+func (h *harness) writeBundle(ctx context.Context, t *testing.T, b compile.Bundle, values map[compile.SecretRef][]byte) {
+	t.Helper()
+	sec, err := install.ProjectedSecret(names, namespace, b, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := h.cs.CoreV1().Secrets(namespace).Get(ctx, sec.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.Data, cur.StringData, cur.Labels, cur.Annotations = sec.Data, nil, sec.Labels, sec.Annotations
+	if _, err := h.cs.CoreV1().Secrets(namespace).Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cm, err := install.ConfigMap(names, namespace, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	curCM, err := h.cs.CoreV1().ConfigMaps(namespace).Get(ctx, cm.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	curCM.Data, curCM.BinaryData, curCM.Labels, curCM.Annotations = cm.Data, cm.BinaryData, cm.Labels, cm.Annotations
+	if _, err := h.cs.CoreV1().ConfigMaps(namespace).Update(ctx, curCM, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// eventsSince lists the namespace's events.k8s.io Events with reason
+// created at or after since, as "<regarding>: <note>".
+func (h *harness) eventsSince(ctx context.Context, t *testing.T, since metav1.Time, reason string) []string {
+	t.Helper()
+	l, err := h.cs.EventsV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range l.Items {
+		if e.Reason == reason && !e.CreationTimestamp.Before(&since) {
+			out = append(out, e.Regarding.Kind+"/"+e.Regarding.Name+": "+e.Note)
+		}
+	}
+	return out
 }
