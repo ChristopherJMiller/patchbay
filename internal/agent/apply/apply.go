@@ -24,7 +24,16 @@
 // nothing to roll back to: it stays live with the error set. An agent
 // restart adopts the live version without rewriting or reloading it, and
 // verifies it once AMI is up; its grants and AMI account are known once
-// intake hands it over again.
+// intake hands it over again. An adopted version was live before the
+// restart, so it is what a newer version that fails rolls back to,
+// verified again or not.
+//
+// A version's secret values are fixed by its version (intake applies a
+// version only with the values it was compiled with), so applying the live
+// version again changes nothing it already has.
+//
+// SettledGrants are the grants device HTTP prunes spent tokens against:
+// the live version's, once no failure can roll it back (see there).
 package apply
 
 import (
@@ -108,9 +117,16 @@ type live struct {
 	account *account
 	// verified is true once Asterisk was seen to hold it.
 	verified bool
+	// adopted is true for the version live when the agent started: a
+	// rollback target whether or not it is verified again.
+	adopted bool
+	// restored is true once a rollback made it live again: a version an
+	// older one's grants may have to come back from, so not settled.
+	restored bool
 	// While unverified: the reloads to run before verifying (nil for an
-	// adopted version), the last verified version to roll back to (nil:
-	// none), and the AMI session last tried (State.Since).
+	// adopted version), the version to roll back to (the last verified or
+	// adopted one; nil: none), and the AMI session last tried
+	// (State.Since).
 	plan  []string
 	prev  *live
 	tried time.Time
@@ -180,7 +196,7 @@ func New(cfg Config) (*Applier, error) {
 		cfg.Log.Info("the live version cannot be read; the next apply replaces it", "version", v, "error", err.Error())
 		return a, nil
 	}
-	a.cur = &live{version: v, index: idx}
+	a.cur = &live{version: v, index: idx, adopted: true}
 	a.indexes[v] = idx
 	a.status.AppliedVersion = v
 	cfg.Metrics.SetAppliedVersion(v)
@@ -208,11 +224,18 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 
 	if cur != nil && cur.version == v {
 		// Live already: nothing to write or reload. An adopted version
-		// learns its grants and account here.
+		// learns its grants and account here; a version that has them
+		// keeps them (its version fixes them).
 		a.mu.Lock()
-		cur.grants, cur.account = next.grants, next.account
+		if cur.grants == nil {
+			cur.grants = next.grants
+		}
+		if cur.account == nil {
+			cur.account = next.account
+		}
+		acct := cur.account
 		a.mu.Unlock()
-		a.setAccount(next.account)
+		a.setAccount(acct)
 		if !cur.verified && a.cfg.AMI.State().Up {
 			return a.verifyLive(ctx)
 		}
@@ -225,9 +248,11 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 		return err
 	}
 	a.cacheIndex(v, next.index)
-	// The last verified version is what a failure rolls back to.
+	// The last verified version is what a failure rolls back to, or the
+	// adopted one (it was live before the agent restarted; otherwise a
+	// version that failed before the restart would stay live after it).
 	next.prev = cur
-	if cur != nil && !cur.verified {
+	if cur != nil && !cur.verified && !cur.adopted {
 		next.prev = cur.prev
 	}
 	// Reload what differs from what Asterisk may be running: the last
@@ -305,6 +330,30 @@ func (a *Applier) Grants() (string, []provision.Grant) {
 		return "", nil
 	}
 	return a.cur.version, slices.Clone(a.cur.grants)
+}
+
+// SettledGrants are the live version's grants once it is settled, a copy;
+// ("", nil) otherwise. Device HTTP prunes spent tokens against them only
+// (devicehttp.Config.Settled), so a spend is never forgotten while a
+// version that grants its token can still become live again.
+//
+// A version is settled once this agent verified it, its tokens are known,
+// and it did not become live through a rollback. A rollback only ever
+// returns to the last verified (or adopted) version, so no version older
+// than a settled one can come back by rollback. Not settled: an unverified
+// version (a failure rolls back to the one before it, whose tokens may be
+// spent), an adopted one before intake hands it over, and a version a
+// rollback restored (the failed version may be applied again, after an
+// agent restart, with the tokens it granted), until a newer version
+// settles.
+func (a *Applier) SettledGrants() (string, []provision.Grant) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	c := a.cur
+	if c == nil || !c.verified || c.restored || c.grants == nil {
+		return "", nil
+	}
+	return c.version, slices.Clone(c.grants)
 }
 
 // Applied is the live version and its index. The index is shared: do not
@@ -390,10 +439,14 @@ func (a *Applier) verifyLive(ctx context.Context) error {
 		return err
 	}
 	a.mu.Lock()
-	prev := cur.prev
+	prev, restored := cur.prev, cur.restored
 	cur.verified, cur.plan, cur.prev = true, nil, nil
 	a.mu.Unlock()
-	a.succeeded(cur.version)
+	if !restored {
+		// A version a rollback restored was not applied: the failed
+		// version stays the last apply, with its error.
+		a.succeeded(cur.version)
+	}
 	a.cfg.Log.Info("live version verified", "version", cur.version)
 	a.prune(cur.version, prevVersion(prev))
 	return nil
@@ -419,6 +472,9 @@ func (a *Applier) rollBack(ctx context.Context, failed *live, err error) {
 	if prev.account != nil {
 		a.setAccount(prev.account)
 	}
+	a.mu.Lock()
+	prev.restored = true
+	a.mu.Unlock()
 	a.setLive(prev)
 	a.failed(failed.version, err)
 	a.cfg.Log.Info("version rolled back", "failed", failed.version, "live", prev.version, "error", err.Error())
@@ -512,7 +568,9 @@ func (a *Applier) reloadPatiently(ctx context.Context, plan []string) error {
 
 // verify retries until Asterisk's endpoints are exactly the index's
 // rendered devices and its dialplan has both patchbay contexts, or
-// VerifyTimeout passes.
+// VerifyTimeout passes. It then reports the last check that completed (the
+// mismatch), not a check the deadline cut short; the deadline itself only
+// when no check completed.
 func (a *Applier) verify(ctx context.Context, idx compile.Index) error {
 	var want []string
 	for id, d := range idx.Devices {
@@ -523,14 +581,18 @@ func (a *Applier) verify(ctx context.Context, idx compile.Index) error {
 	slices.Sort(want)
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.VerifyTimeout)
 	defer cancel()
+	var last error
 	for {
 		err := a.check(ctx, want)
 		if err == nil {
 			return nil
 		}
+		if ctx.Err() == nil || last == nil {
+			last = err
+		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("verify: %w", err)
+			return fmt.Errorf("verify: %w", last)
 		case <-time.After(a.verifyEvery):
 		}
 	}
