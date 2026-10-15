@@ -14,6 +14,8 @@ const Name = "softphone"
 // Go data in this package.
 type Driver struct{}
 
+var _ drivers.Driver = (*Driver)(nil)
+
 // New returns the softphone driver.
 func New() *Driver { return &Driver{} }
 

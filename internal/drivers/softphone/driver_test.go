@@ -24,6 +24,13 @@ func TestDriverIdentity(t *testing.T) {
 	if got := softphone.ProvisioningFile("softphone-chris-laptop"); got != "provisioning/softphone-chris-laptop.xml" {
 		t.Errorf("ProvisioningFile = %q", got)
 	}
+	r, err := drivers.NewRegistry(d)
+	if err != nil {
+		t.Fatalf("NewRegistry(softphone) = %v", err)
+	}
+	if got, err := r.ForModel(drivers.ModelSoftphone); err != nil || got.Name() != "softphone" {
+		t.Errorf("ForModel(softphone) = %v, %v", got, err)
+	}
 }
 
 func TestProfile(t *testing.T) {
