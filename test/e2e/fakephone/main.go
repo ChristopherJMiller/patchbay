@@ -84,13 +84,22 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
+// logger is the command's logger.
 func (rf *rootFlags) logger() *slog.Logger {
 	level := slog.LevelInfo
 	if rf.verbose {
 		level = slog.LevelDebug
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+}
+
+// sipLogger is logger for the SIP commands, which also set sipgo's
+// process-wide logger and debug switch (so only they touch them).
+func (rf *rootFlags) sipLogger() *slog.Logger {
+	log := rf.logger()
+	if rf.verbose {
 		sip.SIPDebug = true
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	// sipgo logs through its own default logger; keep it quiet unless -v.
 	sipLevel := slog.LevelWarn
 	if rf.verbose {
@@ -142,7 +151,7 @@ print it, then (with --refetch) fetch that file over TFTP from
 --tftp-server, as the phone does; exit 0 only if all of that happened.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			log := rf.logger()
+			log := rf.sipLogger()
 			timeout := rf.timeout
 			if waitNotify > 0 {
 				timeout += waitNotify
@@ -235,7 +244,7 @@ of it was not the SIT tone either (the prompt itself). Then BYE, unless the
 PBX hung up first.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log := rf.logger()
+			log := rf.sipLogger()
 			ctx, cancel := context.WithTimeout(cmd.Context(), rf.timeout)
 			defer cancel()
 			p, err := newPhone(ctx, o, log)
