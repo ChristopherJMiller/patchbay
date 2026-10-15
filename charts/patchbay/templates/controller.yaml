@@ -32,9 +32,12 @@ rules:
     resources: [phones/finalizers, softphones/finalizers, people/finalizers, streams/finalizers]
     verbs: [update]
   # The compiled bundle (ConfigMap pbx-config) and the generated secrets.
+  # No delete: owned Secrets go with their resource (ownerReference GC), a
+  # rotation updates in place, and nothing may delete Helm's release Secrets
+  # or a hand-made token in this namespace.
   - apiGroups: [""]
     resources: [configmaps, secrets]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [get, list, watch, create, update, patch]
   # Discovery and state-change Events.
   - apiGroups: [""]
     resources: [events]
@@ -42,10 +45,10 @@ rules:
   - apiGroups: [events.k8s.io]
     resources: [events]
     verbs: [create, patch]
-  # Leader election.
+  # Leader election: client-go's Lease lock only gets, creates and updates.
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [get, create, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

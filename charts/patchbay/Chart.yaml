@@ -6,7 +6,9 @@ version: 0.1.0
 # The patchbay image tag defaults to appVersion. No image is published yet;
 # set image.tag (and image.digest) until the release pipeline exists.
 appVersion: "0.1.0"
-kubeVersion: ">=1.29.0-0" # native sidecars (restartPolicy: Always init containers)
+# Native sidecars need 1.29; 1.33 is the oldest minor the e2e suite runs on
+# (test/e2e/kind.yaml, the minor of the cluster patchbay is built for).
+kubeVersion: ">=1.33.0-0"
 home: https://github.com/ChristopherJMiller/patchbay
 sources:
   - https://github.com/ChristopherJMiller/patchbay

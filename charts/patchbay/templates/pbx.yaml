@@ -116,10 +116,12 @@ spec:
               port: control
             periodSeconds: 20
             timeoutSeconds: 5
-          # Non-root today. When the agent serves TFTP on port 69 it must run as
-          # uid 0 with only NET_BIND_SERVICE: Kubernetes gives non-root
-          # containers no ambient capabilities, so adding the capability to
-          # uid 65532 does not let it bind (measured in e2e, docs/e2e.md).
+          # Non-root: it binds nothing below 1024 yet. Serving TFTP on udp 69
+          # on the host network needs a privilege Kubernetes does not give a
+          # non-root container (docs/e2e.md, "Privileged ports"). How to get it
+          # is an open decision for the agent phase, with one fixed rule: the
+          # process holding that privilege must not be the one holding the
+          # agent token, the AMI password or resolved secrets.
           securityContext:
             runAsUser: 65532
             runAsGroup: 65532
