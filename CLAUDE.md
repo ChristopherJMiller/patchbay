@@ -87,6 +87,16 @@ departs from it, the departure is recorded here (and in the code's docs).
   loads both carry `term45.default.loads`; §4's sketch has a flat list.
 - **e2e runs Kubernetes 1.33** (the target cluster's minor) and the chart
   requires >= 1.33.
+- **Labels and names lose runs of `@`** (§4 says "as written"): Compile
+  collapses every `@@` in a label or person name to `@`, so text a person
+  writes can never form a `@@secret:…@@` placeholder that the agent would
+  resolve into a file served to devices.
+- **The number plan also refuses shadowing** (§4 only says the controller
+  enforces it): a fixed-length pattern may not match a prefix of a number
+  in Devices, People, Streams or a built-in (People `1X` beside Devices
+  `1XX`), because the 79x5 dial template would dial the short number
+  first. Numbers only a reserved pattern holds may be shadowed (`911`
+  dials before `9.`'s `9111` could).
 
 ## Commands
 
@@ -105,6 +115,8 @@ make e2e          # kind + chart + real Asterisk + fakephone; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
 make check-hygiene # no tracked binaries, big files, firmware types or secrets
+make asterisk-check # every compile golden booted in the chart's Asterisk image (docker,
+                    # no cluster), then registered to and called as each device
 ```
 
 The CRDs are generated into `charts/patchbay/templates/crds/` and carry
