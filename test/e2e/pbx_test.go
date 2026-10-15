@@ -239,11 +239,23 @@ func TestFirmwareUploadAndServe(t *testing.T) {
 			good := cisco79x5.E2ELoadFile(sbn)
 			bad := bytes.Clone(good)
 			bad[len(bad)-1] ^= 0xFF
-			if code, resp := h.putFirmware(ctx, t, load.Name, sbn, bad); code != http.StatusUnprocessableEntity || resp.Stored {
-				t.Errorf("a corrupted %s: %d %+v, want 422, not stored", sbn, code, resp)
+			// A reused cluster keeps the store (the persistent volume): what
+			// is there already answers 200, not 201.
+			before := h.observations(ctx, t)
+			stored := func(name string) bool {
+				return slices.Contains(before.Firmware.Files, agentapi.FirmwareFileStatus{Load: load.Name, Name: name, Present: true})
 			}
-			if code, resp := h.putFirmware(ctx, t, load.Name, sbn, good); code != http.StatusCreated || !resp.Stored || resp.SHA256 != sha(good) {
-				t.Errorf("%s: %d %+v, want 201, stored", sbn, code, resp)
+			created := func(name string) int {
+				if stored(name) {
+					return http.StatusOK
+				}
+				return http.StatusCreated
+			}
+			if code, resp := h.putFirmware(ctx, t, load.Name, sbn, bad); code != http.StatusUnprocessableEntity || resp.Stored != stored(sbn) {
+				t.Errorf("a corrupted %s: %d %+v, want 422, nothing stored", sbn, code, resp)
+			}
+			if code, resp := h.putFirmware(ctx, t, load.Name, sbn, good); code != created(sbn) || !resp.Stored || resp.SHA256 != sha(good) {
+				t.Errorf("%s: %d %+v, want %d, stored", sbn, code, resp, created(sbn))
 			}
 			if code, resp := h.putFirmware(ctx, t, load.Name, sbn, good); code != http.StatusOK || !resp.Stored {
 				t.Errorf("%s again: %d %+v, want 200, stored", sbn, code, resp)
@@ -252,8 +264,8 @@ func TestFirmwareUploadAndServe(t *testing.T) {
 				if f.Name == sbn {
 					continue
 				}
-				if code, resp := h.putFirmware(ctx, t, load.Name, f.Name, cisco79x5.E2ELoadFile(f.Name)); code != http.StatusCreated {
-					t.Errorf("%s: %d %+v, want 201", f.Name, code, resp)
+				if code, resp := h.putFirmware(ctx, t, load.Name, f.Name, cisco79x5.E2ELoadFile(f.Name)); code != created(f.Name) {
+					t.Errorf("%s: %d %+v, want %d", f.Name, code, resp, created(f.Name))
 				}
 			}
 
@@ -409,6 +421,9 @@ func agentRestarts(ctx context.Context, t *testing.T) int32 {
 func TestProvisioningOneTime(t *testing.T) {
 	f := features.New("one-time provisioning").
 		Assess("200, 404, agent restart, 404, served fetch remembered", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// A fresh token (a reused cluster's was spent by the last run), as
+			// the controller rotates it: pbx-secrets, then pbx-config.
+			h.rotateProvisioningToken(ctx, t)
 			index := h.bundle.Devices[laptopID]
 			want := resolvedFile(t, index.ConfigFile)
 			env := []corev1.EnvVar{secretEnv("TOKEN", compile.DeviceSecretName(laptopID), compile.SecretKeyProvisioningToken)}
@@ -463,7 +478,13 @@ func TestRollback(t *testing.T) {
 				t.Fatalf("pjsip.conf does not hold %q once", from)
 			}
 			broken.Files["asterisk/pjsip.conf"] = bytes.Replace(pjsip, from, []byte("\n["+deskID+"-broken]\ntype = endpoint\n"), 1)
-			broken.Version = sha([]byte(good.Version + "/broken"))
+			// Its own version, as Compile would give it: the agent applies a
+			// version only with the secret values it was compiled with.
+			v, err := broken.VersionWith(h.bundle.secrets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			broken.Version = v
 			data, binary, err := broken.ConfigMapData()
 			if err != nil {
 				t.Fatal(err)

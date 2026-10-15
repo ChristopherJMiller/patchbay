@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math/big"
 	"slices"
+	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
+	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
@@ -185,6 +187,12 @@ func (h *harness) ensureSecretKey(ctx context.Context, ref compile.SecretRef, n 
 	} else if !apierrors.IsNotFound(err) && !isMissingKey(err) {
 		return nil, err
 	}
+	return h.newSecretKey(ctx, ref, n)
+}
+
+// newSecretKey sets ref to a new random alphanumeric value of length n,
+// creating its Secret if it does not exist.
+func (h *harness) newSecretKey(ctx context.Context, ref compile.SecretRef, n int) ([]byte, error) {
 	v, err := randomAlphanumeric(n)
 	if err != nil {
 		return nil, err
@@ -280,4 +288,27 @@ func randomAlphanumeric(n int) ([]byte, error) {
 		out[i] = alphanumeric[k.Int64()]
 	}
 	return out, nil
+}
+
+// rotateProvisioningToken gives Softphone laptop a new token, as the
+// controller does once its URL was used: the token's Secret, then
+// pbx-secrets, then pbx-config. It waits until the agent applied and
+// verified the new version, which h.bundle becomes. On a reused cluster
+// this is what makes the token unspent; it also exercises a version
+// change whose Secret is written first.
+func (h *harness) rotateProvisioningToken(ctx context.Context, t *testing.T) {
+	t.Helper()
+	ref := compile.ProvisioningTokenRef(laptopID)
+	if _, err := h.newSecretKey(ctx, ref, 32); err != nil {
+		t.Fatalf("rotating %s/%s: %v", ref.Name, ref.Key, err)
+	}
+	b, err := h.applyBundle(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.eventually(ctx, t, "the rotated token's version applied", 2*time.Minute, func(o agentapi.Observations) (bool, string) {
+		a := o.Agent
+		return a.AppliedVersion == b.Version && a.LastApplyVersion == b.Version && a.LastApplyError == "", fmt.Sprintf("%+v", a)
+	})
+	h.bundle = b
 }

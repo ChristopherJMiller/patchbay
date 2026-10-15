@@ -25,7 +25,9 @@ it (`test/e2e/bundle_test.go`):
   device (`patchbay-phone-desk`: `sip-password`;
   `patchbay-softphone-laptop`: `sip-password`, `provisioning-token`) and
   `patchbay-ami` (`password`), each random and alphanumeric (12, 24, 32,
-  32 characters), kept as they are on a reused cluster;
+  32 characters), kept as they are on a reused cluster (but for the
+  laptop's provisioning token, which `TestProvisioningOneTime` rotates on
+  every run);
 - it writes `patchbay-pbx-secrets` (every `Bundle.SecretRefs()` key, under
   `SecretRef.ProjectedKey`) and then `patchbay-pbx-config`
   (`Bundle.ConfigMapData`), before installing the chart, so the agent
@@ -50,11 +52,11 @@ From, To, Contact) and its device ID the digest username (`--user 100
 | `TestEchoCall` | Calling `600` crosses pod network → node IP for SIP and RTP both ways, and a 1 kHz PCMU tone comes back from the node's own address. |
 | `TestModulesNarrowed` | Asterisk's module directory, and `module show`, hold exactly `compile.Modules()`. Over AMI, as the agent's own account (from a host-network pod: AMI is on the node's loopback), a `ModuleLoad` reload works, and `ModuleLoad` of `app_system.so`, `func_shell.so`, `res_agi.so`, `res_ari.so` and `../usr/lib/asterisk/modules/app_system.so` all fail. |
 | `TestTFTPAndHTTP6970` | The file server serves `SEP<MAC>.cnf.xml` with the phone's password resolved, byte for byte the same over TFTP and HTTP :6970; the `.sgn` and an unknown MAC's SEP file are not found. Every request is in `/v1/observations`: attributed to `phone-desk` (served ones with its config version) or, for the unknown MAC, in `unknownDevices` with the requesting pod's address. |
-| `TestFirmwareUploadAndServe` | The e2e load (`E2E45.0-0-1S`, built only with `-tags e2e`) goes up through the agent over a port-forward with the token, the path `patchbay firmware load` will take: a corrupted file **422** (nothing stored), the good one **201**, again **200**; the store sensor reports it present, and the file server serves it over TFTP and HTTP :6970. |
+| `TestFirmwareUploadAndServe` | The e2e load (`E2E45.0-0-1S`, built only with `-tags e2e`) goes up through the agent over a port-forward with the token, the path `patchbay firmware load` will take: a corrupted file **422** (nothing stored), the good one **201**, again **200** (on a reused cluster, whose persistent volume keeps the store, the files already there answer 200 at once); the store sensor reports it present, and the file server serves it over TFTP and HTTP :6970. |
 | `TestPrompts` | `911`, `0` (reserved) and `199` (unassigned) are answered with at least 2 s of non-silent audio, at least 1 s of it not the SIT tone: the prompts the agent installed from the image play. |
 | `TestResyncNotify` | `POST /v1/actions/resync` makes the agent send the registered fakephone a service-control NOTIFY whose body is the plan's, quoting its REGISTER's Call-ID; fakephone then refetches its SEP file over TFTP. |
-| `TestProvisioningOneTime` | Softphone laptop's provisioning URL serves its document once over the pod network (200), then 404; the agent container is killed, and after it restarts the URL is still 404 (the spend is on the persistent volume) and the served fetch, with the softphone's version, is back in the observations. |
-| `TestRollback` | A `pbx-config` whose `pjsip.conf` renames Phone desk's endpoint: the agent applies it, fails verification (after its 30 s), swaps the previous version back and reloads; it reports `lastApplyVersion` and the verify error while `appliedVersion` stays the good one, and the old config still registers and echoes. The good ConfigMap is written back afterwards. |
+| `TestProvisioningOneTime` | First the laptop's token is rotated as the controller will (its Secret, `pbx-secrets`, then `pbx-config`), and the test waits for the new version to be applied and verified: a reused cluster's token was spent by the last run, and the agent must take a version whose Secret came first. Then Softphone laptop's provisioning URL serves its document once over the pod network (200), then 404; the agent container is killed, and after it restarts the URL is still 404 (the spend is on the persistent volume) and the served fetch, with the softphone's version, is back in the observations. |
+| `TestRollback` | A `pbx-config` whose `pjsip.conf` renames Phone desk's endpoint (with the version `Bundle.VersionWith` gives it, as the agent applies a version only with the secret values it was compiled with): the agent applies it, fails verification (after its 30 s), swaps the previous version back and reloads; it reports `lastApplyVersion` and the verify error while `appliedVersion` stays the good one, and the old config still registers and echoes. The good ConfigMap is written back afterwards. |
 
 ## Running it
 
