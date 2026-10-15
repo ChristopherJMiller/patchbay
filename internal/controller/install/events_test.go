@@ -2,6 +2,7 @@ package install_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,20 +17,55 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 )
 
-// sinkCounts counts the Event writes a fake clientset received.
-func sinkCounts(cs *kubefake.Clientset) (creates, patches int) {
-	for _, a := range cs.Actions() {
-		if a.GetResource().Resource != "events" {
-			continue
-		}
-		switch a.GetVerb() {
-		case "create":
-			creates++
-		case "patch":
-			patches++
+// stored is what a fake clientset holds of the Events: how many, and the
+// series count of each (1 for an Event without a series), by note. The
+// broadcaster records each Event in a goroutine of its own, so a series
+// patch can race its Event's create and be tried again: the actions are
+// not a measure, what is stored is.
+func stored(ctx context.Context, cs *kubefake.Clientset) (map[string]int32, error) {
+	l, err := cs.EventsV1().Events(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int32{}
+	for _, e := range l.Items {
+		out[e.Note] = 1
+		if e.Series != nil {
+			out[e.Note] = e.Series.Count
 		}
 	}
-	return creates, patches
+	return out, nil
+}
+
+// waitStored waits until the stored Events are exactly want (note ->
+// count), where a note given as "one|two" may be either.
+func waitStored(ctx context.Context, t *testing.T, cs *kubefake.Clientset, want map[string]int32) {
+	t.Helper()
+	var got map[string]int32
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		var err error
+		if got, err = stored(ctx, cs); err != nil {
+			return false, err
+		}
+		if len(got) != len(want) {
+			return false, nil
+		}
+		for note, n := range want {
+			match := false
+			for _, alt := range strings.Split(note, "|") {
+				if c, ok := got[alt]; ok && c == n {
+					match = true
+				}
+			}
+			if !match {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Errorf("stored Events (note: count) %v, want %v: %v", got, want, err)
+	}
 }
 
 // TestEventSeries pins the client-go behaviour the Event doc (events.go)
@@ -61,31 +97,14 @@ func TestEventSeries(t *testing.T) {
 	newer.ResourceVersion = "8"
 	emit(newer, nil, "three: the ConfigMap was rewritten")
 
-	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
-		c, p := sinkCounts(cs)
-		return c+p == 5, nil
+	// "one" and "two" are one Event of count 2, holding whichever note was
+	// recorded first.
+	waitStored(ctx, t, cs, map[string]int32{
+		"one|two: joins one's series":                                2,
+		install.UnknownPhoneMessage("0200E2E00001", "192.168.20.11"): 1,
+		install.UnknownPhoneMessage("0200E2E00002", "192.168.20.12"): 1,
+		"three: the ConfigMap was rewritten":                         1,
 	})
-	creates, patches := sinkCounts(cs)
-	if err != nil || creates != 4 || patches != 1 {
-		t.Errorf("%d creates, %d patches (%v); want 4 Events and one series patch", creates, patches, err)
-	}
-	l, err := cs.EventsV1().Events(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	notes := map[string]bool{}
-	for _, e := range l.Items {
-		notes[e.Note] = true
-	}
-	for _, want := range []string{
-		install.UnknownPhoneMessage("0200E2E00001", "192.168.20.11"),
-		install.UnknownPhoneMessage("0200E2E00002", "192.168.20.12"),
-		"three: the ConfigMap was rewritten",
-	} {
-		if !notes[want] {
-			t.Errorf("no Event with note %q in %v", want, notes)
-		}
-	}
 }
 
 // TestCompileFailedSeries: each distinct compile error is an Event of its
@@ -107,13 +126,7 @@ func TestCompileFailedSeries(t *testing.T) {
 		rec.Eventf(cm, install.CompileFailedRelated(cm, note), corev1.EventTypeWarning, install.EventReasonCompileFailed,
 			install.EventActionCompile, "%s", note)
 	}
-	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(context.Context) (bool, error) {
-		c, p := sinkCounts(cs)
-		return c+p == 3, nil
-	})
-	if creates, patches := sinkCounts(cs); err != nil || creates != 2 || patches != 1 {
-		t.Errorf("%d creates, %d patches (%v); want 2 Events, the first repeated once", creates, patches, err)
-	}
+	waitStored(ctx, t, cs, map[string]int32{"compile: Phone desk: first error": 2, "compile: a second error": 1})
 	if r := install.CompileFailedRelated(cm, "x"); r.Kind != "ConfigMap" || r.Name != cm.Name || r.Namespace != ns ||
 		r.FieldPath == install.CompileFailedRelated(cm, "y").FieldPath {
 		t.Errorf("related %+v: want pbx-config, a field path per error", r)
