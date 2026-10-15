@@ -1,0 +1,7 @@
+# BuildKit reads this instead of the root .dockerignore for this Dockerfile.
+# Only the module files and fakephone's own sources are needed.
+*
+!go.mod
+!go.sum
+!test/e2e/fakephone/
+**/*_test.go
