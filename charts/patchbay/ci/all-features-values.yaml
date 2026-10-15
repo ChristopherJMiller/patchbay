@@ -1,0 +1,28 @@
+# Every optional feature on, so `make lint` renders every template.
+image:
+  tag: "0.1.0"
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+imagePullSecrets:
+  - name: regcred
+controller:
+  replicas: 2
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+pbx:
+  nodeName: top
+  address: 192.0.2.10
+  agent:
+    tokenSecretName: my-agent-token
+  staticConfig:
+    enabled: true
+    password: lint-only-password
+firmware:
+  persistence:
+    storageClassName: fast
+    keep: false
+podMonitor:
+  enabled: true

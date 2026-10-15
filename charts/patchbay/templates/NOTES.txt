@@ -1,0 +1,16 @@
+patchbay {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+The PBX pod runs on node {{ .Values.pbx.nodeName }} (host network); phones reach
+SIP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.sip }}.
+
+The PBX pod starts once the agent token Secret exists:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "patchbay.agentTokenSecretName" . }}
+{{- if .Values.pbx.staticConfig.enabled }}
+
+WARNING: pbx.staticConfig is enabled. It is a TEMPORARY, e2e-only Asterisk
+config with a test password. Do not use it for real phones.
+{{- end }}
+
+Check the PBX:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "patchbay.fullname" . }}-pbx -c asterisk -- asterisk -rx 'pjsip show endpoints'

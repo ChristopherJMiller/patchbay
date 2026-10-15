@@ -1,0 +1,5 @@
+# The least a real install sets. `make lint` lints the chart with each file
+# in ci/ (the chart-testing convention).
+pbx:
+  nodeName: top
+  address: 192.0.2.10

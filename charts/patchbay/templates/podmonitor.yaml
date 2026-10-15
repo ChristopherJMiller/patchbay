@@ -1,0 +1,22 @@
+{{- if .Values.podMonitor.enabled -}}
+# Scrapes the controller's metrics. The agent joins once it exports metrics
+# (design §7). Needs the prometheus-operator CRDs.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "patchbay.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    {{- with .Values.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "controller") | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.podMonitor.interval }}
+{{- end }}

@@ -84,7 +84,8 @@ vet: ## go vet.
 .PHONY: lint
 lint: ## golangci-lint (incl. exhaustive) and helm lint.
 	golangci-lint run ./...
-	helm lint charts/patchbay
+	@# The chart has required values, so it is linted with each ci/ values file.
+	for f in charts/patchbay/ci/*-values.yaml; do helm lint --strict charts/patchbay -f "$$f"; done
 
 .PHONY: test
 test: envtest-assets ## Unit tests plus envtest (real kube-apiserver + etcd).
