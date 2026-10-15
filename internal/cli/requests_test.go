@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/cli"
@@ -295,4 +297,46 @@ func TestPhoneResync(t *testing.T) {
 			t.Errorf("%v, want not found naming the namespace", err)
 		}
 	})
+}
+
+// API errors other than NotFound are returned, wrapped with what was being
+// done.
+func TestRequestsAPIErrors(t *testing.T) {
+	scheme, err := cli.NewScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withErrors := func(te *testEnv, funcs interceptor.Funcs, objs ...client.Object) {
+		te.Kube = interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build(), funcs)
+	}
+	getFails := interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+		return errors.New("etcdserver: request timed out")
+	}}
+	patchFails := interceptor.Funcs{Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+		return errors.New("admission webhook said no")
+	}}
+
+	te := newTestEnv(t)
+	withErrors(te, getFails)
+	if err := cli.SoftphoneQR(context.Background(), te.Env, "laptop", false); err == nil ||
+		!strings.Contains(err.Error(), "reading softphone laptop in namespace "+testNamespace+": etcdserver") {
+		t.Errorf("qr: %v", err)
+	}
+	if err := cli.PhoneResync(context.Background(), te.Env, "desk"); err == nil || !strings.Contains(err.Error(), "reading phone desk") {
+		t.Errorf("resync: %v", err)
+	}
+
+	te = newTestEnv(t)
+	withErrors(te, patchFails, softphone("Registered", oldURL), phone("desk", "Registered"))
+	if err := cli.SoftphoneQR(context.Background(), te.Env, "laptop", true); err == nil ||
+		!strings.Contains(err.Error(), "softphone laptop: requesting a reissue: admission webhook said no") {
+		t.Errorf("qr --reissue: %v", err)
+	}
+	if err := cli.PhoneResync(context.Background(), te.Env, "desk"); err == nil ||
+		!strings.Contains(err.Error(), "phone desk: requesting a resync: admission webhook said no") {
+		t.Errorf("resync: %v", err)
+	}
+	if te.out.Len() != 0 {
+		t.Errorf("printed %q", te.out)
+	}
 }

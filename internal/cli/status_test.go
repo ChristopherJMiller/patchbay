@@ -3,6 +3,9 @@ package cli_test
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -243,4 +246,68 @@ func TestStatusListFails(t *testing.T) {
 	if opens, _ := te.opener.counts(); opens != 0 {
 		t.Errorf("asked the agent %d times after failing to list", opens)
 	}
+}
+
+func TestStatusAgentLine(t *testing.T) {
+	for _, tc := range []struct {
+		agent agentapi.AgentStatus
+		want  string
+	}{
+		{agentapi.AgentStatus{Version: "v1", AsteriskUp: true, AsteriskVersion: "22.6.0", AppliedVersion: "abc"},
+			"Agent: v1, Asterisk up (22.6.0), config abc applied"},
+		{agentapi.AgentStatus{AsteriskUp: true, AppliedVersion: "0123456789abcdef"},
+			"Agent: unknown version, Asterisk up, config 0123456789ab applied"},
+		{agentapi.AgentStatus{Version: "v1", LastApplyVersion: "fedcba9876543210", LastApplyError: "verify failed"},
+			"Agent: v1, Asterisk down, no config applied yet, last apply of fedcba987654 failed: verify failed"},
+	} {
+		te := newTestEnv(t)
+		te.agent.observations = agentapi.Empty(testNow, tc.agent)
+		if err := cli.Status(context.Background(), te.Env); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, _ := strings.Cut(te.out.String(), "\n"); got != tc.want {
+			t.Errorf("agent line %q, want %q", got, tc.want)
+		}
+	}
+}
+
+// What the agent answers when it is not the document: the status line says
+// so, and status still succeeds.
+func TestStatusAgentAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		body string
+		want string
+	}{
+		{"plain-text error", http.StatusInternalServerError, "oops", "GET /v1/observations: 500 Internal Server Error"},
+		{"api error", http.StatusServiceUnavailable, `{"error":"not ready"}`, "GET /v1/observations: 503 not ready"},
+		{"not JSON", http.StatusOK, "<html>", "GET /v1/observations: invalid character"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.code)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			te.opener.srv = srv
+			if err := cli.Status(context.Background(), te.Env); err != nil {
+				t.Fatal(err)
+			}
+			if want := "Agent: could not ask the agent: " + tc.want; !strings.HasPrefix(te.out.String(), want) {
+				t.Errorf("output %q, want it to start with %q", te.out, want)
+			}
+		})
+	}
+	t.Run("no opener", func(t *testing.T) {
+		te := newTestEnv(t)
+		te.Agent = nil
+		if err := cli.Status(context.Background(), te.Env); err != nil {
+			t.Fatal(err)
+		}
+		if want := "Agent: could not ask the agent: no way to reach the agent\n"; !strings.HasPrefix(te.out.String(), want) {
+			t.Errorf("output %q, want it to start with %q", te.out, want)
+		}
+	})
 }
