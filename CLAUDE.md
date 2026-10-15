@@ -53,7 +53,8 @@ firmware store interface) and `agent.Options` (what the control API
 serves); and the controller's (W3): `internal/controller/install` (the
 install's object names, keys, labels, the compiled bundle written as
 pbx-secrets then pbx-config and read back with `ReadCompiled`, secret
-generation, Event reasons), `internal/controller/agentview` (the poller's
+generation, Event reasons and which Events client-go joins into a series,
+the bounds on status and Event text), `internal/controller/agentview` (the poller's
 `Snapshot`, `Observer`/`Holder`, the `Changes` enqueue channels,
 `SnapshotFunc`, the `Actor` the device reconcilers send actions through),
 `internal/controller/ctrltest` (the shared envtest harness),
@@ -195,6 +196,15 @@ departs from it, the departure is recorded here (and in the code's docs).
   hand-edited Secret is a `CompileFailed` Event, not a broken file.
 - **Discovery is once per MAC per agent start, in the controller's
   memory**: a controller restart reports each still-asking phone once more.
+  Each UnknownPhone Event names its MAC in `related` (else client-go joins
+  them into one series with the first note); at most 16 go out at once and
+  one per 30 s after, and only MACs the agent still lists are remembered.
+- **Text from devices is bounded**: the agent keeps each scraped field to
+  128 bytes and each log line to 256, control characters as spaces; the
+  controller cuts condition messages and human actions at 2048 bytes and
+  Event notes at 1024 (events.k8s.io's limit), so a hostile web page can
+  never make a status write fail or an Event be refused, and `patchbay
+  status` prints no control character.
 - **The CLI never uses the in-cluster config**: `--kubeconfig`, else
   `$KUBECONFIG`, else `~/.kube/config`.
 - **Two more metrics** than §10 lists: `patchbay_compile_failures_total`

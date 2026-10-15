@@ -3465,6 +3465,26 @@ that cannot happen. TestRollback is 79 s: the broken version's 30 s
 verification, the agent's second one after the controller's
 `pbx-secrets` rewrite (§11), and a reissue.
 
+#### 6.2.12 W3 review fixes
+
+Three independent read-only reviews of W3 (security, correctness,
+robustness) raised ten findings. Each was reproduced first (a failing
+test where one could be written); none was rejected, one was narrower
+than stated (3). What changed, and what pins it:
+
+| # | Finding | Fix | Pinned by |
+|---|---|---|---|
+| 1 | (major) Every provisioned softphone kept a live, unspent provisioning URL in `status.provisioningURL` (the driver rotates the spent token; the shell published the new one in every state), so anyone able to read Softphones but not Secrets could take the SIP password | `status.provisioningURL` only while the Decision's state is `Issued` (design §8.4), never in the reconcile whose Decision rotates the token, and only while the device Secret still holds the compiled token (a reissue's old token is never shown between the rotation and the recompile, where `qr --reissue` would print it); amends 6.2.1 and 6.2.6 step 8 | `TestSoftphoneURLOnlyWhileIssued`, `TestSoftphoneRotatesToken`; e2e `TestDeskLoop` (no URL after the spend, none while Registered), `TestProvisioningOneTime` (reissues first when the laptop has no URL) |
+| 2 | (major) Text a VLAN-20 host controls reached Phone status unbounded: a 40 kB `versionID` made every status write fail as Invalid, freezing the Phone's state; CR and C1 controls reached `patchbay status` | the scraper keeps each field ≤ 128 bytes and each log line ≤ 256, control characters as spaces (`scrape.MaxField`, `MaxLogLine`); the controller bounds condition messages and `humanAction` (2048) and `observed.firmware`/`address` (128) with `install.Text`; `status` prints each control character but a newline as a space | `TestParseBoundsWhatThePhoneSays`, `TestHostileTextBounded`, `TestText`, `TestStatusPrintsNoEscapes` |
+| 3 | (major) client-go's events broadcaster joins Events by type, reason, action, regarding (resourceVersion included) and related, not the note: every UnknownPhone regards one pbx-config, so a second unknown phone within 6 min was lost, and a host kept the series alive | each UnknownPhone names its MAC in `related` (`install.UnknownPhoneRelated`). Narrower than reported: a device's Events after a status write regard its new resourceVersion and stay distinct; what still joins is an ActionFailed repeated before the status changes and a CompileFailed repeated while pbx-config is unchanged (first note kept; §11) | `TestEventSeries` (the real broadcaster), `TestEachMACItsOwnEvent`, `TestSetupWiresEverything` (the API server takes the reference) |
+| 4 | (minor) Discovery's reported set grew without bound under a flood of fresh MACs (~70 MiB a day) | it keeps only the MACs the agent still lists (≤ 64); and since each MAC is now its own Event, at most 16 Events at once and one per 30 s (`discovery.ReportBurst`, `ReportEvery`), a held-back MAC reported later while listed | `TestFloodOfFreshMACs` |
+| 5 | (minor) `softphone qr --reissue` printed a new URL whose bundle the agent had refused (ApplyFailed; it answers 404) | fails at once quoting the condition's message (6.2.7 amended) | `TestSoftphoneQRReissueApplyFailed` |
+| 6 | (minor) Device and Person/Stream Event notes over events.k8s.io's 1024 bytes were refused and lost (ApplyFailed with a long verify error) | every reconciler passes notes through `install.EventNote` (the bundle's own 1000-byte cut is gone) | `TestEventNote`, `TestLongNoteBounded`, `TestHostileTextBounded` |
+| 7 | (minor) e2e race: `TestDiscovery` and `TestPhoneLifecycle/reset` created a Phone, then `waitApplied` returned at once on the previous bundle | `waitCompiled` waits for the bundle that holds the device first | e2e |
+| 8 | (minor) A reused cluster passed `TestPhoneLifecycle` only because `TestProvisioningOneTime` had restarted the agent: the agent keeps a device's fetch log by ID after the device leaves the bundle | the lifecycle and reset Phones take a random suffix per run, and Setup deletes an interrupted run's; the agent side is §11 | e2e |
+| 9 | (minor) Cache lag was a reconcile error: the bundle reconciler's create (AlreadyExists) and update (Conflict) from a stale copy, the Person/Stream status writes (Conflict), each an ERROR, counted, backed off | a requeue after 1 s with a V(1) line (`bundle.StaleRetry`); other API errors are still returned. The device reconcilers keep their stale-cache guard (6.2.11), and a real conflict there is still an error | `TestCacheLagIsNotAnError`, numbers `TestStatusWriteError` |
+| 10 | (nit) `go test -count=2 ./internal/controller/` failed: controller-runtime's process-wide controller-name check | the package's tests turn it off (`export_test.go`); the binary keeps it | `go test -count=2` |
+
 ---
 
 ## 7. Agent ↔ controller interfaces
@@ -3665,7 +3685,34 @@ The five inputs most likely to break a real user that no test covers yet.
   app.kubernetes.io/managed-by=patchbay-controller`.
 - *(W3)* **A controller restart reports each unknown phone again**, once:
   discovery remembers which MACs it reported for the agent's current
-  process in memory only.
+  process in memory only, and only while the agent lists them (its 64
+  most recent): a phone that drops out of that list and asks again is
+  reported again (6.2.12).
+- *(W3 review)* **A flood of unknown MACs delays real ones.** A host
+  requesting `SEP<random MAC>.cnf.xml` in a loop fills the agent's list;
+  discovery emits at most 16 UnknownPhone Events at once and one per 30 s,
+  so a real phone may be reported minutes late, or not at all if the
+  flood pushes it out of the agent's 64. `patchbay status` lists the
+  agent's live list.
+- *(W3 review)* **Some repeated Events keep their first note.** client-go's
+  events broadcaster joins Events with the same type, reason, action,
+  regarding object (resourceVersion included) and related object into one
+  series for six minutes after the last: an ActionFailed repeated before
+  the device's status changes, and a CompileFailed repeated while
+  `pbx-config` is unchanged (the 5 min retry keeps the series alive, so a
+  new compile error shows the first one's note). The controller log has
+  every one.
+- *(W3 review)* **The agent keeps a device's history by its ID** after the
+  device leaves the bundle: a Phone deleted and recreated under the same
+  name starts with the old one's fetches (never Unseen), and a Phone whose
+  `spec.mac` is edited for a hardware swap shows the old phone's first-seen
+  time and address until the new phone fetches. The fix belongs in the
+  agent's store (drop a device's state when its ID leaves the applied
+  index or its MAC changes); `TestPhoneLifecycle` uses random names.
+- *(W3 review)* **Long text is cut**: a condition message or human action
+  over 2048 bytes, an Event note over 1024 (events.k8s.io's limit), a
+  scraped field over 128 bytes or a log line over 256 ends in an ellipsis;
+  control characters become spaces.
 - *(W3, found in e2e)* **The Desk phone's trust log is never read.** The
   agent scrapes only a phone it has served a file to or that holds a
   registration, and a phone with its old CUCM's trust list asks only for
