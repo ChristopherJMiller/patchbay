@@ -1,0 +1,25 @@
+{
+  "pbxAddress": "192.0.2.10",
+  "sipPort": 5060,
+  "rtpPorts": {
+    "first": 10000,
+    "last": 10099
+  },
+  "deviceHTTPPort": 8088,
+  "ntpServer": "192.168.20.1",
+  "timezone": "UTC",
+  "signalling": "pjsip",
+  "numberPlan": {
+    "devices": "1XX",
+    "people": "3XX",
+    "streams": "7XX",
+    "echoTest": "600",
+    "emergency": "911",
+    "reserved": ["2XX", "0", "9.", "*8"]
+  },
+  "allowedNetworks": ["192.168.20.0/24", "192.168.0.0/24"],
+  "amiSecret": {
+    "name": "patchbay-ami",
+    "key": "password"
+  }
+}
