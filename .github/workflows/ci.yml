@@ -1,0 +1,148 @@
+# CI: everything runs inside the repo's flake (`nix develop -c …`), so a job
+# here runs exactly the toolchain `nix develop` gives you locally. To reproduce
+# a red job, run the same `make` target in the same shell.
+#
+# Actions are pinned by full commit SHA with the release as a comment;
+# Renovate (renovate.json) keeps both up to date.
+#   - cachix/install-nix-action: upstream Nix, multi-user, flakes enabled.
+#   - nix-community/cache-nix-action: caches /nix in the GitHub Actions cache.
+#     (DeterminateSystems/magic-nix-cache-action was shut down in Feb 2025 and
+#     revived in mid-2025. By default it sends diagnostics to Determinate and
+#     tries FlakeHub, which needs `id-token: write`. So we don't use it.)
+name: CI
+
+on:
+  push:
+    # Renovate branches always have a PR; don't run them twice.
+    branches-ignore: ["renovate/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded runs on a branch or PR are cancelled. Every commit on main
+  # still gets a full result.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: generate, lint, test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The dev shell closure (~2.3 GiB) is keyed on the flake. Only an exact
+      # key match is restored, and there is no GC, so a saved cache holds only
+      # the current closure. This job saves the cache and e2e only restores it.
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+
+      - name: Dev shell (tool versions)
+        run: nix develop -c make tools-versions
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'flake.lock') }}
+          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Generated files are committed
+        run: |
+          nix develop -c make generate
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            git --no-pager diff
+            echo "::error::'make generate' changed the tree: run it locally and commit the result"
+            exit 1
+          fi
+
+      - name: go.mod is tidy
+        run: nix develop -c go mod tidy -diff
+
+      - name: Workflows (actionlint)
+        run: nix develop -c actionlint
+
+      - name: Lint and test (unit + envtest)
+        run: nix develop -c make lint test
+
+  e2e:
+    name: e2e (kind)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Contract with the harness (`make e2e`, test/e2e):
+    #   - one kind cluster named patchbay-e2e;
+    #   - its kubeconfig at .e2e/kubeconfig (never uploaded);
+    #   - every diagnostic it dumps on failure goes under .e2e/.
+    # On failure the steps below add `kind export logs` plus a cluster
+    # snapshot, then upload .e2e/ as an artifact.
+    env:
+      E2E_DIR: ${{ github.workspace }}/.e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          save: false
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'flake.lock') }}
+          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: e2e
+        # A step timeout counts as a failure, so the diagnostics steps still
+        # run. A job timeout would cancel them.
+        timeout-minutes: 35
+        run: nix develop -c make e2e
+
+      - name: Collect cluster diagnostics
+        if: failure()
+        continue-on-error: true
+        run: |
+          mkdir -p "$E2E_DIR/ci"
+          if ! nix develop -c kind get clusters | grep -qx patchbay-e2e; then
+            echo "no patchbay-e2e cluster to collect from"
+            exit 0
+          fi
+          nix develop -c kind export logs "$E2E_DIR/ci/kind-logs" --name patchbay-e2e || true
+          kc=(nix develop -c kubectl --kubeconfig "$E2E_DIR/kubeconfig")
+          "${kc[@]}" get all,events -A -o wide > "$E2E_DIR/ci/cluster.txt" 2>&1 || true
+          "${kc[@]}" get phones,softphones,people,streams -A -o yaml \
+            > "$E2E_DIR/ci/patchbay-resources.yaml" 2>&1 || true
+
+      - name: Upload e2e diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ github.workspace }}/.e2e/
+            !${{ github.workspace }}/.e2e/kubeconfig
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
