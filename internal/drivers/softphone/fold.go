@@ -102,14 +102,14 @@ func isConfigFetch(id string, f agentapi.Fetch, m drivers.Memory) bool {
 }
 
 // liveRegistration returns the device's registration when it is a live
-// contact: not expired, and not failing qualify when the profile qualifies
+// contact: not expired (drivers.RegistrationLive), and not failing qualify when the profile qualifies
 // at all. Otherwise nil.
 func liveRegistration(d *agentapi.DeviceObservations, now time.Time, p drivers.Profile) *agentapi.Registration {
 	if d == nil || d.Registration == nil {
 		return nil
 	}
 	r := d.Registration
-	if !r.ExpiresAt.After(now) {
+	if !drivers.RegistrationLive(r.ExpiresAt, now) {
 		return nil
 	}
 	if p.Endpoint.QualifyFrequency > 0 && r.Qualify == agentapi.QualifyUnreachable {

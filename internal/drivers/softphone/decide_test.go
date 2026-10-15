@@ -706,11 +706,11 @@ func offlineCases() []decideCase {
 			want: off(oneSecondAfter, -time.Hour+time.Second),
 		},
 		{
-			name: "the contact expires exactly now",
+			name: "the contact expired the grace ago",
 			dev:  device(withMemory(registeredMem())),
 			obs: func() drivers.Observations {
 				r := live()
-				r.ExpiresAt = t0
+				r.ExpiresAt = t0.Add(-drivers.RegistrationGrace)
 				return observations(seen(r, fetch(vNew, -time.Hour)))
 			}(),
 			want: off(registeredMem(), -30*time.Second),

@@ -49,3 +49,19 @@ func (o Observations) ApplyFailure() string {
 func Condition(conditionType string, status metav1.ConditionStatus, reason, message string) metav1.Condition {
 	return metav1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message}
 }
+
+// RegistrationGrace is how long after its expiry a registration still
+// counts as a live contact. A device refreshes shortly before expiry (the
+// 79x5 5 s before, its SEP file's timerRegisterDelta), and the controller
+// sees the refresh only once the agent's AMI poll and its own poll (5 s
+// each) have passed, or later when a reconcile reads the snapshot it
+// cached: without the grace, a healthy phone would flicker to Unreachable
+// in that gap. A device that did not refresh is gone once Asterisk drops
+// its expired contact, or the grace ends.
+const RegistrationGrace = 15 * time.Second
+
+// RegistrationLive reports whether a registration has not expired, give or
+// take RegistrationGrace.
+func RegistrationLive(expiresAt, now time.Time) bool {
+	return expiresAt.Add(RegistrationGrace).After(now)
+}

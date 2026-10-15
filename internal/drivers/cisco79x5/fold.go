@@ -147,9 +147,10 @@ func sccpLoad(reported string) bool {
 }
 
 // liveContact reports whether the device holds a registration that has not
-// expired and, when qualify is on, answers it.
+// expired (drivers.RegistrationLive: give or take the grace for a refresh
+// not seen yet) and, when qualify is on, answers it.
 func liveContact(d *agentapi.DeviceObservations, now time.Time, p drivers.Profile) bool {
-	if d == nil || d.Registration == nil || !d.Registration.ExpiresAt.After(now) {
+	if d == nil || d.Registration == nil || !drivers.RegistrationLive(d.Registration.ExpiresAt, now) {
 		return false
 	}
 	return !qualifyFails(d.Registration, p)

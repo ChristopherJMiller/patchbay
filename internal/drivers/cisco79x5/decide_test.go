@@ -1446,7 +1446,7 @@ func unreachableCases() []decideCase {
 	grace := "its registration lapsed; waiting out the 10 min grace"
 	expired := obsWith(&agentapi.DeviceObservations{
 		Fetches:      []agentapi.Fetch{sepFetch(ago(30*time.Minute), vNow)},
-		Registration: contact(ago(time.Second)),
+		Registration: contact(ago(drivers.RegistrationGrace + time.Second)),
 		Web:          web(sip45, ""),
 	})
 	qualify := registeredObs(vNow, 0)

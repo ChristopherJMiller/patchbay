@@ -87,7 +87,7 @@ func TestFold(t *testing.T) {
 		},
 		{
 			name: "FirstSeen stays nil with only an expired contact",
-			dev:  &agentapi.DeviceObservations{Device: testID, Registration: contact(0)},
+			dev:  &agentapi.DeviceObservations{Device: testID, Registration: contact(-drivers.RegistrationGrace)},
 			want: drivers.Memory{},
 		},
 		{
@@ -116,7 +116,7 @@ func TestFold(t *testing.T) {
 			name: "Address: a registration after the latest fetch keeps its address",
 			mem:  drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.51", LastRegistered: mt(-time.Minute)},
 			dev: &agentapi.DeviceObservations{Device: testID, Fetches: []agentapi.Fetch{served(-time.Hour, "")},
-				Registration: contact(-time.Second)},
+				Registration: contact(-drivers.RegistrationGrace - time.Second)},
 			want: drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.51", LastRegistered: mt(-time.Minute)},
 		},
 		{
@@ -212,9 +212,15 @@ func TestFold(t *testing.T) {
 				LastConfigFetch: &v1alpha1.ConfigFetch{Version: vNew, At: *mt(-5 * time.Second)}},
 		},
 		{
-			name: "a contact expiring now is not live",
+			name: "a contact that expired 14 s ago is live: its refresh is not seen yet",
 			mem:  drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.9", LastRegistered: mt(-time.Hour)},
-			dev:  &agentapi.DeviceObservations{Device: testID, Registration: contact(0)},
+			dev:  &agentapi.DeviceObservations{Device: testID, Registration: contact(-14 * time.Second)},
+			want: drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.51", LastRegistered: mt(0)},
+		},
+		{
+			name: "a contact that expired the grace ago is not live",
+			mem:  drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.9", LastRegistered: mt(-time.Hour)},
+			dev:  &agentapi.DeviceObservations{Device: testID, Registration: contact(-drivers.RegistrationGrace)},
 			want: drivers.Memory{FirstSeen: mt(-time.Hour), Address: "192.168.0.9", LastRegistered: mt(-time.Hour)},
 		},
 		{

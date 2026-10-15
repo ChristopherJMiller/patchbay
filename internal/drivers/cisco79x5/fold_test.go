@@ -233,9 +233,18 @@ func TestFold(t *testing.T) {
 			},
 		},
 		{
-			name: "a contact expiring now is not live",
+			// The phone refreshes 5 s before expiry, and the controller sees the
+			// refresh up to two polls later: a contact just past its expiry is
+			// still live (drivers.RegistrationGrace).
+			name: "a contact that expired 14 s ago is live: its refresh is not seen yet",
 			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastRegistered: mt(ago(time.Hour))},
-			d:    &agentapi.DeviceObservations{Registration: contact(t0)},
+			d:    &agentapi.DeviceObservations{Registration: contact(ago(14 * time.Second))},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastRegistered: mt(t0)},
+		},
+		{
+			name: "a contact that expired the grace ago is not live",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastRegistered: mt(ago(time.Hour))},
+			d:    &agentapi.DeviceObservations{Registration: contact(ago(drivers.RegistrationGrace))},
 			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastRegistered: mt(ago(time.Hour))},
 		},
 		{
@@ -382,7 +391,7 @@ func TestFold(t *testing.T) {
 		{
 			name: "firmware: without a contact an SCCP load stands",
 			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45, LastRegistered: mt(ago(time.Hour))},
-			d:    &agentapi.DeviceObservations{Registration: contact(t0)},
+			d:    &agentapi.DeviceObservations{Registration: contact(ago(drivers.RegistrationGrace))},
 			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Firmware: sccp45, LastRegistered: mt(ago(time.Hour))},
 		},
 

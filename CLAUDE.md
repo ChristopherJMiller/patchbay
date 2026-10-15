@@ -215,6 +215,12 @@ departs from it, the departure is recorded here (and in the code's docs).
   Each UnknownPhone Event names its MAC in `related` (else client-go joins
   them into one series with the first note); at most 16 go out at once and
   one per 30 s after, and only MACs the agent still lists are remembered.
+- **A registration is live for 15 s past its expiry**
+  (`drivers.RegistrationGrace`; §8 says a lapsed registration is no
+  contact): the 79x5 refreshes 5 s before expiry and the controller sees
+  the refresh up to two 5 s polls later, so without it a healthy phone
+  flickered to Unreachable. The e2e fakephone's cisco mode refreshes 5 s
+  before expiry too.
 - **Text from devices is bounded**: the agent keeps each scraped field to
   128 bytes and each log line to 256, control characters as spaces; the
   controller cuts condition messages and human actions at 2048 bytes and

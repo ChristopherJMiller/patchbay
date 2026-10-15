@@ -684,7 +684,7 @@ func (in *input) registeredCondition() metav1.Condition {
 			msg += ", " + r.UserAgent
 		}
 		return drivers.Condition(t, metav1.ConditionTrue, ReasonContact, msg)
-	case in.d != nil && in.d.Registration != nil && in.d.Registration.ExpiresAt.After(in.now) && qualifyFails(in.d.Registration, in.p):
+	case in.d != nil && in.d.Registration != nil && drivers.RegistrationLive(in.d.Registration.ExpiresAt, in.now) && qualifyFails(in.d.Registration, in.p):
 		return drivers.Condition(t, metav1.ConditionFalse, ReasonQualifyFailed, in.d.Registration.Contact+" does not answer OPTIONS")
 	default:
 		return drivers.Condition(t, metav1.ConditionFalse, ReasonNoContact, "no SIP registration")

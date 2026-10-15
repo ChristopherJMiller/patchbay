@@ -20,7 +20,7 @@ import (
 // its firmware, the .sgn of a factory reset, the web server down while it
 // "boots" and up again with the new load, a signal, then REGISTER over TCP
 // with the parsed credentials and the config's expiry, refreshed at half
-// what the PBX granted.
+// what the PBX granted (a grant of 2 s: under twice the 79x5's 5 s delta).
 func TestRunCiscoLifecycle(t *testing.T) {
 	const password = "not-a-secret-lifecycle"
 	pbx, ts, opts := deskPhone(t, password)
@@ -433,4 +433,27 @@ func TestRegisteredLapsesWhenRefreshesFail(t *testing.T) {
 	}
 	pbx.setDeskPassword(password)
 	h.waitState(5*time.Second, "a refresh to succeed again", func(s script.State) bool { return s.Registered })
+}
+
+// TestRefreshAfter: a 79x5 refreshes 5 s before its registration expires
+// (its SEP file's timerRegisterDelta), so the cisco mode does too; the
+// linphone mode, and very short grants, at half.
+func TestRefreshAfter(t *testing.T) {
+	for _, tc := range []struct {
+		mode    script.Mode
+		granted int
+		want    time.Duration
+	}{
+		{script.ModeCisco, 600, 595 * time.Second},
+		{script.ModeCisco, 11, 6 * time.Second},
+		{script.ModeCisco, 10, 5 * time.Second},
+		{script.ModeCisco, 2, time.Second},
+		{script.ModeLinphone, 600, 300 * time.Second},
+		{script.ModeCisco, 0, 7 * time.Second},
+	} {
+		r := newRunner(script.Script{Mode: tc.mode}, runOptions{RetryAfter: 7 * time.Second})
+		if got := r.refreshAfter(tc.granted); got != tc.want {
+			t.Errorf("%s, granted %d s: refresh after %s, want %s", tc.mode, tc.granted, got, tc.want)
+		}
+	}
 }

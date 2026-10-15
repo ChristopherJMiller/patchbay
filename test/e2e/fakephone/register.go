@@ -151,9 +151,8 @@ func (r *runner) sendRegister(ctx context.Context, acc account, expires, cfgExpi
 	return rec.Status, rec.Granted, nil
 }
 
-// startRefreshing starts the refresher: it re-REGISTERs at half the
-// granted expiry, and at once when kicked (a NOTIFY brought new
-// credentials).
+// startRefreshing starts the refresher: it re-REGISTERs at refreshAfter
+// the grant, and at once when kicked (a NOTIFY brought new credentials).
 func (r *runner) startRefreshing(granted, stepExpires int) {
 	ctx, cancel := context.WithCancel(r.ctx)
 	done, kick := make(chan struct{}), make(chan struct{}, 1)
@@ -182,13 +181,26 @@ func (r *runner) stopRefreshing() {
 	r.log.Info("refreshing", "stopped", true)
 }
 
-// refreshAfter is half the granted expiry, or the retry delay when nothing
+// ciscoRegisterDelta is how long before its registration expires a 79x5
+// refreshes it: the timerRegisterDelta its SEP file sets (cisco79x5's
+// render). Linphone refreshes earlier, which half the grant stands for.
+const ciscoRegisterDelta = 5 * time.Second
+
+// refreshAfter is when to refresh a registration granted for granted
+// seconds: in cisco mode ciscoRegisterDelta before it expires, as the real
+// phone does (so the controller's grace for a refresh it has not seen yet,
+// drivers.RegistrationGrace, is exercised), otherwise, or for a grant of
+// twice the delta or less, half the grant; the retry delay when nothing
 // was granted.
 func (r *runner) refreshAfter(granted int) time.Duration {
 	if granted <= 0 {
 		return r.opts.RetryAfter
 	}
-	return time.Duration(granted) * time.Second / 2
+	g := time.Duration(granted) * time.Second
+	if r.sc.Mode == script.ModeCisco && g > 2*ciscoRegisterDelta {
+		return g - ciscoRegisterDelta
+	}
+	return g / 2
 }
 
 func (r *runner) refresh(ctx context.Context, done chan<- struct{}, kick <-chan struct{}, next time.Duration) {
