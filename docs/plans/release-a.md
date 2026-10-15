@@ -3738,14 +3738,6 @@ The five inputs most likely to break a real user that no test covers yet.
   that fetched its config, or registered, from that address. A phone that
   downloads firmware before it fetches its config would not be seen
   Upgrading. The 79x5 reads its config first to learn its load (bench: §8).
-- *(W3, found in e2e)* **A refused version is applied once more when
-  `pbx-secrets` is rewritten with the same values** (only the controller's
-  `bundle-version` annotation changing, as after someone wrote
-  `pbx-config` by hand): the agent's intake keys a failure by the Secret's
-  resourceVersion, so it applies and verifies the refused version again,
-  holding its one worker for the 30 s verification, and a fixed version
-  written meanwhile waits. Nothing is lost; the next version applies after
-  it.
 - *(W3)* **A restarted controller reports what it finds in `pbx-config`**
   (6.2.1, "how the device reconcilers read the compiled index"): if that
   bundle was written by hand and refused, devices show `ApplyFailed` for

@@ -3,6 +3,7 @@ package intake_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -259,13 +260,21 @@ func TestRetryPolicy(t *testing.T) {
 	h.fireLast()
 	h.expectCalls("apply "+v1, "apply "+v1)
 
-	// A new Secret resourceVersion retries at once.
+	// The Secret rewritten with the same values (only its resourceVersion,
+	// or the controller's annotation, changes) is the same attempt: the
+	// refused version is not applied, and verified for 30 s, once more.
 	h.failNext(errors.New("reload res_pjsip.so: boom"))
 	h.putSecret(intaketest.Secret(ns, secretName, "11", data))
+	h.expectCalls("apply "+v1, "apply "+v1)
+	// New values retry at once.
+	changed := maps.Clone(data)
+	changed["unrelated_key"] = []byte("not-a-secret-x")
+	h.putSecret(intaketest.Secret(ns, secretName, "12", changed))
 	h.expectCalls("apply "+v1, "apply "+v1, "apply "+v1)
 
 	// So does a new bundle version; it applies, and is never applied again:
 	// not on a rewrite, not on a timer left from the failure.
+	h.putSecret(intaketest.Secret(ns, secretName, "13", data))
 	h.updateCM(intaketest.ConfigMap(t, ns, cmName, b2))
 	h.expectCalls("apply "+v1, "apply "+v1, "apply "+v1, "apply "+v2)
 	cm = intaketest.ConfigMap(t, ns, cmName, b2)
@@ -422,7 +431,10 @@ func TestNoSecretInLogs(t *testing.T) {
 	h.failNext(errors.New("verify: endpoints missing phone-desk"))
 	h.putSecret(intaketest.Secret(ns, secretName, "2", data))
 	h.expectCalls("refuse "+b.Version[:4], "apply "+b.Version[:4])
-	h.putSecret(intaketest.Secret(ns, secretName, "3", data))
+	// New values (an extra key) retry it.
+	more := maps.Clone(data)
+	more["unrelated_key"] = []byte("not-a-secret-y")
+	h.putSecret(intaketest.Secret(ns, secretName, "3", more))
 	h.expectCalls("refuse "+b.Version[:4], "apply "+b.Version[:4], "apply "+b.Version[:4])
 
 	mu.Lock()

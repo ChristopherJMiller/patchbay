@@ -23,10 +23,13 @@
 // version.
 //
 // Retries (docs/plans/release-a.md §5.2.1): an attempt is keyed by the
-// bundle version and the Secret's resourceVersion. A pair that failed is
-// tried again when either changes, or RetryAfter after it failed; the
-// pair last applied is never applied again (an informer resync, or a
-// ConfigMap rewritten with the same version, does nothing).
+// bundle version and a digest of the Secret's values (not its
+// resourceVersion: the controller rewrites pbx-secrets with the same values
+// when only its bundle-version annotation changes, and a refused version
+// must not be applied, and verified for 30 s, once more for that). A pair
+// that failed is tried again when either changes, or RetryAfter after it
+// failed; the pair last applied is never applied again (an informer
+// resync, or either object rewritten with the same content, does nothing).
 //
 // No secret value reaches a log line or an error: the Secret object is
 // never logged, and Resolve's errors name keys only.
@@ -34,9 +37,13 @@ package intake
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -118,7 +125,7 @@ type Intake struct {
 
 // pair keys an attempt: the bundle (its version, or the ConfigMap's
 // resourceVersion when no valid version can be read) and the Secret's
-// resourceVersion.
+// values (valuesKey).
 type pair struct {
 	bundle string
 	secret string
@@ -224,7 +231,7 @@ func (i *Intake) sync(ctx context.Context) time.Duration {
 	i.waiting = ""
 
 	version, b, decodeErr := decode(cm)
-	key := pair{bundle: version, secret: secret.ResourceVersion}
+	key := pair{bundle: version, secret: valuesKey(secret.Data)}
 	if version == "" {
 		key.bundle = "configmap@" + cm.ResourceVersion
 	}
@@ -276,6 +283,17 @@ func (i *Intake) sync(ctx context.Context) time.Duration {
 	}
 	i.applied, i.failed = key, pair{}
 	return 0
+}
+
+// valuesKey is a SHA-256 over a Secret's keys and values, sorted: equal
+// for two writes of the same values. Held in memory only, never logged.
+func valuesKey(data map[string][]byte) string {
+	h := sha256.New()
+	for _, k := range slices.Sorted(maps.Keys(data)) {
+		fmt.Fprintf(h, "%d:%s=%d:", len(k), k, len(data[k]))
+		h.Write(data[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // awaitSecret is how long a new version still waits for its own Secret

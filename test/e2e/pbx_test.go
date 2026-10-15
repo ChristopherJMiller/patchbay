@@ -593,17 +593,13 @@ func TestRollback(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the controller did not write its own version %.12s back: %v", goodVersion, err)
 			}
-			// The controller wrote pbx-secrets (its version's annotation)
-			// before pbx-config: if the agent's intake saw the new Secret
-			// while pbx-config still held the refused version, it applies
-			// that version again and spends its 30 s verifying it (plan
-			// §11), and the reissue waits behind it, past the CLI's 30 s.
-			// Then a second reissue finds the agent idle.
+			// The controller wrote pbx-secrets (its version's annotation, the
+			// same values) before pbx-config. The agent's intake keys an
+			// attempt by the Secret's values, not its resourceVersion, so it
+			// does not apply the refused version again (and spend 30 s
+			// verifying it) on that Secret: the reissue applies at once.
 			if _, err := h.patchbay(ctx, "softphone", "qr", laptopName, "--reissue"); err != nil {
-				t.Logf("the first reissue timed out behind the agent's re-verification: %v", err)
-				if _, err := h.patchbay(ctx, "softphone", "qr", laptopName, "--reissue"); err != nil {
-					t.Fatalf("patchbay softphone qr --reissue: %v", err)
-				}
+				t.Fatalf("patchbay softphone qr --reissue: %v", err)
 			}
 			b := h.waitApplied(ctx, t, 2*time.Minute)
 			if b.Version == goodVersion {
