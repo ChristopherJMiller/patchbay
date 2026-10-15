@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -43,11 +44,11 @@ observations document.`,
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		ctrl.SetLogger(zap.New(zap.UseFlagOptions(zapOpts)))
 		log := ctrl.Log.WithName("agent")
-		token, err := agentToken(tokenFile)
+		tokens, err := agentTokens(tokenFile, log)
 		if err != nil {
 			return err
 		}
-		h, err := agent.NewHandler(agent.Options{Token: token, Log: log})
+		h, err := agent.NewHandler(agent.Options{Tokens: tokens, Log: log})
 		if err != nil {
 			return err
 		}
@@ -57,20 +58,18 @@ observations document.`,
 	return cmd
 }
 
-// agentToken reads the token from file, or from the environment.
-func agentToken(file string) (string, error) {
+// agentTokens returns the control API's token source: the token file,
+// re-read whenever its Secret changes, or else the environment's fixed token.
+func agentTokens(file string, log logr.Logger) (func() []string, error) {
 	if file != "" {
-		raw, err := os.ReadFile(file) //nolint:gosec // G304: the path is an operator-supplied flag.
+		f, err := agent.NewTokenFile(file, agent.DefaultTokenGrace, nil, log.WithName("token"))
 		if err != nil {
-			return "", fmt.Errorf("reading --token-file: %w", err)
+			return nil, fmt.Errorf("--token-file: %w", err)
 		}
-		if tok := strings.TrimSpace(string(raw)); tok != "" {
-			return tok, nil
-		}
-		return "", fmt.Errorf("--token-file %s is empty", file)
+		return f.Tokens, nil
 	}
 	if tok := strings.TrimSpace(os.Getenv(agentTokenEnv)); tok != "" {
-		return tok, nil
+		return agent.StaticToken(tok), nil
 	}
-	return "", errors.New("agent: no control API token: pass --token-file or set " + agentTokenEnv)
+	return nil, errors.New("agent: no control API token: pass --token-file or set " + agentTokenEnv)
 }

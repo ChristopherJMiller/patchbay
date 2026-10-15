@@ -10,6 +10,16 @@
 //
 // Today it serves only the control API's skeleton: health probes, an
 // observations document with nothing observed, and actions that answer 501.
+//
+// Notes for the phases that fill it in:
+//   - The live directory's layout is in internal/compile/layout.go. Serve
+//     each tree from its own root (an os.Root on current/tftp, current/http,
+//     ...), never the whole volume: current/asterisk holds every password.
+//   - The control API token is re-read when its Secret changes (TokenFile).
+//     The AMI password lives in manager.conf, which apply's module reloads do
+//     not touch: when the compiled AMI user changes, apply must also run
+//     `manager reload` over the session it already holds, then reconnect
+//     with the new password.
 package agent
 
 import (
@@ -20,6 +30,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,8 +42,11 @@ import (
 
 // Options configures the control API.
 type Options struct {
-	// Token is the bearer token every /v1 request must carry. Required.
-	Token string
+	// Tokens returns the bearer tokens a /v1 request may carry right now.
+	// Required. A TokenFile re-reads the mounted token Secret, so a
+	// regenerated token takes effect without a restart; StaticToken is for
+	// tests and the environment.
+	Tokens func() []string
 
 	// Ready reports whether the agent is ready (the native sidecar's startup
 	// probe). Nil means always ready. Once apply exists, ready means "the
@@ -49,7 +63,7 @@ type Options struct {
 
 // NewHandler returns the control API handler.
 func NewHandler(opts Options) (http.Handler, error) {
-	if opts.Token == "" {
+	if opts.Tokens == nil || !slices.ContainsFunc(opts.Tokens(), func(t string) bool { return t != "" }) {
 		return nil, errors.New("agent: a control API token is required")
 	}
 	if opts.Now == nil {
@@ -82,17 +96,30 @@ type server struct {
 	started time.Time
 }
 
-// auth requires "Authorization: Bearer <token>", compared in constant time.
+// auth requires "Authorization: Bearer <token>" with a token that
+// Options.Tokens accepts now.
 func (s *server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(s.opts.Token)) != 1 {
+		if !ok || !accepted(got, s.opts.Tokens()) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="patchbay-agent"`)
 			writeJSON(w, http.StatusUnauthorized, api.Error{Error: "missing or wrong agent token"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// accepted reports whether got is one of tokens. Every token is compared in
+// constant time; an empty token never matches.
+func accepted(got string, tokens []string) bool {
+	match := 0
+	for _, t := range tokens {
+		if t != "" {
+			match |= subtle.ConstantTimeCompare([]byte(got), []byte(t))
+		}
+	}
+	return match == 1
 }
 
 func (s *server) observations(w http.ResponseWriter, _ *http.Request) {

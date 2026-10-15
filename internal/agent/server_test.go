@@ -23,7 +23,7 @@ var pinned = time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 
 func newTestServer(t *testing.T, ready func() error) *httptest.Server {
 	t.Helper()
-	h, err := NewHandler(Options{Token: token, Ready: ready, Now: func() time.Time { return pinned }, Log: logr.Discard()})
+	h, err := NewHandler(Options{Tokens: StaticToken(token), Ready: ready, Now: func() time.Time { return pinned }, Log: logr.Discard()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestServeShutsDownOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewHandler(Options{Token: token})
+	h, err := NewHandler(Options{Tokens: StaticToken(token)})
 	if err != nil {
 		t.Fatal(err)
 	}
