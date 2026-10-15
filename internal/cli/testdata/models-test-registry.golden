@@ -1,0 +1,72 @@
+driver testab
+
+  model test-a
+    hardware        2 line keys, 4 softkeys
+    display         320x240, service area 298x156
+    wallpaper       320x212, thumbnail 80x53
+    ringtones       raw µ-law, 8 kHz
+    codecs          g722, ulaw, alaw
+    config file     SEP{MAC}.cnf.xml
+    firmware        TESTA.1-0-0S by default
+    labels          screen label at most 12 characters, line label at most 30
+    password        12 characters, letters and digits
+    resync          by NOTIFY (service-control)
+    endpoint        tcp; allow g722, ulaw; qualify off; registration expiry 600s
+                    force_rport no, rewrite_contact no, rtp_symmetric no, direct_media no
+                    send_rpid yes, send_pai no, trust_id_outbound yes
+    pjsip features  supported: hold, wideband
+                    untested: transfer
+                    unsupported: blf, and every feature not listed
+
+  model test-b
+    hardware        2 line keys, 4 softkeys
+    display         320x240, service area 298x156
+    wallpaper       320x212, thumbnail 80x53
+    ringtones       raw µ-law, 8 kHz
+    codecs          g722, ulaw, alaw
+    config file     SEP{MAC}.cnf.xml
+    firmware        TESTB.2-0-0S by default
+    labels          screen label at most 12 characters, line label at most 30
+    password        12 characters, letters and digits
+    resync          by NOTIFY (service-control)
+    endpoint        tcp; allow g722, ulaw; qualify off; registration expiry 600s
+                    force_rport no, rewrite_contact no, rtp_symmetric no, direct_media no
+                    send_rpid yes, send_pai no, trust_id_outbound yes
+    pjsip features  supported: hold, wideband
+                    untested: transfer
+                    unsupported: blf, and every feature not listed
+
+  firmware load TESTA.1-0-0S
+    source          generated test zip A
+    models          test-a
+    files
+      a.sbn                 2300  c963550a320db2b6ef66986ea610b3631a50c265d3dc6dc2b6bd19d51086261d
+      TESTA.1-0-0S.loads    2950  1f0a0fdf73920e07d1a46cb9efab965b287608e6a5f5fa99de3bf85098d6b42d
+      term45.default.loads  3050  1c3d9088859cb37d2b80907655f95a652607bb495b24bad8f6e9ffc6d8bb8ec8  shared
+
+  firmware load TESTB.2-0-0S
+    source          generated test zip B
+    models          test-b
+    files
+      b.sbn                 2300  6262768b3bc27b169e6ab0f90abcb110b8fe792e23beb9c178fa30430d6425d3
+      term45.default.loads  3050  804e48173f969f332f94ee77a60d3db70f9d1439d340377547a0fc12ce4cedf6  shared
+
+driver testp
+
+  model test-p
+    codecs          ulaw
+    config file     provisioning/{ID}.xml
+    firmware        TESTP.0-0-0S by default
+    labels          line label at most 64
+    password        24 characters from ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+    resync          not by NOTIFY
+    endpoint        udp; allow ulaw; qualify every 60s; registration expiry 300s
+                    force_rport yes, rewrite_contact yes, rtp_symmetric yes, direct_media no
+                    send_rpid no, send_pai yes, trust_id_outbound no
+    features        none listed: every feature is unsupported
+
+  firmware load TESTP.0-0-0S (SHA-256 pending for 1 of 1 files: not loadable yet)
+    source          a zip nobody has yet
+    models          test-p
+    files
+      p.sbn  1234  pending
