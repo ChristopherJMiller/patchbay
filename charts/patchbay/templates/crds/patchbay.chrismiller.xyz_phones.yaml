@@ -27,6 +27,12 @@ spec:
         - jsonPath: .status.state
           name: State
           type: string
+        - jsonPath: .status.conditions[?(@.type=="Ready")].status
+          name: Ready
+          type: string
+        - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+          name: Reason
+          type: string
         - jsonPath: .spec.model
           name: Model
           priority: 1

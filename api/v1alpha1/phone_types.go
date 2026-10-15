@@ -144,6 +144,8 @@ type PhoneStatus struct {
 // +kubebuilder:printcolumn:name="Number",type=string,JSONPath=`.spec.number`
 // +kubebuilder:printcolumn:name="Label",type=string,JSONPath=`.spec.label`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Model",type=string,JSONPath=`.spec.model`,priority=1
 // +kubebuilder:printcolumn:name="MAC",type=string,JSONPath=`.spec.mac`,priority=1
 // +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.status.observed.address`,priority=1

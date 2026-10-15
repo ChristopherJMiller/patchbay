@@ -468,3 +468,42 @@ func TestChartAgentKnowsItsSIPBind(t *testing.T) {
 		t.Error("a new SIP port does not roll the PBX pod")
 	}
 }
+
+// TestChartDeviceColumns: `kubectl get phones|softphones` shows Ready and
+// its reason beside State. During an agent or PBX outage Decide keeps
+// status.state at the last state (design §8.3's Unknown row), so State
+// alone would read Registered all through it.
+func TestChartDeviceColumns(t *testing.T) {
+	m := render(t)
+	for _, crd := range []string{"phones", "softphones"} {
+		var c struct {
+			Spec struct {
+				Versions []struct {
+					Columns []struct {
+						Name     string `json:"name"`
+						JSONPath string `json:"jsonPath"`
+						Priority int    `json:"priority"`
+					} `json:"additionalPrinterColumns"`
+				} `json:"versions"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal(m.docs["CustomResourceDefinition/"+crd+".patchbay.chrismiller.xyz"], &c); err != nil || len(c.Spec.Versions) == 0 {
+			t.Fatalf("CRD %s: %v", crd, err)
+		}
+		got := map[string]string{}
+		for _, col := range c.Spec.Versions[0].Columns {
+			if col.Priority == 0 {
+				got[col.Name] = col.JSONPath
+			}
+		}
+		for name, path := range map[string]string{
+			"State":  ".status.state",
+			"Ready":  `.status.conditions[?(@.type=="Ready")].status`,
+			"Reason": `.status.conditions[?(@.type=="Ready")].reason`,
+		} {
+			if got[name] != path {
+				t.Errorf("%s: column %s is %q, want %q (priority 0)", crd, name, got[name], path)
+			}
+		}
+	}
+}

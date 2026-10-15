@@ -101,6 +101,8 @@ type SoftphoneStatus struct {
 // +kubebuilder:printcolumn:name="Number",type=string,JSONPath=`.spec.number`
 // +kubebuilder:printcolumn:name="Label",type=string,JSONPath=`.spec.label`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 type Softphone struct {
 	metav1.TypeMeta `json:",inline"`
