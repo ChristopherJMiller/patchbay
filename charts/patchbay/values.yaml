@@ -1,11 +1,13 @@
 # patchbay chart values. The design is docs/design.md; §6 covers the chart.
 #
 # One install is one PBX: the controller (any node) plus the PBX pod
-# (Asterisk + the agent) pinned to pbx.nodeName on the host network.
+# (Asterisk, the agent and the file server) pinned to pbx.nodeName on the
+# host network.
 # The namespace must allow hostNetwork pods, e.g. the label
 # pod-security.kubernetes.io/enforce=privileged.
 
-# The patchbay image: one binary that runs the controller and the agent.
+# The patchbay image: one binary that runs the controller, the agent and the
+# file server.
 image:
   repository: ghcr.io/christopherjmiller/patchbay
   # Defaults to the chart's appVersion.
@@ -41,8 +43,10 @@ pbx:
   # Required. Phones are provisioned with this node's address, so the PBX
   # never moves on its own.
   nodeName: ""
-  # The address Asterisk binds SIP to and advertises in SDP: pbx.nodeName's
-  # LAN IP (e.g. 192.168.0.240). Required.
+  # The address Asterisk binds SIP to and advertises in SDP, and the file
+  # server and device HTTP bind: pbx.nodeName's LAN IP (e.g.
+  # 192.168.0.240). Required. Changing it restarts the PBX pod (the SIP
+  # transports are not reloadable).
   address: ""
 
   # Ports bound on the node (hostNetwork). None clashes with Talos or
@@ -54,17 +58,18 @@ pbx:
     # port ranges); the router's voice-VLAN filter must match this range.
     rtpStart: 10000
     rtpEnd: 10099
-    # Agent: TFTP (phone config and firmware), UDP.
+    # File server: TFTP (phone config and firmware), UDP.
     tftp: 69
-    # Agent: Cisco HTTP config download (9.x phones try it before TFTP), TCP.
+    # File server: Cisco HTTP config download (9.x phones try it before
+    # TFTP), the same files as TFTP, TCP.
     ciscoHTTP: 6970
     # Agent: device HTTP (directory, softphone provisioning, XML services), TCP.
     deviceHTTP: 8088
     # Agent: control API for the controller (token-protected), TCP.
     control: 9440
 
-  # Shared by both containers: the group that owns the live-config volume
-  # the agent writes and Asterisk reads.
+  # The pod's fsGroup: the group the agent gives every live config file
+  # Asterisk must read (Asterisk's own group). The file server drops it.
   fsGroup: 1000
   podAnnotations: {}
   # The pod is pinned by nodeSelector; add tolerations if that node is tainted.
@@ -98,7 +103,10 @@ pbx:
     # §4); until it does, create it before installing:
     #   kubectl create secret generic <fullname>-agent-token \
     #     --from-literal=token="$(head -c 32 /dev/urandom | base64)"
-    # The PBX pod waits in ContainerCreating until the Secret exists.
+    # The PBX pod waits in ContainerCreating until the Secret exists. The
+    # agent then waits for <fullname>-pbx-config and <fullname>-pbx-secrets,
+    # the compiled bundle the controller writes; Asterisk starts once the
+    # first version is applied.
     tokenSecretName: ""
     logLevel: info
     resources:
@@ -108,20 +116,24 @@ pbx:
       limits:
         memory: 128Mi
 
-  # TEMPORARY, e2e only. A hand-written Asterisk config (one endpoint, an
-  # echo test) mounted straight into Asterisk, until the agent applies
-  # compiled bundles (design §5). Never enable it in a real install.
-  staticConfig:
-    enabled: false
-    # The one PJSIP endpoint (also its auth username).
-    endpoint: e2e-phone
-    # A test-only password. Required when enabled.
-    password: ""
-    # Dialling this answers and echoes audio back.
-    echoNumber: "600"
+  # The file server (patchbay fileserver): TFTP and HTTP :6970. It starts as
+  # root with only NET_BIND_SERVICE, SETUID and SETGID, binds both ports on
+  # pbx.address, then drops to 65533:65533 with no groups and no
+  # capabilities before it opens a file (docs/e2e.md, "Privileged ports").
+  fileserver:
+    logLevel: info
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
 
-# The firmware store: Cisco firmware staged by `patchbay firmware load`.
-# Never in git (design §12). The PBX pod is pinned, so ReadWriteOnce is fine.
+# The PBX's persistent volume, mounted whole: the firmware store (Cisco
+# firmware staged by `patchbay firmware load`, never in git, design §12) and
+# the agent's spent provisioning tokens. Read-write in the agent, read-only
+# in the file server. Without persistence it is an emptyDir, and both are
+# lost with the pod. The PBX pod is pinned, so ReadWriteOnce is fine.
 firmware:
   persistence:
     enabled: true
@@ -131,8 +143,8 @@ firmware:
     # Keep the volume on `helm uninstall`; restaging firmware is manual.
     keep: true
 
-# A prometheus-operator PodMonitor for the controller's metrics (the agent
-# joins once it exports metrics).
+# A prometheus-operator PodMonitor for the controller's metrics and the
+# agent's (/metrics on its control port, no token).
 podMonitor:
   enabled: false
   # Without release: prometheus, this cluster's Prometheus ignores it.

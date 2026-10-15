@@ -65,7 +65,7 @@ const DirectoryFile = TreeHTTP + "/directory.xml"
 //	  v<version>/provisioning/...  device HTTP :8088, per one-time token
 //
 // The chart hard-codes the same paths (charts/patchbay/templates/pbx.yaml);
-// TestChartUsesTheLiveLayout keeps them in step.
+// test/chart's TestChartUsesTheLiveLayout renders it and keeps them in step.
 const (
 	// LiveDir is where the PBX pod mounts the live-config volume, in the
 	// agent and in Asterisk.

@@ -1,8 +1,6 @@
 package compile_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -164,27 +162,5 @@ func TestLiveLayout(t *testing.T) {
 	}
 	if _, err := compile.TreeOf(compile.DirectoryFile); err != nil {
 		t.Fatalf("DirectoryFile: %v", err)
-	}
-}
-
-// TestChartUsesTheLiveLayout keeps the chart's hard-coded paths in step with
-// the layout: the live-config volume mounted at LiveDir in both containers,
-// and Asterisk started with -C through the current symlink.
-func TestChartUsesTheLiveLayout(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "patchbay", "templates", "pbx.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	chart := string(raw)
-	for _, want := range []string{
-		"mountPath: " + compile.LiveDir,
-		compile.AsteriskConfigDir + "/asterisk.conf",
-	} {
-		if !strings.Contains(chart, want) {
-			t.Errorf("charts/patchbay/templates/pbx.yaml does not contain %q", want)
-		}
-	}
-	if n := strings.Count(chart, "mountPath: "+compile.LiveDir+"\n"); n != 2 {
-		t.Errorf("the live-config volume is mounted at %s %d times, want 2 (agent and Asterisk)", compile.LiveDir, n)
 	}
 }

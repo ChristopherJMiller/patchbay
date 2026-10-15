@@ -17,9 +17,6 @@ pbx:
   address: 192.0.2.10
   agent:
     tokenSecretName: my-agent-token
-  staticConfig:
-    enabled: true
-    password: lint-only-password
 firmware:
   persistence:
     storageClassName: fast

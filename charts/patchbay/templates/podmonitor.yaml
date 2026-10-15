@@ -1,6 +1,8 @@
 {{- if .Values.podMonitor.enabled -}}
-# Scrapes the controller's metrics. The agent joins once it exports metrics
-# (design §7). Needs the prometheus-operator CRDs.
+# Scrapes the controller's metrics (its metrics port) and the agent's
+# (/metrics on the control port, which needs no token; design §7). Each
+# endpoint names a port only one of the two pods has. Needs the
+# prometheus-operator CRDs.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -14,9 +16,17 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "controller") | nindent 6 }}
+      app.kubernetes.io/name: {{ include "patchbay.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [controller, pbx]
   podMetricsEndpoints:
     - port: metrics
+      path: /metrics
+      interval: {{ .Values.podMonitor.interval }}
+    - port: control
       path: /metrics
       interval: {{ .Values.podMonitor.interval }}
 {{- end }}

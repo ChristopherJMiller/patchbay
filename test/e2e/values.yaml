@@ -21,13 +21,8 @@ pbx:
       pullPolicy: Never
   agent:
     logLevel: debug
-  # TEMPORARY: the hand-written Asterisk config, until the agent applies.
-  staticConfig:
-    enabled: true
-    endpoint: e2e-phone
-    # A fixed, test-only password on a throwaway cluster. Not a secret.
-    password: e2e-only-not-a-secret
-    echoNumber: "600"
+  fileserver:
+    logLevel: debug
 
 firmware:
   persistence:

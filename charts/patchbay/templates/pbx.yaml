@@ -5,18 +5,67 @@
 {{- if lt (int $p.ports.rtpEnd) (int $p.ports.rtpStart) -}}
 {{- fail "pbx.ports.rtpEnd must not be below pbx.ports.rtpStart" -}}
 {{- end -}}
-# The PBX pod (design §6): Asterisk plus the agent as a native sidecar, on the
-# host network of one pinned node. The agent senses and acts; it never
-# decides, and today it holds no Kubernetes credentials at all.
+{{- $asteriskConf := include "patchbay.asteriskConf" . -}}
+{{- $modules := include "patchbay.asteriskModules" . -}}
+{{- $agentSA := include "patchbay.agentServiceAccountName" . -}}
+# The PBX pod (design §6) on the host network of one pinned node:
+#   asterisk-modules  init: copies exactly the compiled module list out of the
+#                     Asterisk image, for Asterisk's module directory
+#   agent             native sidecar: applies config bundles, device HTTP,
+#                     AMI, observations; the only container with Kubernetes
+#                     credentials, the control API token and the AMI password
+#   asterisk          SIP and RTP, on the agent's live config
+#   fileserver        TFTP :69 and HTTP :6970, root only long enough to bind
+# The paths below are internal/compile/layout.go's and internal/agent/layout's;
+# test/chart renders this chart and keeps them in step.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "patchbay.agentServiceAccountName" . }}
+  name: {{ $agentSA }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "patchbay.labels" . | nindent 4 }}
     app.kubernetes.io/component: pbx
+# Only the agent gets a token, projected into its own container below.
 automountServiceAccountToken: false
+---
+# The agent reads exactly two objects: the compiled bundle and its projected
+# Secret (docs/plans/release-a.md §5.2.1). List and watch with resourceNames
+# work because its informers select each object by metadata.name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pbx
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [{{ $fullname }}-pbx-config]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ $fullname }}-pbx-secrets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pbx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-agent
+subjects:
+  - kind: ServiceAccount
+    name: {{ $agentSA }}
+    namespace: {{ .Release.Namespace }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -41,14 +90,17 @@ spec:
         {{- include "patchbay.labels" . | nindent 8 }}
         app.kubernetes.io/component: pbx
       annotations:
-        {{- if $p.staticConfig.enabled }}
-        checksum/static-config: {{ include (print $.Template.BasePath "/pbx-static-config.yaml") . | sha256sum }}
-        {{- end }}
+        # What compiles into files Asterisk cannot reload (asterisk.conf,
+        # modules.conf, the PJSIP transports): the agent applies those files
+        # but only a restart loads them, so a change rolls the pod. Today
+        # each is also in the pod spec; the annotation keeps that true when
+        # the controller's settings (W3) feed the bundle.
+        checksum/asterisk-restart: {{ dict "address" $address "sipPort" (int $p.ports.sip) "modules" $modules | toJson | sha256sum }}
         {{- with $p.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "patchbay.agentServiceAccountName" . }}
+      serviceAccountName: {{ $agentSA }}
       automountServiceAccountToken: false
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
@@ -66,17 +118,51 @@ spec:
       terminationGracePeriodSeconds: {{ $p.terminationGracePeriodSeconds }}
       securityContext:
         runAsNonRoot: true
-        # Both containers get this group: the agent writes the live config
-        # with it, and Asterisk reads it.
+        # The agent writes the live config with this group and Asterisk
+        # reads it through it. The file server drops it with every other
+        # group before it opens a file.
         fsGroup: {{ $p.fsGroup }}
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       initContainers:
-        # Native sidecar (restartPolicy: Always): it starts first, and
-        # Asterisk starts only once its startup probe passes. When apply
-        # exists, /readyz means "the first config version is applied", so
-        # Asterisk never starts without valid config (design §5).
+        # Asterisk's module directory holds exactly the modules the compiled
+        # modules.conf loads: this copies them out of the image into an
+        # emptyDir that Asterisk mounts read-only over its own module
+        # directory, hiding the image's (app_system, func_shell, res_agi,
+        # res_ari, ...). A separate astmoddir would not do: Asterisk loads
+        # "../usr/lib/asterisk/modules/app_system.so" through any of them.
+        # It never mounts the live config, so it never sees a secret.
+        - name: asterisk-modules
+          image: {{ include "patchbay.imageRef" $p.asterisk.image | quote }}
+          imagePullPolicy: {{ $p.asterisk.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - for m in "$@"; do cp /usr/lib/asterisk/modules/"$m" /var/lib/patchbay/asterisk-modules/; done
+            - sh
+          args:
+            {{- $modules | nindent 12 }}
+          securityContext:
+            runAsUser: {{ $p.asterisk.runAsUser }}
+            runAsGroup: {{ $p.asterisk.runAsGroup }}
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: asterisk-modules
+              mountPath: /var/lib/patchbay/asterisk-modules
+        # Native sidecar (restartPolicy: Always): it starts after the modules
+        # are copied, and Asterisk and the file server start only once its
+        # startup probe passes, that is once the first config version is
+        # applied and the sound prompts are installed (design §5).
         - name: agent
           image: {{ include "patchbay.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -85,16 +171,26 @@ spec:
             - agent
             - --listen=:{{ $p.ports.control }}
             - --token-file=/var/run/patchbay/agent-token/token
+            - --namespace=$(POD_NAMESPACE)
+            - --bundle-configmap={{ $fullname }}-pbx-config
+            - --secrets={{ $fullname }}-pbx-secrets
+            - --live-dir=/var/lib/patchbay/config
+            - --firmware-dir=/var/lib/patchbay/persistent/firmware
+            - --state-dir=/var/lib/patchbay/persistent/state
+            - --sounds-dir=/var/lib/patchbay/sounds
+            - --sounds-src=/usr/share/patchbay/sounds
+            - --fetch-socket=/var/run/patchbay/fetchlog/fetches.sock
+            - --fs-group={{ $p.fsGroup }}
+            - --device-http-listen={{ $address }}:{{ $p.ports.deviceHTTP }}
             - --zap-log-level={{ $p.agent.logLevel }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           ports:
             - name: control
               containerPort: {{ $p.ports.control }}
-              protocol: TCP
-            - name: tftp
-              containerPort: {{ $p.ports.tftp }}
-              protocol: UDP
-            - name: cisco-http
-              containerPort: {{ $p.ports.ciscoHTTP }}
               protocol: TCP
             - name: device-http
               containerPort: {{ $p.ports.deviceHTTP }}
@@ -116,12 +212,8 @@ spec:
               port: control
             periodSeconds: 20
             timeoutSeconds: 5
-          # Non-root: it binds nothing below 1024 yet. Serving TFTP on udp 69
-          # on the host network needs a privilege Kubernetes does not give a
-          # non-root container (docs/e2e.md, "Privileged ports"). How to get it
-          # is an open decision for the agent phase, with one fixed rule: the
-          # process holding that privilege must not be the one holding the
-          # agent token, the AMI password or resolved secrets.
+          # Non-root, no capabilities: it binds nothing below 1024 (the file
+          # server holds the TFTP port).
           securityContext:
             runAsUser: 65532
             runAsGroup: 65532
@@ -134,22 +226,31 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+            # The whole volume: a subPath would pin one version and miss
+            # the swap of the current symlink.
             - name: config
               mountPath: /var/lib/patchbay/config
+            - name: persistent
+              mountPath: /var/lib/patchbay/persistent
+            - name: sounds
+              mountPath: /var/lib/patchbay/sounds
+            - name: fetchlog
+              mountPath: /var/run/patchbay/fetchlog
             - name: agent-token
               mountPath: /var/run/patchbay/agent-token
               readOnly: true
-            {{- if .Values.firmware.persistence.enabled }}
-            - name: firmware
-              mountPath: /var/lib/patchbay/firmware
-            {{- end }}
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
       containers:
         - name: asterisk
           image: {{ include "patchbay.imageRef" $p.asterisk.image | quote }}
           imagePullPolicy: {{ $p.asterisk.image.pullPolicy }}
           # Run Asterisk directly as its own user: no root entrypoint, no
           # chown, no -U/-p privilege drop. -f: foreground; -n: no colour
-          # codes in the log.
+          # codes in the log. -C: the compiled config, through the current
+          # symlink the agent swaps on apply, so a reload reads the new
+          # version (internal/compile/layout.go).
           command: [/usr/sbin/asterisk]
           args:
             - -f
@@ -158,13 +259,7 @@ spec:
             - -{{ repeat (int $p.asterisk.verbosity) "v" }}
             {{- end }}
             - -C
-            {{- if $p.staticConfig.enabled }}
-            - /etc/asterisk/asterisk.conf
-            {{- else }}
-            # Through the `current` symlink the agent swaps on apply, so a
-            # reload reads the new version (internal/compile/layout.go).
-            - /var/lib/patchbay/config/current/asterisk/asterisk.conf
-            {{- end }}
+            - {{ $asteriskConf }}
           ports:
             - name: sip-udp
               containerPort: {{ $p.ports.sip }}
@@ -172,15 +267,17 @@ spec:
             - name: sip-tcp
               containerPort: {{ $p.ports.sip }}
               protocol: TCP
+          # The remote console reads the same asterisk.conf (for the control
+          # socket's directory), so every probe passes -C too.
           startupProbe:
             exec:
-              command: [/usr/sbin/asterisk, -rx, core waitfullybooted]
+              command: [/usr/sbin/asterisk, -C, {{ $asteriskConf }}, -rx, core waitfullybooted]
             periodSeconds: 2
             timeoutSeconds: 10
             failureThreshold: 60
           readinessProbe:
             exec:
-              command: [/usr/sbin/asterisk, -rx, core show uptime]
+              command: [/usr/sbin/asterisk, -C, {{ $asteriskConf }}, -rx, core show uptime]
             periodSeconds: 10
             timeoutSeconds: 5
           securityContext:
@@ -195,39 +292,132 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
-            {{- if $p.staticConfig.enabled }}
-            # TEMPORARY (e2e only): the static config, until the agent applies.
-            - name: static-config
-              mountPath: /etc/asterisk
-              readOnly: true
-            {{- else }}
             # The live config the agent applies. The compiler owns every file
             # Asterisk loads (current/asterisk/); none of the image's stock
-            # configs are used. The whole volume is mounted, because a subPath
-            # would pin one version and miss the symlink swap.
+            # configs are used.
             - name: config
               mountPath: /var/lib/patchbay/config
               readOnly: true
-            {{- end }}
+            # Over the image's module directory: only the compiled modules.
+            - name: asterisk-modules
+              mountPath: /usr/lib/asterisk/modules
+              readOnly: true
+            # The prompts the dialplan plays by absolute path.
+            - name: sounds
+              mountPath: /var/lib/patchbay/sounds
+              readOnly: true
             - name: asterisk-run
               mountPath: /var/run/asterisk
             - name: asterisk-spool
               mountPath: /var/spool/asterisk
             - name: asterisk-log
               mountPath: /var/log/asterisk
+        # TFTP and Cisco's HTTP port, for the phones (unauthenticated, from the
+        # voice VLAN). It must start as root to bind port 69 on the host
+        # network (docs/e2e.md, "Privileged ports"), with only the three
+        # capabilities it needs; it binds pbx.address, then drops to
+        # 65533:65533 with no groups and no capabilities, checks
+        # /proc/self/status and exits if the drop did not take, all before
+        # it opens a file. allowPrivilegeEscalation: false sets no_new_privs,
+        # which that check requires. Every mount is read-only, and the live
+        # volume's modes keep it to the world-readable tftp/ tree.
+        - name: fileserver
+          image: {{ include "patchbay.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - fileserver
+            - --live-dir=/var/lib/patchbay/config
+            - --firmware-dir=/var/lib/patchbay/persistent/firmware
+            - --tftp-listen={{ $address }}:{{ $p.ports.tftp }}
+            - --http-listen={{ $address }}:{{ $p.ports.ciscoHTTP }}
+            - --fetch-socket=/var/run/patchbay/fetchlog/fetches.sock
+            - --uid=65533
+            - --gid=65533
+            - --zap-log-level={{ $p.fileserver.logLevel }}
+          ports:
+            - name: tftp
+              containerPort: {{ $p.ports.tftp }}
+              protocol: UDP
+            - name: cisco-http
+              containerPort: {{ $p.ports.ciscoHTTP }}
+              protocol: TCP
+          # A connection that sends no request is not a fetch: the probe
+          # never shows up in the fetch log.
+          livenessProbe:
+            tcpSocket:
+              host: {{ $address | quote }}
+              port: cisco-http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE, SETUID, SETGID]
+          {{- with $p.fileserver.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /var/lib/patchbay/config
+              readOnly: true
+            - name: persistent
+              mountPath: /var/lib/patchbay/persistent
+              readOnly: true
+            # Connecting to the agent's socket needs no write access here.
+            - name: fetchlog
+              mountPath: /var/run/patchbay/fetchlog
+              readOnly: true
       volumes:
         - name: config
           emptyDir: {}
+        - name: persistent
+          {{- if .Values.firmware.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-firmware
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: sounds
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: asterisk-modules
+          emptyDir:
+            sizeLimit: 128Mi
+        # The file server's fetch reports to the agent (a unix socket).
+        - name: fetchlog
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         - name: agent-token
           secret:
             secretName: {{ include "patchbay.agentTokenSecretName" . }}
             defaultMode: 0440
-        {{- if $p.staticConfig.enabled }}
-        - name: static-config
-          secret:
-            secretName: {{ $fullname }}-asterisk-static
+        # The agent's Kubernetes credentials, as the kubelet would mount them
+        # for a pod that automounts its token, but in the agent alone.
+        - name: kube-api-access
+          projected:
             defaultMode: 0440
-        {{- end }}
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3607
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
         # Asterisk's writable state: control socket, astdb and spool, logs.
         # The image's root filesystem stays read-only.
         - name: asterisk-run
@@ -240,11 +430,6 @@ spec:
         - name: asterisk-log
           emptyDir:
             sizeLimit: 256Mi
-        {{- if .Values.firmware.persistence.enabled }}
-        - name: firmware
-          persistentVolumeClaim:
-            claimName: {{ $fullname }}-firmware
-        {{- end }}
 ---
 # The agent's control API, for the controller (and `patchbay` via the API
 # server). The pod is on the host network, so its endpoint is the node IP.

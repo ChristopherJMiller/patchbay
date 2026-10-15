@@ -73,3 +73,56 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "patchbay.pbxAddress" -}}
 {{- required "pbx.address is required: the IP of pbx.nodeName that phones reach (e.g. 192.168.0.240)" .Values.pbx.address -}}
 {{- end -}}
+
+{{/*
+The Asterisk modules the PBX pod holds: exactly compile.Modules(), the list
+the compiled modules.conf loads, in its order (test/chart keeps the two
+equal). The asterisk-modules init container copies these, and nothing else,
+from the image into the volume Asterisk mounts over its module directory,
+so no other module (app_system, func_shell, res_agi, res_ari, ...) can be
+loaded, not even over AMI or by a relative path.
+*/}}
+{{- define "patchbay.asteriskModules" -}}
+- res_timing_timerfd.so
+- res_pjproject.so
+- res_sorcery_config.so
+- res_sorcery_memory.so
+- res_sorcery_astdb.so
+- res_rtp_asterisk.so
+- res_pjsip.so
+- res_pjsip_session.so
+- chan_pjsip.so
+- res_pjsip_authenticator_digest.so
+- res_pjsip_endpoint_identifier_user.so
+- res_pjsip_registrar.so
+- res_pjsip_sdp_rtp.so
+- res_pjsip_nat.so
+- res_pjsip_acl.so
+- res_pjsip_caller_id.so
+- res_pjsip_rfc3326.so
+- res_pjsip_pubsub.so
+- res_pjsip_notify.so
+- res_pjsip_logger.so
+- res_pjsip_refer.so
+- codec_ulaw.so
+- codec_alaw.so
+- codec_g722.so
+- format_pcm.so
+- format_wav.so
+- format_gsm.so
+- pbx_config.so
+- app_echo.so
+- app_dial.so
+- app_playback.so
+- app_playtones.so
+- func_callerid.so
+- bridge_simple.so
+- bridge_native_rtp.so
+- res_audiosocket.so
+- app_audiosocket.so
+{{- end -}}
+
+{{/* Asterisk's config through the live directory's current symlink (compile.AsteriskConfigDir). */}}
+{{- define "patchbay.asteriskConf" -}}
+/var/lib/patchbay/config/current/asterisk/asterisk.conf
+{{- end -}}

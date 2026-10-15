@@ -1,0 +1,16 @@
+# The other branches: no firmware PVC (the persistent volume is an emptyDir),
+# a tainted PBX node, extra pod annotations, Asterisk without -v.
+pbx:
+  nodeName: top
+  address: 192.0.2.10
+  tolerations:
+    - key: telephony
+      operator: Exists
+      effect: NoSchedule
+  podAnnotations:
+    example.com/note: lint-only
+  asterisk:
+    verbosity: 0
+firmware:
+  persistence:
+    enabled: false
