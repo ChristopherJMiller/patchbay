@@ -2134,12 +2134,128 @@ Done when every 5.2.5–5.2.8 test exists and passes, every carry-over in
 - The controller writes `pbx-secrets` (keys `ProjectedKey`, exactly
   `SecretRefs`) before `pbx-config`, and mints the agent token; in W2 the
   e2e harness does both.
+  The harness's stand-in is `test/e2e/bundle_test.go` (`applyBundle`); W3
+  deletes it, or the two would fight over `pbx-config`.
 - fakephone's scripted `run` mode, its fake web pages (built from
   `scrape`'s exported page types) and its Linphone mode; `TestPhoneLifecycle`
   and the other W3 rows of §9.
 - `patchbay firmware load` and `status` (W2 tests the upload endpoint
   directly).
 - The real-device questions stay §8's.
+
+#### 5.2.11 W2 as built
+
+Where W2 departs from 5.2.1–5.2.10, so W3 builds on what exists. The
+stage-level deviations are the stages' reports, condensed; CLAUDE.md
+records the departures from the design.
+
+**Core** (intake, apply, ami, actions, observe, metrics)
+- **Reloads use AMI's `Reload` action**, not `ModuleLoad` with `LoadType
+  reload`: on 22.11 the latter answers "Module not found." for `manager`,
+  `logger` and `indications` (checked against the pinned image; the
+  contract comments in `ami.go` and `compile.AMIClasses` now say so).
+  `res_pjsip_notify` sends its own `Subscription-State: terminated` ahead
+  of the agent's `active`; e2e sees both (§8 bench row).
+- **intake**: a ConfigMap whose version is unreadable or not 64 hex digits
+  is keyed `configmap@<resourceVersion>` and refused with version `""`.
+- **apply**: a failure rolls back to the last *verified* version; applying
+  the live version again writes and reloads nothing (it records the grants
+  and the AMI account an adopted version lacks); a first version that
+  fails verification is retried once per new AMI session; rollback
+  reloads retry on `ErrNotConnected` up to the verify timeout.
+  `Grants()` is `("", nil)` for an adopted version until intake hands it
+  over again, so device HTTP never prunes spends against an empty list.
+  A real verify mismatch retries for the whole 30 s, holding intake's one
+  worker (by design; e2e `TestRollback` waits for it).
+- **ami**: a session that ends within 5 s backs off before the next login;
+  a call without a deadline gets 30 s; "No endpoints found" and "No
+  Contacts found" are empty lists.
+- **observe**: a SEP/CTL/ITL file of a MAC no device has is attributed to
+  nobody (never by source address); the registered-endpoints metric counts
+  distinct contact owners; the fetch socket refuses a non-socket at its
+  path and holds at most 8 connections.
+- **actions**: the AOR fallback matches only a contact with no endpoint;
+  of several, the one expiring last; a Call-ID with white space or control
+  characters is refused like one with `{` or `}`.
+- Open (core's report): a version swapped in while AMI was down that later
+  fails verification counts as applied for intake (not retried until the
+  ConfigMap or Secret changes); an AMI password change applied while AMI
+  is down, or a rollback whose manager reload cannot run, needs an Asterisk
+  restart to heal.
+
+**Files** (firmware, fileserver)
+- Names are stricter: anything but printable ASCII without spaces is
+  reported quoted and never looked up, and `NewManifest` refuses manifest
+  names the file server would never serve; the drivers' manifests are also
+  validated together.
+- HTTP :6970 ignores `Range` and `If-*` and sends no `Last-Modified`, so
+  "served" always means the whole file.
+- At most 128 TFTP transfers at once (more get "server busy" and an error
+  event); uploads answer 405 for anything but PUT, 400 for a broken body,
+  500 for a store failure; a 413/422 reports whether a verified copy is
+  already stored; files over `api.MaxFirmwareFileSize` are never hashed;
+  the first upload empties `.incoming`; the digest cache fills on the first
+  `Status` (NewDisk does no I/O).
+- Open: TFTP shutdown waits for transfers in flight (up to about 30 s, the
+  pod's grace period); the control API's 30 s read/write timeouts bound a
+  firmware upload (a real 4.6 MB file over a port-forward must fit).
+
+**Web** (devicehttp, scrape)
+- Spends are pruned only against a *complete* grant list (every device of
+  `v<version>/bundle.json` with a token), so device HTTP reads the index.
+- A token sent to any other path (`/<token>`, `//p/<token>`, ...) is
+  recorded as `p/` without a bundle path; `HEAD /p/...` is always the 404
+  and never spends; failures other than "missing" answer 503 (only a token
+  holder sees one); the state file is strict (a corrupt one fails start,
+  saying when deleting it is safe).
+- The scraper also refuses broadcast and zoned addresses, sanitises
+  `WebScrape.Error`, gives each page its own 5 s, and exports the page
+  types and `MarshalPage` for the W3 fakephone. It requires the root
+  elements `DeviceInformation(X)`, `NetworkConfiguration(X)`,
+  `DeviceLog(X)` (a bench check, §8).
+- Tokens the controller mints must be URL-safe (the server compares the
+  decoded path); W3.2's 32 alphanumerics are.
+
+**Integrator** (cmd, sounds, chart, build, e2e)
+- `patchbay agent` has one flag beyond 5.2.8, `--ami-address` (default
+  127.0.0.1:5038). The agent installs the prompts first and reports a
+  failure through `/readyz` rather than exiting; any component's error
+  stops the whole agent (the container restarts).
+- The file server is **65533:65533** (5.2.1), so e2e asserts that, not the
+  65532 of the first plan. Its **bounding set** keeps `NET_BIND_SERVICE`,
+  `SETUID` and `SETGID` (`CapBnd 00000000000004c0`): clearing it needs
+  `CAP_SETPCAP`; with `no_new_privs` and a static image they cannot return.
+  The agent's groups are `1000 65532` (the fsGroup and its own gid).
+- `TestChartUsesTheLiveLayout` moved from `internal/compile` to the new
+  `test/chart`, which renders the chart with `helm template` (helm from the
+  flake) and checks every layout path, uid, flag, mount, the module list,
+  the probes, the agent's credentials, the restart checksum, no
+  persistence and the PodMonitor. A third ci values file
+  (`no-persistence-values.yaml`) lints the other branches.
+- The restart checksum (`checksum/asterisk-restart`) covers `pbx.address`,
+  the SIP port and the module list; all three are also in the pod spec
+  today, the checksum keeps that true once W3's settings feed the bundle.
+  The file server has a TCP liveness probe on `pbx.address:6970` (a
+  connection without a request is not a fetch).
+- **e2e**: the controller is *not* scaled to 0: it has no reconcilers yet,
+  so it cannot fight the harness, and `TestController` keeps checking its
+  leader election. W3 must stop the harness compiling when its reconciler
+  lands. Tests that call the control API many times (observations, the
+  firmware upload, the resync action) use a **port-forward** from the
+  harness (the path `patchbay firmware load` takes), not tools pods;
+  `TestPBXUp` still checks the Service path from the pod network. The file
+  server's file access is shown by a tools pod running as 65533:65533
+  with the PBX pod's live emptyDir mounted from the node (hostPath),
+  next to `/proc` evidence that the file server has exactly that identity.
+  The compiled dialplan answers every number, so the old "unrouted number
+  is 404" assess became `TestPrompts`' `199`. `TestRegister` registers the
+  Softphone over UDP, whose contact Asterisk rewrites to the source port
+  (`rewrite_contact = yes`).
+- **Finding**: `pods/portforward` on the PBX pod (host network) reaches
+  the node's loopback, so AMI too: the AMI password stays the barrier, as
+  for any process on the node.
+
+`go mod tidy`: `golang.org/x/sync` (errgroup) became a direct requirement.
 
 ---
 

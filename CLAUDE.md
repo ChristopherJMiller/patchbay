@@ -101,6 +101,31 @@ departs from it, the departure is recorded here (and in the code's docs).
   references (`Bundle.SecretRefs`), each under `SecretRef.ProjectedKey`
   (`<name>_<key>`). The agent's Role names that Secret and the ConfigMap,
   nothing else.
+- **Spent provisioning tokens survive restarts** (§11: "The token is then
+  spent: the same URL no longer serves"; nothing says where): device HTTP
+  writes each spend (the token's SHA-256 and the served fetch) to
+  `layout.StateDir` on the PBX's persistent volume *before* it sends the
+  document, re-records the served fetches at start, and forgets a spend
+  only once the live bundle no longer grants that token, so a URL is never
+  reusable after an agent restart.
+- **The persistent volume** (§6: the `firmware` PVC) is mounted whole at
+  `layout.PersistentDir` and holds the firmware store and the agent's
+  state: read-write in the agent, read-only in the file server.
+- **Asterisk sees only the compiled modules**: an init container copies
+  `compile.Modules()` out of the image into an emptyDir mounted read-only
+  over `/usr/lib/asterisk/modules` (a separate `astmoddir` would not do:
+  Asterisk loads `../` paths through it). Even the AMI account cannot
+  load `app_system`, `func_shell`, `res_agi` or `res_ari` (e2e
+  `TestModulesNarrowed`).
+- **Reloads** (§5: "module reload res_pjsip.so, then dialplan reload") use
+  AMI's `Reload` action: `ModuleLoad` cannot reload the built-ins
+  (`manager`, `logger`, `indications`) on Asterisk 22.11. The resync
+  NOTIFY carries Asterisk's own `Subscription-State: terminated` ahead of
+  the agent's `active` (res_pjsip_notify adds it); whether the 7945 minds
+  is a bench question (docs/plans/release-a.md §8).
+- **Ready also needs the prompts** (§5: the startup probe passes once the
+  first version is applied): `/readyz` also requires every sound prompt
+  installed from the image, so 911 never plays a missing announcement.
 - **Request annotations** (`patchbay.chrismiller.xyz/resync-requested`,
   `.../reissue-requested`) are acted on once per value, recorded in
   `status.handledRequest`, so the controller never edits metadata.
@@ -136,18 +161,24 @@ make fmt vet lint # golangci-lint v2 (.golangci.yml) + helm lint
 make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake), then
                   # the unit tests again with -tags e2e (cisco79x5's e2e test load)
 make test-unit    # -short: skips envtest
-make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev
+make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev (GO_TAGS=e2e
+                  # only for e2e images: the e2e firmware load)
+make sounds       # the prompts (espeak-ng + ffmpeg) into build/sounds; make image runs it
 make tools-versions
 make e2e          # kind + chart + real Asterisk + fakephone; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
 make check-hygiene # no tracked binaries, big files, firmware types or secrets
 make asterisk-check # every compile golden booted in the chart's Asterisk image (docker,
-                    # no cluster), then registered to and called as each device
+                    # no cluster), then registered to and called as each device;
+                    # also the agent's AMI client against the real Asterisk
 ```
 
 The CRDs are generated into `charts/patchbay/templates/crds/` and carry
 `helm.sh/resource-policy: keep`. Never edit them, or `zz_generated.*`, by hand.
+`test/chart` renders the chart (`helm template`) and checks it against the
+Go layout contracts: change a path, uid or module in one and the test names
+the other.
 
 ## Hard rules
 

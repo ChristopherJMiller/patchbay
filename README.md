@@ -33,14 +33,16 @@ line. The design, including the per-device state machines, is
 
 ## Status
 
-**Pre-alpha.** The foundation is in place: the `v1alpha1` API and its CRDs, the
-contracts the compiler, drivers and agent implement, the controller manager,
-the agent's control API skeleton, the CLI's shape, the Helm chart (controller,
-PBX pod with Asterisk 22 and the agent sidecar), and an e2e suite in kind that
-registers a simulated phone and places an echo call against real Asterisk. The
-compiler, the drivers' state machines and the agent's TFTP/AMI/apply work are
-not written yet, so Asterisk runs a temporary static config in e2e. Nothing
-here runs a real phone today.
+**Pre-alpha.** The `v1alpha1` API and its CRDs, the compiler and the two
+drivers (Cisco 79x5 and softphone: rendering and the state machines), and the
+PBX pod are built: the agent applies compiled bundles (resolve, swap, reload
+over AMI, verify, roll back), serves device HTTP and one-time softphone
+provisioning, keeps the observations and sends resync NOTIFYs; a separate,
+unprivileged file server serves TFTP and HTTP :6970; Asterisk loads only the
+compiled modules. The e2e suite in kind runs all of it against real Asterisk
+with a simulated phone. The controller's reconcilers and the CLI are next
+(W3), so today the e2e harness compiles the bundle itself. Nothing here runs
+a real phone yet.
 
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
 extras (wallpaper, ringtones, speed dials, a Services menu, push messages).
@@ -58,7 +60,9 @@ make generate                  # deepcopy + CRDs (after any api/ change)
 make test                      # unit tests + envtest (real kube-apiserver + etcd)
 make lint                      # golangci-lint (with exhaustive) + helm lint
 make build                     # bin/patchbay
-make image                     # ghcr.io/christopherjmiller/patchbay:dev
+make sounds                    # the 911 and "not available" prompts (espeak-ng) into build/sounds
+make image                     # ghcr.io/christopherjmiller/patchbay:dev (renders the prompts first)
+make asterisk-check            # every compile golden booted in the pinned Asterisk (docker)
 make e2e                       # kind + the chart + real Asterisk + a simulated phone
 make check-hygiene             # no binaries, firmware or secrets in git (CI runs it)
 ```
@@ -68,14 +72,16 @@ The e2e suite, its knobs and how to debug it: [docs/e2e.md](docs/e2e.md).
 ## Layout
 
 ```
-cmd/patchbay/          one binary: controller | agent | stream-bridge | CLI
+cmd/patchbay/          one binary: controller | agent | fileserver | stream-bridge | CLI
 api/v1alpha1/          resource types -> generated CRDs
 internal/compile/      pure: resources + settings -> config bundle
-internal/drivers/      the driver contract; cisco79x5 and softphone drivers to come
-internal/agent/        the PBX pod's sidecar (control API today)
+internal/drivers/      the driver contract, and the cisco79x5 and softphone drivers
+internal/agent/        the PBX pod's sidecar (apply, device HTTP, AMI, observations) and file server
 internal/controller/   the controller manager and, soon, its reconcilers
-charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk + agent sidecar)
+charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk, agent sidecar, file server)
 test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5
+test/chart/            the rendered chart checked against the Go layout contracts
+hack/                  check-hygiene.sh, gen-sounds.sh
 config/samples/        one example of each resource
 docs/                  the design and the research behind it
 ```

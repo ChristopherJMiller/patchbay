@@ -84,6 +84,13 @@ jobs:
       - name: Lint and test (unit + envtest)
         run: nix develop -c make lint test
 
+      # The 911 and "not available" prompts the image carries: espeak-ng and
+      # ffmpeg from the flake, rendered twice and compared (hack/gen-sounds.sh
+      # fails if the two differ). make image, and so the e2e job, renders them
+      # again before the build.
+      - name: Sound prompts (reproducible)
+        run: nix develop -c make sounds
+
       # Every compile golden booted in the chart's pinned Asterisk image, the
       # way the PBX pod runs it, then registered to and called as each
       # device. Plain docker on the runner (no cluster), so it lives here
