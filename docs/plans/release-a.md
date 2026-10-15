@@ -3712,13 +3712,14 @@ The five inputs most likely to break a real user that no test covers yet.
   `pbx-config` is unchanged (the 5 min retry keeps the series alive, so a
   new compile error shows the first one's note). The controller log has
   every one.
-- *(W3 review)* **The agent keeps a device's history by its ID** after the
-  device leaves the bundle: a Phone deleted and recreated under the same
-  name starts with the old one's fetches (never Unseen), and a Phone whose
-  `spec.mac` is edited for a hardware swap shows the old phone's first-seen
-  time and address until the new phone fetches. The fix belongs in the
-  agent's store (drop a device's state when its ID leaves the applied
-  index or its MAC changes); `TestPhoneLifecycle` uses random names.
+- *(W3 review; narrowed in the final review)* **The agent keeps a device's
+  history by its ID** while the device stays in the applied index: its
+  store forgets a device once a version without it, or with another MAC
+  for it, is applied (`TestDeviceLeavingTheIndexLosesItsHistory`). A Phone
+  deleted and created again so quickly that the agent never applies a
+  version without it keeps the old one's fetches (never Unseen; the
+  status, keyed by the new resource, starts over anyway).
+  `TestPhoneLifecycle` still uses random names.
 - *(W3 review)* **Long text is cut**: a condition message or human action
   over 2048 bytes, an Event note over 1024 (events.k8s.io's limit), a
   scraped field over 128 bytes or a log line over 256 ends in an ellipsis;

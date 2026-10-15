@@ -578,3 +578,49 @@ func TestRun(t *testing.T) {
 		t.Errorf("Run = %v", err)
 	}
 }
+
+// TestDeviceLeavingTheIndexLosesItsHistory: a device that leaves the
+// applied index loses what the store remembered of it, so a Phone deleted
+// and created again under the same name starts Unseen, not with the old
+// one's fetches; and a Phone whose MAC is edited (a hardware swap) starts
+// over too. A device that was never in an applied index keeps what device
+// HTTP recorded for it (TestProvisioningByDevice).
+func TestDeviceLeavingTheIndexLosesItsHistory(t *testing.T) {
+	f := newFixture(t)
+	withDesk := f.idx
+	f.store.RecordFetch(f.tftp("SEP"+deskMAC+".cnf.xml", deskIP, 0))
+	f.store.RecordScrape(desk, api.WebScrape{At: t0, Address: deskIP})
+	f.store.RecordFetch(f.tftp("SEP"+frontMAC+".cnf.xml", frontIP, 0))
+	if d := f.device(desk); d == nil || len(d.Fetches) != 1 || d.Web == nil {
+		t.Fatalf("desk before: %+v", d)
+	}
+
+	// desk deleted: a bundle without it is applied.
+	in := install()
+	in.Phones = in.Phones[1:]
+	f.idx = in.Compile(t).Index()
+	if _, ok := f.idx.Devices[desk]; ok {
+		t.Fatal("desk is still in the index")
+	}
+	_ = f.store.Document(t0)
+
+	// desk created again.
+	f.idx = withDesk
+	if d := f.device(desk); d != nil {
+		t.Errorf("a re-created desk has the old one's history: %+v", d)
+	}
+	if got := f.fetchesOf(front); len(got) != 1 {
+		t.Errorf("front, which stayed, lost its history: %+v", got)
+	}
+	if targets := f.store.ScrapeTargets(t0); slices.ContainsFunc(targets, func(st sensor.ScrapeTarget) bool { return st.Device == desk }) {
+		t.Errorf("the re-created desk is a scrape target at the old address: %+v", targets)
+	}
+
+	// front's MAC edited (a new phone in its place): it starts over.
+	in = install()
+	in.Phones[1].Spec.MAC = "D0C78915E8CA"
+	f.idx = in.Compile(t).Index()
+	if d := f.device(front); d != nil {
+		t.Errorf("front with a new MAC kept the old phone's history: %+v", d)
+	}
+}

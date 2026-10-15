@@ -26,6 +26,13 @@
 // event whose bundle path is one of the device's files in the index of the
 // version it was served from, that device's version there.
 //
+// A device that leaves the applied index, or whose MAC changes in it,
+// loses everything the store remembered of it (its fetch log, scrape and
+// addresses): a Phone deleted and created again under the same name starts
+// Unseen, and a phone swapped in by editing spec.mac does not show the old
+// one's history. A device that was never in an applied index keeps what
+// was recorded for it (device HTTP re-records persisted spends at start).
+//
 // The store decides nothing; it only remembers, and its memory is
 // disposable.
 package observe
@@ -101,6 +108,10 @@ type Store struct {
 	contacts  map[string]ami.Contact
 	firstSeen map[contactKey]time.Time
 	calls     map[string]int
+	// indexVersion and indexMACs are the applied index last seen, by
+	// device ID and MAC (syncIndex).
+	indexVersion string
+	indexMACs    map[string]string
 }
 
 type device struct {
@@ -138,6 +149,26 @@ func (s *Store) applied() (string, compile.Index, bool) {
 	return s.cfg.Applied()
 }
 
+// syncIndex forgets the devices that left the applied index since the
+// last one seen, or whose MAC changed in it (package documentation). The
+// caller holds mu.
+func (s *Store) syncIndex(version string, idx compile.Index, ok bool) {
+	if !ok || version == s.indexVersion {
+		return
+	}
+	for id, mac := range s.indexMACs {
+		if d, still := idx.Devices[id]; !still || d.MAC != mac {
+			delete(s.devices, id)
+			s.cfg.Log.V(1).Info("forgetting a device that left the applied index or changed its MAC", "device", id)
+		}
+	}
+	s.indexVersion = version
+	s.indexMACs = make(map[string]string, len(idx.Devices))
+	for id, d := range idx.Devices {
+		s.indexMACs[id] = d.MAC
+	}
+}
+
 // indexOf is a version's index: the applied one's, else Index's.
 func (s *Store) indexOf(version, appliedVersion string, applied compile.Index) (compile.Index, bool) {
 	switch {
@@ -158,11 +189,12 @@ func (s *Store) RecordFetch(e sensor.FetchEvent) {
 		return
 	}
 	s.cfg.Metrics.Fetch(e.Transport, e.Result)
-	appliedVersion, applied, _ := s.applied()
+	appliedVersion, applied, isApplied := s.applied()
 	served, hasServed := s.indexOf(e.BundleVersion, appliedVersion, applied)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.syncIndex(appliedVersion, applied, isApplied)
 	id, mac := s.attribute(e, applied)
 	if mac != "" && id == "" && strings.HasPrefix(e.File, "SEP") {
 		s.noteUnknown(mac, e)
@@ -294,12 +326,13 @@ func (s *Store) RecordScrape(device string, w api.WebScrape) {
 // ScrapeTargets lists the applied Phones with a known address: their live
 // contact's, else the source of their latest attributed served fetch.
 func (s *Store) ScrapeTargets(now time.Time) []sensor.ScrapeTarget {
-	_, idx, ok := s.applied()
+	version, idx, ok := s.applied()
 	if !ok {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.syncIndex(version, idx, ok)
 	var out []sensor.ScrapeTarget
 	for _, id := range slices.Sorted(maps.Keys(idx.Devices)) {
 		if idx.Devices[id].Kind != drivers.KindPhone {
@@ -429,10 +462,11 @@ func (s *Store) Document(now time.Time) api.Observations {
 			doc.Firmware.Files = slices.Clone(files)
 		}
 	}
-	_, idx, _ := s.applied()
+	version, idx, ok := s.applied()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.syncIndex(version, idx, ok)
 	for _, id := range slices.Sorted(maps.Keys(idx.Devices)) {
 		obs := api.DeviceObservations{Device: id, MAC: idx.Devices[id].MAC, Calls: s.calls[id]}
 		seen := obs.Calls > 0
