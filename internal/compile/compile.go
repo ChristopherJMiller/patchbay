@@ -37,7 +37,6 @@ package compile
 import (
 	"bytes"
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -362,15 +361,7 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 		return Bundle{}, err
 	}
 
-	index, err := json.Marshal(Index{Devices: b.Devices, AMI: b.AMI})
-	if err != nil {
-		return Bundle{}, fmt.Errorf("compile: encoding the index: %w", err)
-	}
-	refs, err := b.SecretRefs()
-	if err != nil {
-		return Bundle{}, err
-	}
-	if b.Version, err = version(b.Files, index, refs, in.Secrets); err != nil {
+	if b.Version, err = b.VersionWith(in.Secrets); err != nil {
 		return Bundle{}, err
 	}
 	if err := b.Validate(); err != nil {

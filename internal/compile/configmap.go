@@ -115,7 +115,7 @@ func (b Bundle) ConfigMapData() (data map[string]string, binaryData map[string][
 
 // BundleFromConfigMap decodes what ConfigMapData encoded, and validates the
 // result. It does not recompute Version (that needs the secret values); the
-// agent trusts the controller's.
+// agent checks it with VersionWith once it has read pbx-secrets.
 func BundleFromConfigMap(data map[string]string, binaryData map[string][]byte) (Bundle, error) {
 	raw, ok := data[IndexKey]
 	if !ok {

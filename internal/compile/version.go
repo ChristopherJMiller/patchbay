@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -17,6 +18,29 @@ import (
 // token or the AMI account names a secret Inputs.Secrets has no value for
 // (or an empty one).
 var ErrMissingSecret = errors.New("compile: a referenced secret has no value")
+
+// VersionWith is the bundle version b's files and index have with these
+// secret values: exactly what Compile sets as Version (Compile calls it),
+// over b.Files, b's Index without its Version, and the SHA-256 of the value
+// of each of b.SecretRefs (other entries of secrets are ignored). A ref
+// without a non-empty value is an error wrapping ErrMissingSecret.
+//
+// The agent's intake compares it with Version before it applies a bundle,
+// so a version is only ever applied with the very secret values it was
+// compiled with: the controller writes pbx-secrets before pbx-config, and
+// the agent sees the two objects change independently, so for a moment it
+// may hold one version's ConfigMap and another version's Secret.
+func (b Bundle) VersionWith(secrets map[SecretRef][]byte) (string, error) {
+	index, err := json.Marshal(Index{Devices: b.Devices, AMI: b.AMI})
+	if err != nil {
+		return "", fmt.Errorf("compile: encoding the index: %w", err)
+	}
+	refs, err := b.SecretRefs()
+	if err != nil {
+		return "", err
+	}
+	return version(b.Files, index, refs, secrets)
+}
 
 // placeholderStart is how every placeholder begins; text that begins like
 // one but does not match PlaceholderPattern would never be resolved.

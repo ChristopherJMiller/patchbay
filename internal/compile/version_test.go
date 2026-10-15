@@ -1,6 +1,7 @@
 package compile_test
 
 import (
+	"errors"
 	"maps"
 	"reflect"
 	"regexp"
@@ -166,5 +167,39 @@ func TestVersionsIndexOnly(t *testing.T) {
 				t.Error("the bundle version did not change")
 			}
 		})
+	}
+}
+
+// TestVersionWith: the agent recomputes a bundle's version from what it
+// read (the decoded ConfigMap and pbx-secrets' values) and gets Version
+// exactly when the values are the ones it was compiled with.
+func TestVersionWith(t *testing.T) {
+	in, s := fakeHouse()
+	b := compileOK(t, fakeRegistry(), in, s)
+	data, binary, err := b.ConfigMapData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := compile.BundleFromConfigMap(data, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	values := maps.Clone(in.Secrets)
+	values[compile.SecretRef{Name: "unrelated", Key: "key"}] = []byte("ignored")
+	if v, err := decoded.VersionWith(values); err != nil || v != b.Version {
+		t.Errorf("the decoded bundle with its own values: %s, %v; want %s", v, err, b.Version)
+	}
+
+	other := maps.Clone(in.Secrets)
+	other[s.AMISecret] = []byte("not-a-secret-ami-0002")
+	if v, err := decoded.VersionWith(other); err != nil || v == b.Version {
+		t.Errorf("another AMI password: %s, %v; want another version", v, err)
+	}
+
+	missing := maps.Clone(in.Secrets)
+	delete(missing, compile.PasswordRef("phone-desk"))
+	if _, err := decoded.VersionWith(missing); !errors.Is(err, compile.ErrMissingSecret) {
+		t.Errorf("a missing value: %v, want ErrMissingSecret", err)
 	}
 }
