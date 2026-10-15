@@ -40,6 +40,18 @@ const (
 	pjsipNotifyReset   = "cisco-reset"
 )
 
+// AsteriskModuleDir is Asterisk's astmoddir, as the compiled asterisk.conf
+// names it: the image's own module directory. In the PBX pod it is not the
+// image's directory, though. Asterisk's loader joins a module name to
+// astmoddir without refusing "..", so `module load
+// ../usr/lib/asterisk/modules/app_system.so` loads from any directory the
+// process can read (checked against the pinned 22.11.0 image, 2026-10-15),
+// and a separate, narrow astmoddir would not keep the image's modules out of
+// reach. The chart therefore mounts a volume holding exactly Modules() over
+// this path in the Asterisk container, which shadows the image's directory
+// entirely (docs/plans/release-a.md, W2 task level).
+const AsteriskModuleDir = "/usr/lib/asterisk/modules"
+
 // AMIClasses are the AMI read and write classes of the agent's account,
 // never all, command or originate (see the package documentation's
 // manager.conf rules). What each action the agent uses needs, as Asterisk
@@ -53,8 +65,8 @@ const (
 // astmoddir and DialplanExtensionAdd (both "system,all", checked
 // 2026-10-15), and the chart's image ships app_system.so, func_shell.so and
 // res_agi.so there: a client with the AMI secret can add an extension that
-// runs System() and call it. The secret is the barrier. W2 should point
-// astmoddir at a directory holding only the modules this package lists.
+// runs System() and call it. The secret is the barrier, and in the PBX pod
+// every module but Modules() is hidden from Asterisk (AsteriskModuleDir).
 const AMIClasses = "system,reporting"
 
 // modules is modules.conf's explicit list (autoload = no), grouped as the
@@ -219,7 +231,7 @@ func asteriskConf() []byte {
 	w.section("directories")
 	for _, d := range [][2]string{
 		{"astetcdir", AsteriskConfigDir},
-		{"astmoddir", "/usr/lib/asterisk/modules"},
+		{"astmoddir", AsteriskModuleDir},
 		{"astvarlibdir", "/var/lib/asterisk"},
 		{"astdatadir", "/var/lib/asterisk"},
 		{"astkeydir", "/var/lib/asterisk"},
@@ -237,6 +249,19 @@ func asteriskConf() []byte {
 	w.set("documentation_language", "en_US")
 	w.set("hideconnect", "yes")
 	return w.bytes()
+}
+
+// Modules lists every module modules.conf loads, in its order. Nothing else
+// loads (autoload = no), and in the PBX pod nothing else is even present:
+// the chart copies exactly these files from the Asterisk image into the
+// volume it mounts at AsteriskModuleDir, and a test keeps the chart's list
+// equal to this one. None of them can run a shell command.
+func Modules() []string {
+	var out []string
+	for _, g := range modules {
+		out = append(out, g.Modules...)
+	}
+	return out
 }
 
 func modulesConf() []byte {

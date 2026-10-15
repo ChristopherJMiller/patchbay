@@ -85,7 +85,7 @@ func (b Bundle) ConfigMapData() (data map[string]string, binaryData map[string][
 	if b.Version == "" {
 		return nil, nil, errors.New("bundle: no version")
 	}
-	index, err := json.Marshal(Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI})
+	index, err := json.Marshal(b.Index())
 	if err != nil {
 		return nil, nil, fmt.Errorf("bundle: encoding the index: %w", err)
 	}

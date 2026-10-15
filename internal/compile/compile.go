@@ -22,8 +22,8 @@
 // DialplanExtensionAdd, so whoever holds the AMI secret can run commands as
 // Asterisk's user in the PBX pod. The secret is the barrier: only the agent
 // may hold it (docs/plans/release-a.md §5 keeps it out of every other
-// container), and narrowing the module directory to the listed modules is W2
-// work (AMIClasses).
+// container), and in the PBX pod Asterisk can see no module but the listed
+// ones (AsteriskModuleDir).
 //
 // Secret values never appear in a bundle's files: a password appears only as
 // a placeholder, @@secret:<name>/<key>@@ (see SecretRef), so the ConfigMap the
@@ -366,15 +366,9 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("compile: encoding the index: %w", err)
 	}
-	refs, err := placeholders(b.Files)
+	refs, err := b.SecretRefs()
 	if err != nil {
 		return Bundle{}, err
-	}
-	refs = append(refs, b.AMI.Password)
-	for _, d := range b.Devices {
-		if d.ProvisioningToken != nil {
-			refs = append(refs, *d.ProvisioningToken)
-		}
 	}
 	if b.Version, err = version(b.Files, index, refs, in.Secrets); err != nil {
 		return Bundle{}, err
