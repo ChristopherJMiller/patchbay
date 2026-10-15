@@ -109,7 +109,8 @@ on the global PATH.
 cd /path/to/patchbay && nix develop -c make <target>
 make generate     # after ANY api/v1alpha1 change; commit the generated files
 make fmt vet lint # golangci-lint v2 (.golangci.yml) + helm lint
-make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake)
+make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake), then
+                  # the unit tests again with -tags e2e (cisco79x5's e2e test load)
 make test-unit    # -short: skips envtest
 make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev
 make tools-versions

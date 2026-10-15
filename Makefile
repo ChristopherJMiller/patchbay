@@ -83,9 +83,9 @@ fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
 	golangci-lint fmt ./...
 
 .PHONY: vet
-vet: ## go vet (including the e2e-tagged suite and the asterisk-check).
+vet: ## go vet (including the e2e-tagged code and the asterisk-check).
 	go vet ./...
-	go vet -tags e2e ./test/e2e/...
+	go vet -tags e2e ./...
 	go vet -tags asterisk ./internal/compile/
 
 .PHONY: lint
@@ -94,13 +94,20 @@ lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
 	@# The chart has required values, so it is linted with each ci/ values file.
 	for f in charts/patchbay/ci/*-values.yaml; do helm lint --strict charts/patchbay -f "$$f"; done
 
+# The e2e build tag also changes what internal/ builds (cisco79x5's e2e test
+# load, which the kind suite relies on), so the unit tests run under it too.
+# -short skips envtest, which already ran untagged.
+E2E_TAGGED_TESTS = go test $(GO_TEST_FLAGS) -short -tags e2e ./internal/...
+
 .PHONY: test
-test: envtest-assets ## Unit tests plus envtest (real kube-apiserver + etcd).
+test: envtest-assets ## Unit tests plus envtest (real kube-apiserver + etcd), then the unit tests with the e2e tag.
 	go test $(GO_TEST_FLAGS) ./...
+	$(E2E_TAGGED_TESTS)
 
 .PHONY: test-unit
-test-unit: ## Unit tests only (skips envtest).
+test-unit: ## Unit tests only (skips envtest), untagged and with the e2e tag.
 	go test $(GO_TEST_FLAGS) -short ./...
+	$(E2E_TAGGED_TESTS)
 
 .PHONY: envtest-assets
 envtest-assets:
