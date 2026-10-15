@@ -274,7 +274,6 @@ func TestRetryPolicy(t *testing.T) {
 
 	// So does a new bundle version; it applies, and is never applied again:
 	// not on a rewrite, not on a timer left from the failure.
-	h.putSecret(intaketest.Secret(ns, secretName, "13", data))
 	h.updateCM(intaketest.ConfigMap(t, ns, cmName, b2))
 	h.expectCalls("apply "+v1, "apply "+v1, "apply "+v1, "apply "+v2)
 	cm = intaketest.ConfigMap(t, ns, cmName, b2)
