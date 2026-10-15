@@ -372,8 +372,8 @@ func TestErrorResponses(t *testing.T) {
 	waitUp(t, c)
 	ctx := ctx5s(t)
 	err := c.Reload(ctx, "res_nope.so")
-	if err == nil || !strings.Contains(err.Error(), "res_nope.so") || !strings.Contains(err.Error(), "No such module.") {
-		t.Errorf("Reload = %v, want the module and Asterisk's message", err)
+	if err == nil || err.Error() != "ami: ModuleLoad: No such module." {
+		t.Errorf("Reload = %v, want Asterisk's message", err)
 	}
 	err = c.Notify(ctx, Notify{Endpoint: "phone-gone", Body: []string{"x"}})
 	if err == nil || !strings.Contains(err.Error(), "Unable to retrieve endpoint phone-gone") {

@@ -22,13 +22,11 @@ var (
 	listChannels  = &listSpec{item: "CoreShowChannel", complete: "CoreShowChannelsComplete"}
 )
 
-// Reload reloads one module (ModuleLoad, LoadType reload).
+// Reload reloads one module (ModuleLoad, LoadType reload). Its error does
+// not repeat the module's name: the caller says which reload failed.
 func (c *Conn) Reload(ctx context.Context, module string) error {
 	_, err := c.call(ctx, action{name: "ModuleLoad", fields: []field{{"Module", module}, {"LoadType", "reload"}}}, nil)
-	if err != nil {
-		return fmt.Errorf("ami: reloading %s: %w", module, err)
-	}
-	return nil
+	return err
 }
 
 // Endpoints lists every PJSIP endpoint's name, sorted.
