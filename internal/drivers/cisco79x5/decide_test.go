@@ -1319,6 +1319,15 @@ func registeredCases() []decideCase {
 				cond(v1alpha1.ConditionLabelShortened, cT, cisco79x5.ReasonShortened, `shows "FrontDoor" on screen and "Front Door" on its line`)),
 		},
 		{
+			// Compile collapses runs of "@" (drivers.UserText), so the phone
+			// shows "Desk@Home": the condition must say so.
+			name: "label with @@",
+			dev:  deskWith(plain, func(d *drivers.Device) { d.Label = "Desk@@Home" }),
+			obs:  registeredObs(vNow, 0),
+			want: registered(plain, fcRunning, cfgNow, nil,
+				cond(v1alpha1.ConditionLabelShortened, cT, cisco79x5.ReasonShortened, `shows "Desk@Home" on screen and "Desk@Home" on its line`)),
+		},
+		{
 			name: "a request: resync",
 			dev:  deskWith(plain, withRequest(req1)),
 			obs:  registeredObs(vNow, 0),

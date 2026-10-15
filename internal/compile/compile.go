@@ -43,8 +43,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
@@ -437,44 +435,6 @@ func checkNames(in Inputs) error {
 	return errors.Join(errs...)
 }
 
-// userText neutralizes free text a person wrote (a label, a person's name)
-// before it reaches any file: every run of "@", together with the white
-// space between them, becomes one "@", so no "@@" is left and none can
-// appear later. Text that starts like a placeholder (@@secret:...@@) would
-// be resolved by the agent into a file served to devices or, malformed,
-// fail Compile for every resource. A driver may drop white space (the
-// 79x5's screen label drops every Unicode space), which would join "@ @"
-// into "@@"; so white space here is unicode.IsSpace, that same test.
-func userText(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		b.WriteString(s[i : i+size])
-		i += size
-		if r == '@' {
-			i = afterAtRun(s, i)
-		}
-	}
-	return b.String()
-}
-
-// afterAtRun is where the run of "@"s and white space that starts at i,
-// just after an "@", ends: after its last "@" (white space after it stays).
-func afterAtRun(s string, i int) int {
-	end := i
-	for j := i; j < len(s); {
-		r, size := utf8.DecodeRuneInString(s[j:])
-		j += size
-		if r == '@' {
-			end = j
-		} else if !unicode.IsSpace(r) {
-			break
-		}
-	}
-	return end
-}
-
 // device is one Phone or Softphone on its way into the bundle.
 type device struct {
 	ref     ResourceRef
@@ -520,7 +480,7 @@ func buildDevices(reg *drivers.Registry, in Inputs, claims Claims) ([]device, er
 
 func newDevice(reg *drivers.Registry, dev drivers.Device, claims Claims) device {
 	claims.Apply(&dev)
-	dev.Label = userText(dev.Label)
+	dev.Label = drivers.UserText(dev.Label)
 	d := device{ref: deviceRef(dev.Kind, dev.Name), dev: dev}
 	d.holds = claims.Holds(d.ref)
 	if drv, err := reg.ForModel(dev.Model); err == nil {
@@ -680,7 +640,7 @@ func personTargets(people []v1alpha1.Person, claims Claims, routedID map[Resourc
 		if len(t.ring) == 0 {
 			t.comment += ": no routed device to ring"
 		} else {
-			directory = append(directory, directoryEntry{Name: userText(p.Spec.Name), Number: t.number})
+			directory = append(directory, directoryEntry{Name: drivers.UserText(p.Spec.Name), Number: t.number})
 		}
 		targets = append(targets, t)
 	}

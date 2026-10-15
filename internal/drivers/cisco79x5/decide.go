@@ -720,8 +720,11 @@ func (in *input) unsupported() metav1.Condition {
 
 func (in *input) labelShortened() metav1.Condition {
 	const t = v1alpha1.ConditionLabelShortened
+	// What the phone shows: the label as Compile renders it (drivers.UserText:
+	// runs of "@" collapsed), then the 79x5's own limits.
 	l := in.dev.Label
-	screen, line := ScreenLabel(l), LineLabel(l)
+	shown := drivers.UserText(l)
+	screen, line := ScreenLabel(shown), LineLabel(shown)
 	if screen == l && line == l {
 		return drivers.Condition(t, metav1.ConditionFalse, ReasonAsWritten, "")
 	}

@@ -169,7 +169,8 @@ departs from it, the departure is recorded here (and in the code's docs).
   label or person name to one `@`, so text a person writes can never form
   a `@@secret:…@@` placeholder that the agent would resolve into a file
   served to devices, even once a driver drops its spaces (the 79x5's
-  screen label does).
+  screen label does). The collapse is `drivers.UserText`, which the 79x5's
+  `LabelShortened` applies too, so it reports what the phone shows.
 - **The number plan also refuses shadowing** (§4 only says the controller
   enforces it): a fixed-length pattern may not match a prefix of a number
   in Devices, People, Streams or a built-in (People `1X` beside Devices
