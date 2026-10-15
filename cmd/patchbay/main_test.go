@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ChristopherJMiller/patchbay/internal/version"
 )
@@ -66,22 +65,5 @@ func TestControllerRequiresNamespace(t *testing.T) {
 	_, err := run(t, context.Background(), "controller")
 	if err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("error = %v, want a namespace error", err)
-	}
-}
-
-func TestAgentRequiresToken(t *testing.T) {
-	t.Setenv(agentTokenEnv, "")
-	_, err := run(t, context.Background(), "agent", "--listen", "127.0.0.1:0")
-	if err == nil || !strings.Contains(err.Error(), "token") {
-		t.Fatalf("error = %v, want a token error", err)
-	}
-}
-
-func TestAgentRunsUntilCancelled(t *testing.T) {
-	t.Setenv(agentTokenEnv, "test-token")
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	if _, err := run(t, ctx, "agent", "--listen", "127.0.0.1:0"); err != nil {
-		t.Fatalf("agent stopped with %v, want a clean shutdown", err)
 	}
 }

@@ -32,7 +32,8 @@ func newRootCmd() *cobra.Command {
 
 Server modes (run by the Helm chart):
   controller      decides: compiles config, drives each device's state machine, writes status
-  agent           the PBX pod's sidecar: serves config, watches phones, talks to Asterisk
+  agent           the PBX pod's sidecar: applies config, watches phones, talks to Asterisk
+  fileserver      the PBX pod's TFTP and HTTP :6970 server, unprivileged after binding
   stream-bridge   plays live audio sources to callers (release B)
 
 Client commands need only a kubeconfig.`,
@@ -46,7 +47,8 @@ Client commands need only a kubeconfig.`,
 
 	root.AddCommand(
 		newControllerCmd(g),
-		newAgentCmd(),
+		newAgentCmd(g),
+		newFileserverCmd(),
 		newStreamBridgeCmd(),
 		newStatusCmd(g),
 		newModelsCmd(),
