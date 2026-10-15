@@ -71,7 +71,7 @@ bundle. Then declare the phones (`config/samples` has one of each):
 
 ```sh
 kubectl -n telephony apply -f config/samples/
-patchbay status -n telephony                     # every device, what it waits for, unknown phones
+patchbay status -n telephony                     # the controller and config, every device, unknown phones
 patchbay softphone qr chris-laptop -n telephony  # scan it in Linphone; it works once
 patchbay firmware load cmterm-7945_7965-sip.9-4-2SR4-3.zip -n telephony
 patchbay phone resync desk -n telephony

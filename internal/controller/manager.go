@@ -24,13 +24,14 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 )
 
 // LeaderElectionID names the Lease the controller replicas of one install
 // compete for: one per fullname, so two installs in one namespace never
 // share a leader. The chart's Role names it (resourceNames).
 func LeaderElectionID(fullname string) string {
-	return fullname + "-controller.patchbay.chrismiller.xyz"
+	return fullname + install.LeaseSuffix
 }
 
 // Options configures the controller manager.

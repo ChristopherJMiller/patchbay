@@ -41,8 +41,12 @@ var healthyStatus = map[string]metav1.ConditionStatus{
 // resourceRow is one resource as status prints it.
 type resourceRow struct {
 	kind, name, number, state string
-	conditions                []metav1.Condition
-	humanAction               string
+	// generation and observed are metadata.generation and
+	// status.observedGeneration: a resource whose spec changed since the
+	// controller last decided it says so.
+	generation, observed int64
+	conditions           []metav1.Condition
+	humanAction          string
 	// provisioning is a Softphone with a provisioning URL. The URL itself
 	// is never printed: only `patchbay softphone qr` prints it.
 	provisioning bool
@@ -51,10 +55,15 @@ type resourceRow struct {
 // Status prints an overview of the install (plan 6.2.7):
 //
 //  1. the agent: its version, whether Asterisk is up, the applied config
-//     version and a failed last apply;
+//     version and a failed last apply; then, per install in the namespace
+//     (one leader-election Lease each), the controller: who holds the
+//     Lease and when it renewed it, the version it last compiled beside
+//     the one the agent applied, and a compile failure newer than the
+//     last version written (controllerLines). Without them a stopped
+//     controller or a frozen compile looks like a healthy install;
 //  2. per kind (Phone, Softphone, Person, Stream; by name; a kind with none
 //     left out) each resource's state (Pending before the controller wrote
-//     one), every condition not in its healthy status, its human action, and
+//     one; marked when its spec changed since), every condition not in its healthy status, its human action, and
 //     for a Softphone with a URL the command that shows it;
 //  3. the unknown phones the agent has seen ask for config.
 //
@@ -75,6 +84,13 @@ func Status(ctx context.Context, env *Env) error {
 		p.printf("Agent: could not ask the agent: %s\n", printable(agentErr.Error()))
 	} else {
 		p.printf("Agent: %s\n", printable(agentSummary(doc.Agent)))
+	}
+	applied := ""
+	if agentErr == nil {
+		applied = doc.Agent.AppliedVersion
+	}
+	for _, line := range controllerLines(ctx, env, applied) {
+		p.printf("%s\n", printable(line))
 	}
 	for _, rows := range sections {
 		p.printf("\n")
@@ -128,6 +144,7 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 	for _, o := range phones.Items {
 		rows = append(rows, resourceRow{
 			kind: "Phone", name: o.Name, number: string(o.Spec.Number), state: o.Status.State,
+			generation: o.Generation, observed: o.Status.ObservedGeneration,
 			conditions: o.Status.Conditions, humanAction: o.Status.HumanAction,
 		})
 	}
@@ -136,6 +153,7 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 	for _, o := range softphones.Items {
 		rows = append(rows, resourceRow{
 			kind: "Softphone", name: o.Name, number: string(o.Spec.Number), state: o.Status.State,
+			generation: o.Generation, observed: o.Status.ObservedGeneration,
 			conditions: o.Status.Conditions, humanAction: o.Status.HumanAction,
 			provisioning: o.Status.ProvisioningURL != "",
 		})
@@ -145,6 +163,7 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 	for _, o := range people.Items {
 		rows = append(rows, resourceRow{
 			kind: "Person", name: o.Name, number: string(o.Spec.Number), state: o.Status.State,
+			generation: o.Generation, observed: o.Status.ObservedGeneration,
 			conditions: o.Status.Conditions,
 		})
 	}
@@ -153,6 +172,7 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 	for _, o := range streams.Items {
 		rows = append(rows, resourceRow{
 			kind: "Stream", name: o.Name, number: string(o.Spec.Number), state: o.Status.State,
+			generation: o.Generation, observed: o.Status.ObservedGeneration,
 			conditions: o.Status.Conditions,
 		})
 	}
@@ -161,7 +181,11 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 }
 
 func printRow(p *printer, r resourceRow) {
-	p.printf("%s %s (%s): %s\n", r.kind, r.name, printable(r.number), printable(displayState(r.state)))
+	state := displayState(r.state)
+	if r.state != "" && r.observed < r.generation {
+		state += " (its spec changed since; not decided again yet)"
+	}
+	p.printf("%s %s (%s): %s\n", r.kind, r.name, printable(r.number), printable(state))
 	for _, c := range r.conditions {
 		if want, known := healthyStatus[c.Type]; known && c.Status == want {
 			continue

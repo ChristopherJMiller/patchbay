@@ -1,4 +1,6 @@
 Agent: v0.3.0, Asterisk up (22.6.0), config 0123456789ab applied, last apply of fedcba987654 failed: verify: endpoint phone-kitchen is missing
+Controller patchbay: patchbay-controller-5d9c7_0a1b, lease renewed 3s ago
+Config: version 0123456789ab compiled and applied
 
 Phone desk (100): Registered
 Phone garage (102): Pending

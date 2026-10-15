@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -18,6 +21,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/cli"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 )
 
 // statusURL is laptop's provisioning URL: status must never print it.
@@ -140,7 +144,9 @@ func statusObservations() agentapi.Observations {
 }
 
 func TestStatus(t *testing.T) {
-	te := newTestEnv(t, statusObjects()...)
+	renewed := 3 * time.Second
+	objs := append(statusObjects(), controllerObjects(&renewed, statusObservations().Agent.AppliedVersion, time.Hour, 0, "")...)
+	te := newTestEnv(t, objs...)
 	te.agent.observations = statusObservations()
 	if err := cli.Status(context.Background(), te.Env); err != nil {
 		t.Fatal(err)
@@ -220,7 +226,8 @@ func TestStatusEmpty(t *testing.T) {
 	if err := cli.Status(context.Background(), te.Env); err != nil {
 		t.Fatal(err)
 	}
-	want := "Agent: v0.3.0, Asterisk up (22.6.0), config 0123456789ab applied\n\nUnknown phones: none\n"
+	want := "Agent: v0.3.0, Asterisk up (22.6.0), config 0123456789ab applied\n" +
+		"Controller: no controller Lease in namespace telephony: none has run here\n\nUnknown phones: none\n"
 	if te.out.String() != want {
 		t.Errorf("output:\n%q\nwant:\n%q", te.out, want)
 	}
@@ -343,5 +350,103 @@ func TestStatusPrintsNoEscapes(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// controllerObjects are an install's controller-side objects: its Lease,
+// renewed renewed ago (nil: no holder), pbx-config at version, and the
+// bundle Events at the given ages.
+func controllerObjects(renewed *time.Duration, version string, written, failed time.Duration, failNote string) []client.Object {
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "patchbay" + install.LeaseSuffix, Namespace: testNamespace}}
+	if renewed != nil {
+		holder := "patchbay-controller-5d9c7_0a1b"
+		at := metav1.NewMicroTime(testNow.Add(-*renewed))
+		lease.Spec.HolderIdentity, lease.Spec.RenewTime = &holder, &at
+	}
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "patchbay-pbx-config", Namespace: testNamespace,
+		Annotations: map[string]string{install.AnnotationBundleVersion: version}}}
+	event := func(name, reason, note string, ago time.Duration) *eventsv1.Event {
+		return &eventsv1.Event{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}, EventTime: metav1.NewMicroTime(testNow.Add(-ago)),
+			Reason: reason, Note: note, Regarding: corev1.ObjectReference{Kind: "ConfigMap", Namespace: testNamespace, Name: cm.Name},
+		}
+	}
+	objs := []client.Object{lease, cm, event("written", install.EventReasonConfigWritten, "version written", written)}
+	if failNote != "" {
+		objs = append(objs, event("failed", install.EventReasonCompileFailed, failNote, failed))
+	}
+	return objs
+}
+
+// TestStatusController: status says whether a controller holds the
+// install's Lease and renews it, which version it last compiled beside the
+// one the agent applied, and a compile failure newer than the last
+// version written; and marks a resource changed since its status was
+// written. Otherwise a stopped controller, or a frozen compile, looks
+// exactly like a healthy install.
+func TestStatusController(t *testing.T) {
+	applied := statusObservations().Agent.AppliedVersion
+	seconds := func(n int) *time.Duration { d := time.Duration(n) * time.Second; return &d }
+	for _, tc := range []struct {
+		name string
+		objs []client.Object
+		want []string
+	}{
+		{"healthy", controllerObjects(seconds(4), applied, time.Hour, 0, ""), []string{
+			"Controller patchbay: patchbay-controller-5d9c7_0a1b, lease renewed 4s ago\n",
+			"Config: version 0123456789ab compiled and applied\n",
+		}},
+		{"stale lease", controllerObjects(seconds(90), applied, time.Hour, 0, ""), []string{
+			"Controller patchbay: patchbay-controller-5d9c7_0a1b last renewed its lease 1m30s ago: it may be down, and what follows is as it last wrote it\n",
+		}},
+		{"no holder", controllerObjects(nil, applied, time.Hour, 0, ""), []string{
+			"Controller patchbay: nobody holds the lease: nothing decides or compiles, and what follows is as last written\n",
+		}},
+		{"compile failing", controllerObjects(seconds(4), strings.Repeat("e", 64), time.Hour, time.Minute,
+			"compile: Phone desk: cisco79x5: no time zone"), []string{
+			"Config: version eeeeeeeeeeee compiled, the agent has 0123456789ab applied\n",
+			"Config: compiling has failed since 2026-10-15T09:29:00Z, the version above stays: compile: Phone desk: cisco79x5: no time zone\n",
+		}},
+		{"an old compile failure", controllerObjects(seconds(4), applied, time.Minute, time.Hour, "compile: fixed since"), []string{
+			"Config: version 0123456789ab compiled and applied\n",
+		}},
+		{"no lease", nil, []string{
+			"Controller: no controller Lease in namespace telephony: none has run here\n",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := newTestEnv(t, tc.objs...)
+			te.agent.observations = statusObservations()
+			if err := cli.Status(context.Background(), te.Env); err != nil {
+				t.Fatal(err)
+			}
+			out := te.out.String()
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("output lacks %q:\n%s", want, out)
+				}
+			}
+			if tc.name == "an old compile failure" && strings.Contains(out, "fixed since") {
+				t.Errorf("an older compile failure than the last version written is printed:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestStatusMarksUndecidedChanges: a resource whose spec changed since
+// the controller wrote its status says so beside its state.
+func TestStatusMarksUndecidedChanges(t *testing.T) {
+	desk := &v1alpha1.Phone{
+		ObjectMeta: metav1.ObjectMeta{Name: "desk", Namespace: testNamespace, Generation: 3},
+		Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "0200E2E00001", Number: "100", Label: "Desk"},
+		Status:     v1alpha1.PhoneStatus{State: "Registered", ObservedGeneration: 2},
+	}
+	te := newTestEnv(t, desk)
+	te.agent.observations = statusObservations()
+	if err := cli.Status(context.Background(), te.Env); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Phone desk (100): Registered (its spec changed since; not decided again yet)\n"; !strings.Contains(te.out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, te.out)
 	}
 }

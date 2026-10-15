@@ -166,6 +166,11 @@ const (
 	AnnotationBundleVersion = "patchbay.chrismiller.xyz/bundle-version"
 )
 
+// LeaseSuffix ends the name of an install's leader-election Lease,
+// <fullname>-controller.patchbay.chrismiller.xyz (controller.LeaderElectionID):
+// patchbay status finds the installs of a namespace by it.
+const LeaseSuffix = "-controller.patchbay.chrismiller.xyz"
+
 // ManagedLabels are the labels every object the controller creates
 // carries. Each call returns a new map.
 func ManagedLabels() map[string]string {
