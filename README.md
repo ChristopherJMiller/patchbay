@@ -101,9 +101,12 @@ make image                     # ghcr.io/christopherjmiller/patchbay:dev (render
 make asterisk-check            # every compile golden booted in the pinned Asterisk (docker)
 make e2e                       # kind + the chart + the controller + real Asterisk + simulated phones
 make check-hygiene             # no binaries, firmware or secrets in git (CI runs it)
+make vulncheck                 # govulncheck, with the Go that builds the image
 ```
 
 The e2e suite, its knobs and how to debug it: [docs/e2e.md](docs/e2e.md).
+CI, Renovate's automerge policy, image tags and releases:
+[docs/releasing.md](docs/releasing.md).
 
 ## Layout
 

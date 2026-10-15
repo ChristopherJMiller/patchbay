@@ -68,6 +68,13 @@ each contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
 `docs/design.md` is a verbatim copy of the approved spec, so where the code
 departs from it, the departure is recorded here (and in the code's docs).
 
+- **The chart is published by CI's `release` job, not chart-releaser-action**
+  (design §6 "CI and releases"). Same result: the chart is a GitHub release
+  asset and the Helm index lives on gh-pages at
+  `https://christopherjmiller.github.io/patchbay`. But the app and the chart
+  share one version, set from the `v*` tag at package time, and
+  chart-releaser-action releases a chart only when `charts/` changed
+  (docs/releasing.md).
 - **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
@@ -239,10 +246,15 @@ make e2e          # kind + chart + controller + real Asterisk + fakephones; docs
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
 make check-hygiene # no tracked binaries, big files, firmware types or secrets
+make vulncheck    # govulncheck with the Dockerfile's Go (not the flake's): CI gates on it
 make asterisk-check # every compile golden booted in the chart's Asterisk image (docker,
                     # no cluster), then registered to and called as each device;
                     # also the agent's AMI client against the real Asterisk
 ```
+
+CI, the `ci-ok` required check, Renovate's automerge policy, image tags and
+cutting a release: [docs/releasing.md](docs/releasing.md). Never publish by
+hand; a `v*` tag does it.
 
 The CRDs are generated into `charts/patchbay/templates/crds/` and carry
 `helm.sh/resource-policy: keep`. Never edit them, or `zz_generated.*`, by hand.

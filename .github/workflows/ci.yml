@@ -9,14 +9,26 @@
 #     (DeterminateSystems/magic-nix-cache-action was shut down in Feb 2025 and
 #     revived in mid-2025. By default it sends diagnostics to Determinate and
 #     tries FlakeHub, which needs `id-token: write`. So we don't use it.)
+#
+# `ci-ok` is the one check the main ruleset requires: it passes only when
+# check, e2e and image all passed, so Renovate's PRs auto-merge on it and
+# nothing else (docs/releasing.md). Publishing happens only on a push to
+# main (image `sha-<commit>`, `main`) or a `v*` tag (image `<version>`,
+# `<major>.<minor>`, then the chart and the GitHub release), and only after
+# every test passed.
 name: CI
 
 on:
   push:
     # Renovate branches always have a PR; don't run them twice.
     branches-ignore: ["renovate/**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Weekly on main, with no change of ours: new vulnerability reports,
+  # pinned images or digests that disappeared, a runner image that moved.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -81,6 +93,14 @@ jobs:
       - name: Workflows (actionlint)
         run: nix develop -c actionlint
 
+      # Only vulnerabilities in code patchbay actually calls (govulncheck
+      # works at the symbol level), in our modules and in the standard
+      # library of the Go that builds the image (the Dockerfile's builder,
+      # see the Makefile). A red run with no change of ours means a module
+      # or Go patch release is due; Renovate's PR for it turns this green.
+      - name: Known vulnerabilities (govulncheck)
+        run: nix develop -c make vulncheck
+
       - name: Lint and test (unit + envtest)
         run: nix develop -c make lint test
 
@@ -101,7 +121,7 @@ jobs:
   e2e:
     name: e2e (kind)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     # Contract with the harness (`make e2e`, test/e2e):
     #   - one kind cluster named patchbay-e2e;
     #   - its kubeconfig at .e2e/kubeconfig (never uploaded);
@@ -138,7 +158,7 @@ jobs:
       - name: e2e
         # A step timeout counts as a failure, so the diagnostics steps still
         # run. A job timeout would cancel them.
-        timeout-minutes: 35
+        timeout-minutes: 45
         # Keep the cluster, pass or fail, so the failure steps below can
         # export node logs from it. The runner is thrown away afterwards.
         env:
@@ -173,3 +193,183 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+  image:
+    name: image (amd64, arm64)
+    needs: [check, e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io (publishing events only)
+      id-token: write # sign the build provenance (Sigstore, keyless)
+      attestations: write
+    env:
+      IMAGE: ghcr.io/christopherjmiller/patchbay
+      # A push to main or a v* tag publishes; every other event (PRs, the
+      # weekly run) only proves both architectures build.
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          save: false
+
+      # The image copies build/sounds/; the check job already proved the
+      # render is reproducible.
+      - name: Sound prompts
+        run: nix develop -c make sounds
+
+      # The Dockerfile cross-compiles on the build platform and its final
+      # stage has no RUN, so arm64 needs no emulation.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          # sha-<7> is what deployments pin (with the digest); main moves.
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      # Verify with: gh attestation verify oci://<image>@<digest> --repo ChristopherJMiller/patchbay
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: env.PUBLISH == 'true'
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Published
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo "Pin: \`${IMAGE}:sha-${GITHUB_SHA::7}@${DIGEST}\`"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A v* tag: the chart (version and appVersion = the tag) as a GitHub
+  # release asset, and the Helm repository index on gh-pages, served at
+  # https://christopherjmiller.github.io/patchbay. This is chart-releaser's
+  # layout, done in four commands because the app and the chart share one
+  # version (chart-releaser-action releases a chart only when charts/
+  # changed).
+  release:
+    name: release (chart + GitHub release)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # the GitHub release and the gh-pages index
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only this checkout keeps its credentials: the index is pushed from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: gh-pages
+          path: .pages
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          save: false
+
+      - name: Package the chart
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not v<semver>"
+            exit 1
+          fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          nix develop -c helm package charts/patchbay --version "$v" --app-version "$v" -d dist
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=()
+          [[ "$VERSION" == *-* ]] && pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" "dist/patchbay-${VERSION}.tgz" \
+            --verify-tag --generate-notes --title "patchbay ${VERSION}" "${pre[@]}"
+
+      - name: Helm repository index (gh-pages)
+        run: |
+          nix develop -c helm repo index dist \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --merge .pages/index.yaml
+          cp dist/index.yaml .pages/index.yaml
+          cd .pages
+          git add index.yaml
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "patchbay ${VERSION}"
+          git push origin HEAD:gh-pages
+
+  # The single required check (main ruleset). `needs` skips a job whose
+  # dependency failed, so this runs always() and passes only if every
+  # needed job succeeded: a failure, cancellation or skip anywhere is red.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [check, e2e, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every required job passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+          jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null
