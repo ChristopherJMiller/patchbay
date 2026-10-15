@@ -65,8 +65,9 @@ func TestPhoneRoundTrip(t *testing.T) {
 			LastRegistered:   &at,
 			UpgradeStartedAt: &earlier,
 		},
-		LastAction:  &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: "9f00", At: at, Attempts: 2},
-		HumanAction: "press Settings then **#**, or power-cycle it",
+		LastAction:     &v1alpha1.LastAction{Kind: v1alpha1.ActionResync, Version: "9f00", At: at, Attempts: 2},
+		HumanAction:    "press Settings then **#**, or power-cycle it",
+		HandledRequest: "2026-10-14T11:58:00Z",
 	}
 	meta.SetStatusCondition(&got.Status.Conditions, metav1.Condition{
 		Type: v1alpha1.ConditionRegistered, Status: metav1.ConditionTrue, Reason: "Registered",
@@ -87,6 +88,7 @@ func TestPhoneRoundTrip(t *testing.T) {
 		!equality.Semantic.DeepEqual(after.Status.Observed, want.Observed) ||
 		!equality.Semantic.DeepEqual(after.Status.LastAction, want.LastAction) ||
 		after.Status.HumanAction != want.HumanAction ||
+		after.Status.HandledRequest != want.HandledRequest ||
 		!meta.IsStatusConditionTrue(after.Status.Conditions, v1alpha1.ConditionRegistered) {
 		t.Fatalf("status did not round trip:\n got %+v\nwant %+v", after.Status, *want)
 	}
@@ -158,6 +160,9 @@ func TestSchemaRejects(t *testing.T) {
 		{"firmware with a space", phone("fwspace", func(s *v1alpha1.PhoneSpec) { s.Firmware = "SIP45 9" }), "spec.firmware"},
 		{"stream source not a URL", stream("nourl", "king 5"), "source must be an absolute URL"},
 		{"stream source relative", stream("relative", "/auto/v5.1"), "source must be an absolute URL"},
+		// design §4 writes `number: 100`; the schema wants a string (CLAUDE.md,
+		// "Deviations from the design").
+		{"number as a bare YAML integer", bareNumberPhone(ns), "spec.number in body must be of type string"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := testClient.Create(ctx, tc.obj)
@@ -172,4 +177,16 @@ func TestSchemaRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bareNumberPhone is a Phone written the way design §4's example writes it,
+// with `number: 100` unquoted (an integer once parsed).
+func bareNumberPhone(ns string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{"model": "cisco-7945", "mac": "D0C78915E8C8", "number": int64(100)},
+	}}
+	u.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("Phone"))
+	u.SetNamespace(ns)
+	u.SetName("bare-number")
+	return u
 }

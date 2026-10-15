@@ -52,7 +52,7 @@ type StreamStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories=patchbay
 // +kubebuilder:printcolumn:name="Number",type=string,JSONPath=`.spec.number`
-// +kubebuilder:printcolumn:name="Name",type=string,JSONPath=`.spec.name`
+// +kubebuilder:printcolumn:name="Display",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.source`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

@@ -75,6 +75,13 @@ type SoftphoneStatus struct {
 	// +optional
 	LastAction *LastAction `json:"lastAction,omitempty"`
 
+	// HandledRequest is the value of the reissue request annotation
+	// (patchbay.chrismiller.xyz/reissue-requested) the controller last acted
+	// on. An annotation with a different value is a new request.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	HandledRequest string `json:"handledRequest,omitempty"`
+
 	// HumanAction is the exact instruction for a person, when the softphone
 	// cannot make progress without one. Empty when nothing is needed.
 	// +optional

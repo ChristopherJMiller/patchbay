@@ -26,7 +26,9 @@ type PhoneSpec struct {
 	Model PhoneModel `json:"model"`
 
 	// MAC is the phone's Ethernet address: 12 hex digits, no separators, any
-	// case (normalised to upper case).
+	// case (normalised to upper case). It must be unique among Phones: when
+	// two claim one MAC, the older keeps it and the newer gets
+	// MACConflict=True.
 	// +required
 	MAC MAC `json:"mac"`
 
@@ -100,8 +102,8 @@ type PhoneStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Conditions: Ready, FirmwareAvailable, FirmwareCurrent, Provisioned,
-	// Registered, ConfigCurrent, and Unsupported / NumberConflict when they
-	// apply.
+	// Registered, ConfigCurrent, and Unsupported / NumberConflict /
+	// MACConflict when they apply.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -114,6 +116,13 @@ type PhoneStatus struct {
 	// LastAction is the most recent action taken on the phone.
 	// +optional
 	LastAction *LastAction `json:"lastAction,omitempty"`
+
+	// HandledRequest is the value of the resync request annotation
+	// (patchbay.chrismiller.xyz/resync-requested) the controller last acted
+	// on. An annotation with a different value is a new request.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	HandledRequest string `json:"handledRequest,omitempty"`
 
 	// HumanAction is the exact instruction for a person, set whenever the
 	// phone cannot make progress without one (connect it, stage firmware,

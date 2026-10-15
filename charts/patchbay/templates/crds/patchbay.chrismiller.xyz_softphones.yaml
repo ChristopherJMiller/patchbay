@@ -138,6 +138,13 @@ spec:
                   x-kubernetes-list-map-keys:
                     - type
                   x-kubernetes-list-type: map
+                handledRequest:
+                  description: |-
+                    HandledRequest is the value of the reissue request annotation
+                    (patchbay.chrismiller.xyz/reissue-requested) the controller last acted
+                    on. An annotation with a different value is a new request.
+                  maxLength: 256
+                  type: string
                 humanAction:
                   description: |-
                     HumanAction is the exact instruction for a person, when the softphone

@@ -6,8 +6,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Number is a dialable number: one or more ASCII digits, written as a string
-// (quote it in YAML: `number: "100"`), so leading zeros survive.
+// Number is a dialable number: one or more ASCII digits, written as a string.
+// Quote it in YAML (`number: "100"`). A bare `number: 100` is rejected by the
+// API server ("must be of type string"), although design §4's examples write
+// it bare: that is a deliberate deviation (see CLAUDE.md). A string keeps
+// leading zeros, and avoids YAML 1.1 reading `number: 010` as octal 8.
 //
 // The schema checks only that it is digits. Which range means what (1XX
 // devices, 3XX people, 7XX streams, ...) is the number plan, which lives in
@@ -75,6 +78,30 @@ const (
 	// creationTimestamp) already holds this resource's number. A conflicted
 	// resource is not routed.
 	ConditionNumberConflict = "NumberConflict"
+	// ConditionMACConflict is True on a Phone when an older Phone (by
+	// creationTimestamp) already has the same MAC, compared upper case. Two
+	// Phones with one MAC would render the same SEP<MAC>.cnf.xml, so only the
+	// oldest is rendered; the newer one is Invalid and gets no files.
+	ConditionMACConflict = "MACConflict"
+)
+
+// Request annotations: how a human asks the controller for something
+// (design §6, §8.4) without editing spec and without the controller ever
+// writing metadata. The value is opaque, at most 256 characters (a longer one
+// is ignored); `patchbay` sets the current time (RFC 3339). The controller
+// acts once per distinct value: it compares the annotation with
+// status.handledRequest and, having acted, records the value there. Setting
+// the same value again does nothing; set a new one to ask again. Removing the
+// annotation is never needed.
+const (
+	// AnnotationResyncRequested on a Phone asks for one resync (the phone
+	// re-reads its config), outside the usual rate limit.
+	// `patchbay phone resync` sets it.
+	AnnotationResyncRequested = "patchbay.chrismiller.xyz/resync-requested"
+	// AnnotationReissueRequested on a Softphone asks for a fresh
+	// provisioning token, moving it back to Issued.
+	// `patchbay softphone qr --reissue` sets it.
+	AnnotationReissueRequested = "patchbay.chrismiller.xyz/reissue-requested"
 )
 
 // Condition reasons named by the design (§7, §8.4). Drivers add their own.

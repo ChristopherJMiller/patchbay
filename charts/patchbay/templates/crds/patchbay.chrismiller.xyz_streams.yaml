@@ -22,7 +22,7 @@ spec:
           name: Number
           type: string
         - jsonPath: .spec.name
-          name: Name
+          name: Display
           type: string
         - jsonPath: .status.state
           name: State

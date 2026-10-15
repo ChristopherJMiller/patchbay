@@ -90,7 +90,9 @@ spec:
                 mac:
                   description: |-
                     MAC is the phone's Ethernet address: 12 hex digits, no separators, any
-                    case (normalised to upper case).
+                    case (normalised to upper case). It must be unique among Phones: when
+                    two claim one MAC, the older keeps it and the newer gets
+                    MACConflict=True.
                   pattern: ^[0-9A-Fa-f]{12}$
                   type: string
                 model:
@@ -119,8 +121,8 @@ spec:
                 conditions:
                   description: |-
                     Conditions: Ready, FirmwareAvailable, FirmwareCurrent, Provisioned,
-                    Registered, ConfigCurrent, and Unsupported / NumberConflict when they
-                    apply.
+                    Registered, ConfigCurrent, and Unsupported / NumberConflict /
+                    MACConflict when they apply.
                   items:
                     description: Condition contains details for one aspect of the current state of this API Resource.
                     properties:
@@ -178,6 +180,13 @@ spec:
                   x-kubernetes-list-map-keys:
                     - type
                   x-kubernetes-list-type: map
+                handledRequest:
+                  description: |-
+                    HandledRequest is the value of the resync request annotation
+                    (patchbay.chrismiller.xyz/resync-requested) the controller last acted
+                    on. An annotation with a different value is a new request.
+                  maxLength: 256
+                  type: string
                 humanAction:
                   description: |-
                     HumanAction is the exact instruction for a person, set whenever the
