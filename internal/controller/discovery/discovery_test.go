@@ -14,6 +14,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -204,5 +206,96 @@ func TestNothingUnknown(t *testing.T) {
 	r.Report(context.Background(), agentview.Snapshot{})
 	if reads != 0 || len(rec.take()) != 0 {
 		t.Errorf("%d reads; want none", reads)
+	}
+}
+
+// TestEachMACItsOwnEvent: through client-go's real events broadcaster, two
+// unknown phones reported on one pbx-config within minutes are two Events,
+// each naming its MAC; without a related object per MAC the second would
+// join the first's series and its note would be lost.
+func TestEachMACItsOwnEvent(t *testing.T) {
+	cs := kubefake.NewClientset()
+	b := events.NewBroadcaster(&events.EventSinkImpl{Interface: cs.EventsV1()})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.StartRecordingToSinkWithContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Shutdown()
+	cm := pbxConfig()
+	cm.UID, cm.ResourceVersion = "uid-1", "7"
+	r := discovery.New(discovery.Config{Reader: fakeClient(cm), Namespace: ns, Names: names,
+		Recorder: b.NewRecorder(clientgoscheme.Scheme, install.EventRecorderName)})
+	r.Report(ctx, snapshot(started, unknown("0200E2E00001", "192.168.20.11")))
+	r.Report(ctx, snapshot(started, unknown("0200E2E00001", "192.168.20.11"), unknown("0200E2E00002", "192.168.20.12")))
+
+	var notes []string
+	err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		l, err := cs.EventsV1().Events(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		notes = notes[:0]
+		for _, e := range l.Items {
+			notes = append(notes, e.Note)
+		}
+		return len(notes) == 2, nil
+	})
+	slices.Sort(notes)
+	want := []string{install.UnknownPhoneMessage("0200E2E00001", "192.168.20.11"), install.UnknownPhoneMessage("0200E2E00002", "192.168.20.12")}
+	if err != nil || !slices.Equal(notes, want) {
+		t.Errorf("Event notes %q (%v); want %q", notes, err, want)
+	}
+}
+
+// TestFloodOfFreshMACs: a host requesting SEP<random MAC>.cnf.xml in a
+// loop puts up to the agent's 64 new MACs in every poll. The Reporter
+// emits at most ReportBurst Events at once and one per ReportEvery after,
+// reports the MACs it held back on a later poll while the agent still
+// lists them, and remembers only MACs the agent still lists, so its memory
+// stays bounded.
+func TestFloodOfFreshMACs(t *testing.T) {
+	rec := &recorder{}
+	now := started
+	r := discovery.New(discovery.Config{Reader: fakeClient(pbxConfig()), Namespace: ns, Names: names, Recorder: rec,
+		Now: func() time.Time { return now }})
+	ctx := context.Background()
+	batch := func(poll int) []agentapi.UnknownDevice {
+		var out []agentapi.UnknownDevice
+		for i := range 64 {
+			out = append(out, unknown(fmt.Sprintf("02%04X%06X", poll, i), "192.168.20.66"))
+		}
+		return out
+	}
+	first := batch(0)
+	r.Report(ctx, snapshot(started, first...))
+	if n := len(rec.take()); n != discovery.ReportBurst {
+		t.Fatalf("first poll of 64 fresh MACs: %d Events; want the burst, %d", n, discovery.ReportBurst)
+	}
+	// Five seconds on, the same 64: still limited, nothing more.
+	now = now.Add(5 * time.Second)
+	r.Report(ctx, snapshot(started, first...))
+	if n := len(rec.take()); n != 0 {
+		t.Errorf("five seconds on: %d Events; want none", n)
+	}
+	// One ReportEvery on, one held-back MAC is reported.
+	now = now.Add(discovery.ReportEvery)
+	r.Report(ctx, snapshot(started, first...))
+	if got := rec.take(); len(got) != 1 || slices.Contains(got, event(first[0].MAC, first[0].Source)) {
+		t.Errorf("one interval on: events %q; want one MAC not reported before", got)
+	}
+	// A day of fresh batches: Events stay at the rate, memory at the
+	// agent's list.
+	total := 0
+	for poll := 1; poll <= 17280; poll++ {
+		now = now.Add(5 * time.Second)
+		r.Report(ctx, snapshot(started, batch(poll)...))
+		total += len(rec.take())
+	}
+	if limit := int(17280*5*time.Second/discovery.ReportEvery) + discovery.ReportBurst; total > limit {
+		t.Errorf("a day of floods: %d Events; want at most %d", total, limit)
+	}
+	if n := discovery.Remembered(r); n > 64 {
+		t.Errorf("the Reporter remembers %d MACs; want at most the agent's 64", n)
 	}
 }

@@ -212,8 +212,10 @@ func TestSetupWiresEverything(t *testing.T) {
 		var seen []string
 		for _, e := range l.Items {
 			seen = append(seen, e.Reason+"/"+e.Regarding.Kind+"/"+e.Regarding.Name)
+			// The API server takes the related reference naming the MAC.
 			if e.Reason == install.EventReasonUnknownPhone && e.Regarding.Name == names.ConfigMap &&
-				e.Note == install.UnknownPhoneMessage(agent.unknown.MAC, agent.unknown.Source) {
+				e.Note == install.UnknownPhoneMessage(agent.unknown.MAC, agent.unknown.Source) &&
+				e.Related != nil && *e.Related == *install.UnknownPhoneRelated(ns, agent.unknown.MAC) {
 				return true, ""
 			}
 		}

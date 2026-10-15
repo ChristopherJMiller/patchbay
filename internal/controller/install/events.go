@@ -1,5 +1,12 @@
 package install
 
+import (
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+)
+
 // Kubernetes Events the controller emits (events.k8s.io/v1, through
 // controller-runtime's Manager.GetEventRecorder(EventRecorderName), whose
 // recorder is client-go's tools/events.EventRecorder; tests use
@@ -13,6 +20,19 @@ package install
 //   - discovery and the bundle's Events (UnknownPhone, ConfigWritten,
 //     CompileFailed): the pbx-config ConfigMap, or, while it does not exist
 //     yet, the Settings ConfigMap (CompileFailed only).
+//
+// Series: client-go's events broadcaster joins Events with the same type,
+// reason, action, regarding object (its resourceVersion included) and
+// related object, within six minutes of the last one, into one series:
+// the first Event's count grows, its note stays, and the later notes are
+// lost. So an Event whose note says something new must differ in one of
+// those: a device's Events after a status write regard its new
+// resourceVersion; each UnknownPhone Event names its MAC in related
+// (UnknownPhoneRelated). What stays one series: an ActionFailed repeated
+// before the status changes, and a CompileFailed repeated while pbx-config
+// is unchanged (the reconcile retries within six minutes, so the series
+// keeps the first error's note while any compile error persists; the log
+// has each one).
 
 // EventRecorderName is the reporting controller of every Event.
 const EventRecorderName = "patchbay-controller"
@@ -69,4 +89,16 @@ const (
 // words: "unknown phone <MAC> requested config from <IP>".
 func UnknownPhoneMessage(mac, source string) string {
 	return "unknown phone " + mac + " requested config from " + source
+}
+
+// UnknownPhoneRelated is an UnknownPhone Event's related object: the Phone
+// that does not exist yet, named by the MAC it would have
+// (fieldPath "spec.mac{<MAC>}", no name). It keeps each MAC's Event its own:
+// without it the broadcaster would join every UnknownPhone on one
+// pbx-config into one series with the first phone's note.
+func UnknownPhoneRelated(namespace, mac string) *corev1.ObjectReference {
+	return &corev1.ObjectReference{
+		APIVersion: v1alpha1.GroupVersion.String(), Kind: string(drivers.KindPhone), Namespace: namespace,
+		FieldPath: "spec.mac{" + mac + "}",
+	}
 }
