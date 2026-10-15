@@ -131,6 +131,29 @@ const (
 	ReasonNumberNotInPlan = "NumberNotInPlan"
 )
 
+// Reasons of the Person and Stream conditions (Ready, NumberConflict),
+// which the controller derives from the number table and the compiled
+// bundle; Persons and Streams have no driver.
+const (
+	// ReasonNumberConflict is NumberConflict True, and Ready False: an
+	// older resource holds the number.
+	ReasonNumberConflict = "NumberConflict"
+	// ReasonNoConflict is NumberConflict False.
+	ReasonNoConflict = "NoConflict"
+	// ReasonRouted is Ready True on a Person: its number rings every one of
+	// its devices.
+	ReasonRouted = "Routed"
+	// ReasonMissingRingTargets is Ready False on a Person: at least one of
+	// its ring targets does not exist or is not routed (the message lists
+	// them). It still rings the others; with none left, its number plays
+	// "not available".
+	ReasonMissingRingTargets = "MissingRingTargets"
+	// ReasonNoStreamBridge is Ready False on a Stream that holds its
+	// number: release A has no stream bridge, so its number plays "not
+	// available".
+	ReasonNoStreamBridge = "NoStreamBridge"
+)
+
 // ActionKind names something done to a device. Only the controller decides
 // actions (through a driver's Decide), and status.lastAction records them,
 // which is what rate-limits them.
