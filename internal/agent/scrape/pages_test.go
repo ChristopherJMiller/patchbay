@@ -236,3 +236,40 @@ func TestPageShapesRoundTrip(t *testing.T) {
 		t.Errorf("MarshalPage has no XML declaration: %s", b)
 	}
 }
+
+// TestParseBoundsWhatThePhoneSays: the page is the phone's (or whoever
+// answers at its address on the voice VLAN): every field is kept as valid
+// UTF-8 with no control character (a terminal escape or carriage return
+// would reach `patchbay status`) and at most MaxField bytes, every log
+// line at most MaxLogLine, so a 256 KiB page cannot put 40 kB into a
+// Phone's status.
+func TestParseBoundsWhatThePhoneSays(t *testing.T) {
+	huge := "SIP45." + strings.Repeat("A", 40000) + "\x1b[2J\rspoofed\u009b"
+	info, err := scrape.ParseDeviceInformation(page(t, scrape.DeviceInformationX{VersionID: huge, ModelNumber: "CP-7945G\r\u009b[1A"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := func(what, s string, limit int) {
+		t.Helper()
+		if len(s) > limit || strings.ContainsAny(s, "\x1b\r\n\u009b") {
+			t.Errorf("%s: %d bytes (limit %d) %q…", what, len(s), limit, s[:min(len(s), 20)])
+		}
+	}
+	clean("versionID", info.VersionID, scrape.MaxField)
+	if !strings.HasPrefix(info.VersionID, "SIP45.AAAA") || info.ModelNumber != "CP-7945G  [1A" {
+		t.Errorf("versionID %q…, model %q", info.VersionID[:10], info.ModelNumber)
+	}
+	net, err := scrape.ParseNetworkConfiguration(page(t, scrape.NetworkConfigurationX{CallManager1: huge}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean("callManager1", net.CallManager1, scrape.MaxField)
+	log, err := scrape.ParseDeviceLog(page(t, scrape.DeviceLogX{Status: []string{huge, "10:02:18a 7: Trust List update failed"}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 2 || log[1] != "10:02:18a 7: Trust List update failed" {
+		t.Fatalf("log %d lines, last %q", len(log), log[len(log)-1])
+	}
+	clean("log line", log[0], scrape.MaxLogLine)
+}

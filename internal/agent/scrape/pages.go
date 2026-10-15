@@ -87,6 +87,19 @@ var (
 // maxLogLines is how many of the newest /DeviceLogX lines a scrape keeps.
 const maxLogLines = 20
 
+// What a scrape keeps of each value: the page is whatever answers at the
+// phone's address on the voice VLAN, so every field and log line is
+// sanitized (valid UTF-8, each control character a space) and bounded
+// before it reaches the observations and, through the controller, a
+// Phone's status and `patchbay status`.
+const (
+	// MaxField bounds each field of /DeviceInformationX and
+	// /NetworkConfigurationX (a load ID is under 30 bytes).
+	MaxField = 128
+	// MaxLogLine bounds each /DeviceLogX line.
+	MaxLogLine = 256
+)
+
 // ParseDeviceInformation reads /DeviceInformationX.
 func ParseDeviceInformation(b []byte) (*api.DeviceInformation, error) {
 	root, err := parsePage(b, rootDeviceInformation)
@@ -143,7 +156,7 @@ func ParseDeviceLog(b []byte) ([]string, error) {
 	var out []string
 	for _, n := range from {
 		for l := range strings.Lines(n.innerText()) {
-			if l = strings.TrimSpace(l); l != "" {
+			if l = strings.TrimSpace(sanitize(l, MaxLogLine)); l != "" {
 				out = append(out, l)
 			}
 		}
@@ -159,13 +172,14 @@ type node struct {
 	children []*node
 }
 
-// field is the trimmed text of the first child element whose name is one
-// of names and whose text is not blank, or "".
+// field is the text of the first child element whose name is one of names
+// and whose text is not blank, sanitized to MaxField bytes and trimmed, or
+// "".
 func (n *node) field(names []string) string {
 	for _, c := range n.children {
 		for _, name := range names {
 			if c.name == name {
-				if v := strings.TrimSpace(c.text.String()); v != "" {
+				if v := strings.TrimSpace(sanitize(strings.TrimSpace(c.text.String()), MaxField)); v != "" {
 					return v
 				}
 			}

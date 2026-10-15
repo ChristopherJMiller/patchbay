@@ -278,6 +278,11 @@ type Registration struct {
 // none) with its own At and Error. The cisco79x5 driver reads a scrape only
 // when Error is empty and At is not before the phone's last config fetch or
 // firmware download (a "fresh scrape").
+//
+// The pages are whatever answers at the phone's address, so every field
+// and log line is valid UTF-8 with each control character a space, a field
+// at most 128 bytes and a log line at most 256 (scrape.MaxField,
+// scrape.MaxLogLine).
 type WebScrape struct {
 	// At is when the scrape finished: when its last page was read, or when
 	// it failed.
