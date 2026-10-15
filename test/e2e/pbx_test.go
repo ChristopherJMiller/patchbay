@@ -418,8 +418,14 @@ func agentRestarts(ctx context.Context, t *testing.T) int32 {
 // the pod network, then 404, and still 404 after the agent restarts (the
 // spend is on the persistent volume); the served fetch, with the
 // softphone's version, is back in the restarted agent's observations; and
-// the controller replaces the spent token (Provisioned, lastAction
-// rotateToken, a new URL).
+// the controller, which was scaled to 0 meanwhile, sees it and replaces
+// the spent token (Provisioned, lastAction rotateToken, a new URL).
+//
+// The controller is down so the agent restarts while the token is still
+// granted: once a rotated version has settled, the agent rightly forgets
+// the spend (it guards a token no bundle grants any more), and the restart
+// would have nothing to remember. The case that matters is the agent
+// restarting before the controller has acted on the fetch.
 func TestProvisioningOneTime(t *testing.T) {
 	f := features.New("one-time provisioning").
 		Assess("200, 404, agent restart, 404, served fetch remembered, token rotated", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
@@ -436,6 +442,7 @@ func TestProvisioningOneTime(t *testing.T) {
 			if install.ProvisioningURL(h.settings, string(token)) != before.ProvisioningURL {
 				t.Fatal("laptop's status shows a URL other than its compiled token's")
 			}
+			h.scaleController(ctx, t, 0)
 			// The URL's token, fixed in a Secret of its own: the controller
 			// rotates the device Secret's as soon as the first GET spends it.
 			env := []corev1.EnvVar{secretEnv("TOKEN", h.holdSecret(ctx, t, "laptop-token", token), "value")}
@@ -466,10 +473,16 @@ func TestProvisioningOneTime(t *testing.T) {
 			if strings.Contains(fmt.Sprint(obs), string(token)) {
 				t.Error("the observations carry the token")
 			}
+			h.scaleController(ctx, t, 1)
 			laptop.wait(ctx, t, "Provisioned, its spent token rotated", time.Minute, func(d deviceView) (bool, string) {
 				return d.LastAction != nil && d.LastAction.Kind == v1alpha1.ActionRotateToken &&
 					d.ProvisioningURL != "" && d.ProvisioningURL != before.ProvisioningURL, ""
 			})
+			return ctx
+		}).
+		Teardown(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// Never leave the controller scaled down for the tests after.
+			h.scaleController(context.WithoutCancel(ctx), t, 1)
 			return ctx
 		}).
 		Feature()
