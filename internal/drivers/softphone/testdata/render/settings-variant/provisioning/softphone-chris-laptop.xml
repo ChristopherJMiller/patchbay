@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns="http://www.linphone.org/xsds/lpconfig.xsd">
+  <section name="sip">
+    <entry name="default_proxy" overwrite="true">0</entry>
+    <entry name="use_rfc2833" overwrite="true">1</entry>
+    <entry name="use_info" overwrite="true">0</entry>
+  </section>
+  <section name="proxy_0">
+    <entry name="reg_proxy" overwrite="true">&lt;sip:10.0.0.5:5070;transport=udp&gt;</entry>
+    <entry name="reg_route" overwrite="true"></entry>
+    <entry name="reg_identity" overwrite="true">&lt;sip:150@10.0.0.5&gt;</entry>
+    <entry name="reg_expires" overwrite="true">600</entry>
+    <entry name="reg_sendregister" overwrite="true">1</entry>
+    <entry name="publish" overwrite="true">0</entry>
+  </section>
+  <section name="auth_info_0">
+    <entry name="username" overwrite="true">150</entry>
+    <entry name="userid" overwrite="true">softphone-chris-laptop</entry>
+    <entry name="passwd" overwrite="true">@@secret:patchbay-softphone-chris-laptop/sip-password@@</entry>
+    <entry name="domain" overwrite="true">10.0.0.5</entry>
+  </section>
+  <section name="audio_codec_0">
+    <entry name="mime" overwrite="true">G722</entry>
+    <entry name="rate" overwrite="true">8000</entry>
+    <entry name="channels" overwrite="true">1</entry>
+    <entry name="enabled" overwrite="true">1</entry>
+    <entry name="recv_fmtp" overwrite="true"></entry>
+    <entry name="bitrate" overwrite="true"></entry>
+  </section>
+  <section name="audio_codec_1">
+    <entry name="mime" overwrite="true">PCMU</entry>
+    <entry name="rate" overwrite="true">8000</entry>
+    <entry name="channels" overwrite="true">1</entry>
+    <entry name="enabled" overwrite="true">1</entry>
+    <entry name="recv_fmtp" overwrite="true"></entry>
+    <entry name="bitrate" overwrite="true"></entry>
+  </section>
+  <section name="audio_codec_2">
+    <entry name="mime" overwrite="true"></entry>
+  </section>
+  <section name="video">
+    <entry name="capture" overwrite="true">0</entry>
+    <entry name="display" overwrite="true">0</entry>
+    <entry name="automatically_initiate" overwrite="true">0</entry>
+    <entry name="automatically_accept" overwrite="true">0</entry>
+  </section>
+  <section name="misc">
+    <entry name="config-uri" overwrite="true"></entry>
+    <entry name="transient_provisioning" overwrite="true">1</entry>
+  </section>
+</config>
