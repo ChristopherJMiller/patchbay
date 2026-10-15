@@ -340,3 +340,40 @@ func TestRequestsAPIErrors(t *testing.T) {
 		t.Errorf("printed %q", te.out)
 	}
 }
+
+// TestSoftphoneQRReissueApplyFailed: the controller answers with a new URL
+// but the PBX refused the config that serves it (ConfigCurrent False
+// ApplyFailed): the agent rolled back, so the URL would answer 404. The
+// command fails at once, naming the agent's error (control characters as
+// spaces), and prints neither the URL nor a QR code.
+func TestSoftphoneQRReissueApplyFailed(t *testing.T) {
+	te := newTestEnv(t, softphone("Registered", oldURL,
+		condition(v1alpha1.ConditionConfigCurrent, metav1.ConditionTrue, "Current", "")))
+	lastPoll := 0
+	err := playController(t, te, func() error {
+		return cli.SoftphoneQR(context.Background(), te.Env, "laptop", true)
+	}, func(polls int) {
+		lastPoll = polls
+		if polls == 1 {
+			setSoftphoneStatus(t, te, func(s *v1alpha1.SoftphoneStatus) {
+				s.State, s.HandledRequest, s.ProvisioningURL = "Issued", requestValue, newURL
+				meta.SetStatusCondition(&s.Conditions, condition(v1alpha1.ConditionConfigCurrent, metav1.ConditionFalse,
+					v1alpha1.ReasonApplyFailed, "verify: endpoint softphone-laptop is missing\x1b[2J"))
+			})
+		}
+	})
+	if err == nil {
+		t.Fatal("no error for a refused config")
+	}
+	if lastPoll != 1 {
+		t.Errorf("gave up after poll %d, want 1: a refused config does not heal by waiting", lastPoll)
+	}
+	for _, want := range []string{"softphone laptop", v1alpha1.ReasonApplyFailed, "verify: endpoint softphone-laptop is missing [2J"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), newURL) || strings.Contains(err.Error(), "\x1b") || te.out.Len() != 0 {
+		t.Errorf("error %q, output %q: want no URL, no escape, nothing printed", err, te.out)
+	}
+}

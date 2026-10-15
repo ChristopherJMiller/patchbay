@@ -3021,8 +3021,12 @@ nanoseconds, a JSON merge patch of
 `metadata.annotations["patchbay.chrismiller.xyz/reissue-requested"]`, then
 every `ReissuePoll` for at most `ReissueWait` until `handledRequest ==
 value`, `provisioningURL` non-empty and different from before, and
-`ConfigCurrent`'s reason is not `ApplyPending`; timeout → an error naming
-the state. Without it: an empty URL is an error naming the state. Out: the
+`ConfigCurrent`'s reason is not `ApplyPending` (the bundle is live);
+timeout → an error naming the state. With that new URL and
+`ConfigCurrent` False `ApplyFailed` (the agent refused and rolled back the
+bundle that grants it, so the URL answers 404) it fails at once, quoting
+the condition's message (the agent's error; never the URL) (W3 review,
+6.2.12). Without it: an empty URL is an error naming the state. Out: the
 URL, a blank line, `RenderQR`, a blank line, `This code works once;
 patchbay softphone qr <name> --reissue makes a new one.`
 

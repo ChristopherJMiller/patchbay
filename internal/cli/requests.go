@@ -33,8 +33,10 @@ const (
 // reissue-requested annotation, set to the clock's time) and waits, every
 // ReissuePoll for at most ReissueWait, until the controller has handled
 // that request, status.provisioningURL is a new URL, and the config that
-// serves it is live (ConfigCurrent's reason is not ApplyPending). Without
-// it, a Softphone with no URL is an error naming its state.
+// serves it is live (ConfigCurrent's reason is not ApplyPending). When the
+// PBX refused that config (ApplyFailed: the agent rolled it back, so the
+// URL is not served) it fails at once with the agent's error. Without
+// reissue, a Softphone with no URL is an error naming its state.
 func SoftphoneQR(ctx context.Context, env *Env, name string, reissue bool) error {
 	var sp v1alpha1.Softphone
 	if err := getNamed(ctx, env, "softphone", name, &sp); err != nil {
@@ -76,6 +78,10 @@ func waitReissued(ctx context.Context, env *Env, name, value, before string) (st
 		if err := getNamed(ctx, env, "softphone", name, &sp); err != nil {
 			return "", err
 		}
+		if refused := reissueRefused(&sp.Status, value, before); refused != "" {
+			return "", fmt.Errorf("softphone %s: the PBX refused the config that serves the new token (ConfigCurrent %s: %s); its URL is not served: fix the config, then reissue again",
+				name, v1alpha1.ReasonApplyFailed, refused)
+		}
 		waiting := reissueWaitingOn(&sp.Status, value, before)
 		if waiting == "" {
 			return sp.Status.ProvisioningURL, nil
@@ -92,6 +98,24 @@ func waitReissued(ctx context.Context, env *Env, name, value, before string) (st
 		case <-t.C():
 		}
 	}
+}
+
+// reissueRefused is the agent's error, printable, when the controller has
+// answered the request with a new URL but the PBX refused the config that
+// serves it (ConfigCurrent ApplyFailed); "" otherwise. Nothing heals that
+// by waiting.
+func reissueRefused(s *v1alpha1.SoftphoneStatus, value, before string) string {
+	if s.HandledRequest != value || s.ProvisioningURL == "" || s.ProvisioningURL == before {
+		return ""
+	}
+	c := meta.FindStatusCondition(s.Conditions, v1alpha1.ConditionConfigCurrent)
+	if c == nil || c.Reason != v1alpha1.ReasonApplyFailed {
+		return ""
+	}
+	if c.Message == "" {
+		return "no reason given"
+	}
+	return printable(c.Message)
 }
 
 // reissueWaitingOn says what a reissue still waits for, or "" when the
