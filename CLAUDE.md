@@ -38,7 +38,7 @@ resources (Phone, Softphone, Person, Stream)
 - Secrets never appear in compiled files, only `@@secret:<name>/<key>@@`
   placeholders that the agent resolves.
 
-Contracts: `internal/compile` (Bundle with its device index, Inputs,
+Contracts: `internal/compile` (Bundle with its device index, Inputs, Boot,
 Settings, device Secret names; in `layout.go` the bundle's four trees, the
 live directory the agent swaps and the sound prompts; in `configmap.go` the
 pbx-config ConfigMap encoding), `internal/drivers` (Driver, Device and the
@@ -142,6 +142,15 @@ departs from it, the departure is recorded here (and in the code's docs).
   NOTIFY carries Asterisk's own `Subscription-State: terminated` ahead of
   the agent's `active` (res_pjsip_notify adds it); whether the 7945 minds
   is a bench question (docs/plans/release-a.md §8).
+- **The agent applies only versions its pod's Asterisk can run without a
+  restart** (§5 has every version reloaded): asterisk.conf, modules.conf
+  and the PJSIP transports only load at a restart (`compile.Boot`), so
+  the agent (`--sip-bind`, pbx.address:pbx.ports.sip) refuses a version
+  compiled for another SIP bind or by another release, before writing it.
+  A settings change rolls the PBX pod and the controller together; the
+  new pod stays unready, refusing the old controller's version, until the
+  new one has compiled, instead of booting Asterisk on the old transports
+  and then reporting the new version good after a reload that kept them.
 - **Ready also needs the prompts** (§5: the startup probe passes once the
   first version is applied): `/readyz` also requires every sound prompt
   installed from the image, so 911 never plays a missing announcement.

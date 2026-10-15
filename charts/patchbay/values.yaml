@@ -77,13 +77,15 @@ pbx:
   # The address Asterisk binds SIP to and advertises in SDP, and the file
   # server and device HTTP bind: pbx.nodeName's LAN IP (e.g.
   # 192.168.0.240). Required. Changing it restarts the PBX pod (the SIP
-  # transports are not reloadable).
+  # transports are not reloadable), which waits, not ready, until the
+  # controller has compiled for the new address.
   address: ""
 
   # Ports bound on the node (hostNetwork). None clashes with Talos or
   # Kubernetes (kubelet and the control plane use 10248-10259).
   ports:
     # Asterisk SIP, UDP and TCP (the Cisco 79x5 registers over TCP).
+    # Changing it restarts the PBX pod, like pbx.address.
     sip: 5060
     # Asterisk RTP, UDP. Not declared as container ports (Kubernetes has no
     # port ranges); the router's voice-VLAN filter must match this range.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func TestAgentRequiresItsFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("agent with no namespace, bundle or device HTTP address started")
 	}
-	for _, want := range []string{"--namespace", "--bundle-configmap", "--secrets", "--device-http-listen"} {
+	for _, want := range []string{"--namespace", "--bundle-configmap", "--secrets", "--device-http-listen", "--sip-bind"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %s", err, want)
 		}
@@ -51,6 +52,7 @@ func TestAgentRequiresItsFlags(t *testing.T) {
 var agentArgs = []string{
 	"agent", "--listen", "127.0.0.1:0", "--namespace", testNamespace,
 	"--bundle-configmap", testConfigMap, "--secrets", testSecret, "--device-http-listen", "127.0.0.1:0",
+	"--sip-bind", "192.168.0.240:5060",
 }
 
 func TestAgentRequiresToken(t *testing.T) {
@@ -146,7 +148,7 @@ func newAgentFixture(t *testing.T, withSounds bool, change func(*agentOptions)) 
 			liveDir: t.TempDir(), firmwareDir: filepath.Join(persistent, "firmware"),
 			stateDir: filepath.Join(persistent, "state"), soundsDir: t.TempDir(), soundsSrc: src,
 			fetchSocket: filepath.Join(sock, "fetches.sock"), fsGroup: -1,
-			deviceHTTPListen: freeAddr(t), amiAddress: freeAddr(t),
+			deviceHTTPListen: freeAddr(t), amiAddress: freeAddr(t), sipBind: "192.168.0.240:5060",
 		},
 		bundle: b, logs: &logBuffer{}, values: house.Values(), done: make(chan error, 1),
 	}
@@ -354,5 +356,40 @@ func TestAgentStopsWhenAComponentFails(t *testing.T) {
 	}
 	if runErr == nil || !strings.Contains(runErr.Error(), "device HTTP") {
 		t.Fatalf("the agent stopped with %v, want device HTTP's error", runErr)
+	}
+}
+
+// TestAgentRefusesAnotherSIPBind: in a pod whose Asterisk binds SIP on
+// another port than the bundle was compiled for (pbx.ports.sip changed and
+// the controller has not recompiled yet), the agent applies nothing and
+// stays unready, so Asterisk never boots on transports the pod is not
+// configured for; the observations say why.
+func TestAgentRefusesAnotherSIPBind(t *testing.T) {
+	f := newAgentFixture(t, true, func(o *agentOptions) { o.sipBind = "192.168.0.240:5070" })
+	f.eventually("the bundle refused", func() (bool, string) {
+		code, body := f.do(http.MethodGet, api.PathObservations, nil, true)
+		var obs api.Observations
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &obs) != nil {
+			return false, fmt.Sprint(code, " ", body)
+		}
+		a := obs.Agent
+		return a.LastApplyVersion == f.bundle.Version && strings.Contains(a.LastApplyError, "192.168.0.240:5070"), fmt.Sprintf("%+v", a)
+	})
+	if a := f.observations().Agent; a.AppliedVersion != "" {
+		t.Errorf("applied %s in a pod for another SIP port", a.AppliedVersion)
+	}
+	if code, body := f.do(http.MethodGet, api.PathReadyz, nil, false); code != http.StatusServiceUnavailable {
+		t.Errorf("/readyz = %d %q, want 503", code, body)
+	}
+}
+
+func TestAgentSIPBindMustBeAnAddress(t *testing.T) {
+	t.Setenv(agentTokenEnv, "test-token")
+	for _, bad := range []string{"192.168.0.240", "pbx.example:5060", "192.168.0.240:0", "192.168.0.240:sip"} {
+		args := slices.Clone(agentArgs)
+		args[slices.Index(args, "--sip-bind")+1] = bad
+		if _, err := run(t, context.Background(), args...); err == nil || !strings.Contains(err.Error(), "--sip-bind") {
+			t.Errorf("--sip-bind %q: %v, want an error naming the flag", bad, err)
+		}
 	}
 }

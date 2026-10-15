@@ -57,6 +57,7 @@ type agentOptions struct {
 	fsGroup     int
 
 	deviceHTTPListen string // <pbx address>:8088
+	sipBind          string // <pbx address>:<SIP port>, what Asterisk's transports bind
 	amiAddress       string
 }
 
@@ -82,7 +83,8 @@ func newAgentCmd(g *globalFlags) *cobra.Command {
 
 It reports ready once the first config version is live and the sound prompts
 are installed (--sounds-src into --sounds-dir), so Asterisk starts only on
-valid config.`,
+valid config. It applies only versions compiled for --sip-bind, the
+address and port this pod's Asterisk binds: a reload cannot move them.`,
 		Args: cobra.NoArgs,
 	}
 	f := cmd.Flags()
@@ -101,6 +103,8 @@ valid config.`,
 	f.IntVar(&o.fsGroup, "fs-group", layout.DefaultFSGroup,
 		"the group every live config file gets (the pod's fsGroup, Asterisk's group)")
 	f.StringVar(&o.deviceHTTPListen, "device-http-listen", "", "device HTTP address, <pbx address>:8088; required")
+	f.StringVar(&o.sipBind, "sip-bind", "",
+		"<pbx address>:<SIP port>, where this pod's Asterisk binds SIP: only versions compiled for it are applied; required")
 	f.StringVar(&o.amiAddress, "ami-address", net.JoinHostPort("127.0.0.1", strconv.Itoa(compile.AMIPort)),
 		"Asterisk's AMI address")
 	zapOpts := bindZapFlags(cmd)
@@ -131,6 +135,19 @@ valid config.`,
 	return cmd
 }
 
+// boot is the boot config of this pod's Asterisk, from --sip-bind.
+func (o agentOptions) boot() (compile.Boot, error) {
+	host, port, err := net.SplitHostPort(o.sipBind)
+	if err != nil {
+		return compile.Boot{}, fmt.Errorf("--sip-bind %q: %w", o.sipBind, err)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 || net.ParseIP(host) == nil {
+		return compile.Boot{}, fmt.Errorf("--sip-bind %q: want <IP address>:<port>", o.sipBind)
+	}
+	return compile.BootFor(host, p), nil
+}
+
 func (o agentOptions) check() error {
 	var errs []error
 	for _, f := range []struct{ flag, value string }{
@@ -138,9 +155,15 @@ func (o agentOptions) check() error {
 		{"--bundle-configmap", o.bundleConfigMap},
 		{"--secrets", o.secrets},
 		{"--device-http-listen", o.deviceHTTPListen},
+		{"--sip-bind", o.sipBind},
 	} {
 		if f.value == "" {
 			errs = append(errs, fmt.Errorf("%s is required", f.flag))
+		}
+	}
+	if o.sipBind != "" {
+		if _, err := o.boot(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
@@ -170,9 +193,13 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	}
 	disk := firmware.NewDisk(o.firmwareDir, manifest, log.WithName("firmware"))
 	m := metrics.New()
+	boot, err := o.boot()
+	if err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
 	conn := ami.New(ami.Config{Addr: o.amiAddress, Log: log.WithName("ami")})
 	applier, err := apply.New(apply.Config{
-		LiveDir: o.liveDir, FSGroup: o.fsGroup, AMI: conn, Metrics: m, Log: log.WithName("apply"),
+		LiveDir: o.liveDir, FSGroup: o.fsGroup, AMI: conn, Boot: boot, Metrics: m, Log: log.WithName("apply"),
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)

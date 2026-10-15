@@ -27,6 +27,9 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 )
 
+// houseBoot is the Boot of a PBX pod for intaketest.House's settings.
+var houseBoot = compile.BootFor("192.168.0.240", 5060)
+
 var (
 	desk   = drivers.DeviceID(drivers.KindPhone, "desk")
 	front  = drivers.DeviceID(drivers.KindPhone, "front")
@@ -145,6 +148,9 @@ func newEnv(t *testing.T) *env {
 func (e *env) applier(cfg apply.Config) *apply.Applier {
 	e.t.Helper()
 	cfg.LiveDir, cfg.AMI, cfg.Metrics = e.dir, e.ast.ami, e.m
+	if cfg.Boot.Digest == "" {
+		cfg.Boot = houseBoot
+	}
 	if cfg.FSGroup == 0 {
 		cfg.FSGroup = os.Getgid()
 	}
@@ -882,27 +888,82 @@ func TestRollbackRestoresTheAccount(t *testing.T) {
 }
 
 func TestNewChecksTheConfig(t *testing.T) {
-	if _, err := apply.New(apply.Config{AMI: amitest.New()}); err == nil {
+	if _, err := apply.New(apply.Config{AMI: amitest.New(), Boot: houseBoot}); err == nil {
 		t.Error("no live directory: accepted")
 	}
-	if _, err := apply.New(apply.Config{LiveDir: t.TempDir()}); err == nil {
+	if _, err := apply.New(apply.Config{LiveDir: t.TempDir(), Boot: houseBoot}); err == nil {
 		t.Error("no AMI: accepted")
+	}
+	if _, err := apply.New(apply.Config{LiveDir: t.TempDir(), AMI: amitest.New()}); err == nil {
+		t.Error("no Boot: accepted")
 	}
 	// A broken current link is not adopted.
 	dir := t.TempDir()
 	if err := os.Symlink("v"+intaketest.Version('d'), filepath.Join(dir, compile.CurrentLink)); err != nil {
 		t.Fatal(err)
 	}
-	a, err := apply.New(apply.Config{LiveDir: dir, AMI: amitest.New()})
+	a, err := apply.New(apply.Config{LiveDir: dir, AMI: amitest.New(), Boot: houseBoot})
 	if err != nil || a.Ready() == nil {
 		t.Errorf("a dangling current link: %v, ready %v", err, a.Ready())
 	}
 	// A missing live directory is created.
 	missing := filepath.Join(t.TempDir(), "live")
-	if _, err := apply.New(apply.Config{LiveDir: missing, AMI: amitest.New()}); err != nil {
+	if _, err := apply.New(apply.Config{LiveDir: missing, AMI: amitest.New(), Boot: houseBoot}); err != nil {
 		t.Error(err)
 	}
 	if fi, err := os.Stat(missing); err != nil || !fi.IsDir() {
 		t.Error("the live directory was not created")
+	}
+}
+
+// TestRefusesAnotherBoot: a version compiled for another SIP bind than
+// this PBX pod's (a controller that has not recompiled since pbx.ports.sip
+// or pbx.address changed), or with another release's asterisk.conf or
+// modules.conf, is refused before anything is written. A reload cannot
+// move the transports or load a module, so such a version would go live
+// and verify while Asterisk kept what it booted with; as the first version
+// it would be what Asterisk boots on. The pod's own version applies.
+func TestRefusesAnotherBoot(t *testing.T) {
+	e := newEnv(t)
+	other := intaketest.House()
+	other.Settings.SIPPort = 5070
+	stale := other.Resolved(t)
+
+	err := e.apply(stale)
+	if err == nil || !strings.Contains(err.Error(), "192.168.0.240:5070") || !strings.Contains(err.Error(), "192.168.0.240:5060") {
+		t.Fatalf("Apply of a version for port 5070 in a 5060 pod = %v, want a refusal naming both", err)
+	}
+	if e.a.Ready() == nil {
+		t.Error("ready on a refused first version: Asterisk would boot on nothing, or on it")
+	}
+	if st := e.a.Status(); st.AppliedVersion != "" || st.LastApplyVersion != stale.Bundle.Version || st.LastApplyError != err.Error() {
+		t.Errorf("Status = %+v, want nothing applied and the refusal", st)
+	}
+	if v := e.versionsOnDisk(); len(v) != 0 {
+		t.Errorf("a refused version was written: %v", v)
+	}
+
+	good := intaketest.House().Resolved(t)
+	e.mustApply(good)
+	e.ast.boot()
+	e.ast.resetReloads()
+	if err := e.apply(stale); err == nil {
+		t.Fatal("the stale version applied over a live one")
+	}
+	if cur := e.current(); cur != good.Bundle.Version {
+		t.Errorf("live version %.4s, want %.4s", cur, good.Bundle.Version)
+	}
+	if r := e.ast.reloaded(); len(r) != 0 {
+		t.Errorf("Asterisk was reloaded for a refused version: %v", r)
+	}
+
+	// Another release's module list is refused the same way.
+	files := maps.Clone(good.Files)
+	files["asterisk/modules.conf"] = append(slices.Clone(files["asterisk/modules.conf"]), "load => res_new.so\n"...)
+	next := good
+	next.Files = files
+	next.Bundle.Version = intaketest.Version('e')
+	if err := e.apply(next); err == nil || !strings.Contains(err.Error(), "modules.conf") {
+		t.Errorf("Apply with another modules.conf = %v, want a refusal", err)
 	}
 }

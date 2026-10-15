@@ -451,3 +451,20 @@ func TestChartAgentServicePublishesNotReady(t *testing.T) {
 		t.Error("the agent Service does not publish not-ready addresses: an Asterisk outage would read as AgentUnreachable")
 	}
 }
+
+// TestChartAgentKnowsItsSIPBind: the agent is told the SIP address and
+// port this pod's Asterisk binds (pbx.address, pbx.ports.sip), which is
+// what the settings compile into the transports, so it applies only
+// versions compiled for them (compile.Boot); a change of either rolls the
+// pod.
+func TestChartAgentKnowsItsSIPBind(t *testing.T) {
+	for port, sets := range map[string][]string{"5060": nil, "5070": {"pbx.ports.sip=5070"}} {
+		agent := container(t, pbx(t, render(t, sets...)), "agent")
+		wantFlags(t, agent, map[string]string{"sip-bind": "192.0.2.10:" + port})
+	}
+	a := get[appsv1.Deployment](t, render(t), "Deployment", release+"-pbx").Spec.Template.Annotations
+	b := get[appsv1.Deployment](t, render(t, "pbx.ports.sip=5070"), "Deployment", release+"-pbx").Spec.Template.Annotations
+	if a["checksum/asterisk-restart"] == b["checksum/asterisk-restart"] {
+		t.Error("a new SIP port does not roll the PBX pod")
+	}
+}

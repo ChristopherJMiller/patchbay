@@ -14,8 +14,15 @@
 // pjsip_notify.conf: res_pjsip_notify.so, indications.conf: indications,
 // logger.conf: logger), and manager last when manager.conf changed,
 // followed by AMI.SetAccount with the new account. The PJSIP transports,
-// asterisk.conf and modules.conf are not reloadable; only settings change
-// them, and the chart restarts the PBX pod for those.
+// asterisk.conf and modules.conf are not reloadable (compile.Boot): Apply
+// refuses, before writing anything, a version whose Boot is not this PBX
+// pod's (Config.Boot, from the pod's SIP bind), so every version that goes
+// live is one Asterisk can run without a restart, and the one it boots on
+// at pod start is too. A settings change that moves them restarts the PBX
+// pod (the chart), and the new pod waits, not ready, until the controller
+// has compiled for the new settings: the old controller's version is
+// refused rather than booted, then left running on the old transports
+// while a reload reported the new version good.
 //
 // With AMI down (Asterisk starting, crashed or restarting) a version is
 // written and swapped unverified: Ready passes, Asterisk reads it when it
@@ -65,6 +72,10 @@ type Config struct {
 	FSGroup int
 	// AMI is the session to Asterisk.
 	AMI ami.Client
+	// Boot is the boot config of this PBX pod's Asterisk:
+	// compile.BootFor(pbx address, SIP port). Required. Apply refuses a
+	// version with another.
+	Boot compile.Boot
 	// Metrics may be nil.
 	Metrics *metrics.Metrics
 	// Keep is how many versions stay on disk; 0 means 3. The live and the
@@ -163,6 +174,8 @@ func New(cfg Config) (*Applier, error) {
 		return nil, errors.New("apply: no live directory")
 	case cfg.AMI == nil:
 		return nil, errors.New("apply: no AMI client")
+	case cfg.Boot.Digest == "":
+		return nil, errors.New("apply: no boot config (compile.BootFor the PBX pod's SIP bind)")
 	}
 	if cfg.Keep <= 0 {
 		cfg.Keep = DefaultKeep
@@ -243,6 +256,11 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 		return nil
 	}
 
+	if err := a.checkBoot(r.Files); err != nil {
+		a.failed(v, err)
+		a.cfg.Log.Info("version refused", "version", v, "error", err.Error())
+		return err
+	}
 	if err := a.write(r); err != nil {
 		a.failed(v, err)
 		return err
@@ -289,6 +307,24 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 	a.cfg.Log.Info("version applied and verified", "version", v)
 	a.prune(v, prevVersion(cur))
 	return nil
+}
+
+// checkBoot refuses files whose compile.Boot is not this pod's: Asterisk
+// would keep running (or boot on) another one, and no reload changes it.
+func (a *Applier) checkBoot(files map[string][]byte) error {
+	got, err := compile.BootOf(files)
+	switch {
+	case err != nil:
+		return fmt.Errorf("refused: %w", err)
+	case got.Digest == a.cfg.Boot.Digest:
+		return nil
+	case got.SIPBind != a.cfg.Boot.SIPBind:
+		return fmt.Errorf("refused: compiled for SIP on %s, but this PBX pod's Asterisk is on %s, and a reload "+
+			"cannot move its transports: waiting for the controller to compile for this pod's settings", got.SIPBind, a.cfg.Boot.SIPBind)
+	default:
+		return errors.New("refused: compiled with another asterisk.conf, modules.conf or PJSIP transports than this " +
+			"PBX pod's release, and a reload cannot load them: waiting for the controller of this release to compile")
+	}
 }
 
 // Refuse records a version that never reached Apply.

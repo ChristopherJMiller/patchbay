@@ -91,9 +91,12 @@ spec:
         app.kubernetes.io/component: pbx
       annotations:
         # What compiles into files Asterisk cannot reload (asterisk.conf,
-        # modules.conf, the PJSIP transports): the agent applies those files
-        # but only a restart loads them, so a change rolls the pod. The
-        # controller compiles them from the same values (<fullname>-settings).
+        # modules.conf, the PJSIP transports): only a restart loads them, so
+        # a change rolls the pod. The controller compiles them from the same
+        # values (<fullname>-settings), and the agent applies only versions
+        # compiled for this pod's --sip-bind and release (compile.Boot): the
+        # new pod waits, not ready, for the controller's recompile rather
+        # than boot Asterisk on the old controller's version.
         checksum/asterisk-restart: {{ dict "address" $address "sipPort" (int $p.ports.sip) "modules" $modules | toJson | sha256sum }}
         {{- with $p.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -181,6 +184,7 @@ spec:
             - --fetch-socket=/var/run/patchbay/fetchlog/fetches.sock
             - --fs-group={{ $p.fsGroup }}
             - --device-http-listen={{ $address }}:{{ $p.ports.deviceHTTP }}
+            - --sip-bind={{ $address }}:{{ $p.ports.sip }}
             - --zap-log-level={{ $p.agent.logLevel }}
           env:
             - name: POD_NAMESPACE
