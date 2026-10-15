@@ -28,8 +28,17 @@
 package compile
 
 import (
+	"bytes"
+	"cmp"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"regexp"
+	"slices"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
@@ -251,13 +260,407 @@ func ProvisioningTokenRef(deviceID string) SecretRef {
 	return SecretRef{Name: DeviceSecretName(deviceID), Key: SecretKeyProvisioningToken}
 }
 
-// ErrNotImplemented is returned by Compile until the compiler is written.
-var ErrNotImplemented = errors.New("compile: not implemented yet")
-
 // Compile builds the bundle for an install, rendering each device through
 // the registry's driver for its model. It is pure: the same registry,
 // inputs and settings always give the same bundle, byte for byte, whatever
 // the order of the resources in Inputs.
+//
+// The steps:
+//  1. Settings.Validate, and every resource name is a DNS subdomain (names
+//     reach config files and IDs).
+//  2. ResolveClaims: who holds which number and MAC.
+//  3. Each Phone, then each Softphone, in name order, becomes a
+//     drivers.Device with its claim fields applied. A device that holds its
+//     number and has a driver is rendered twice: first with an empty
+//     ConfigVersion, which is hashed (with the secrets it references) into
+//     the device's version, then with that version set. A Render error
+//     wrapping drivers.ErrInvalidSpec leaves the device out (Decide says
+//     why); any other error fails Compile. A device's files must lie in its
+//     kind's tree and reference no secret but its own SIP password; a path
+//     two devices render must be byte-identical (the 79x5's shared
+//     dialplan.xml).
+//  4. Asterisk's files, the dialplan and the directory, from the routed
+//     devices (rendered, holding their number), people and streams.
+//  5. The device index (every Phone and Softphone, rendered or not), the
+//     AMI account, the bundle version, and Validate.
+//
+// Labels and person names are free text: Compile collapses every run of
+// "@" in them to one, so no text a person writes can form a secret
+// placeholder that the agent would resolve into a file served to devices.
 func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
-	return Bundle{}, ErrNotImplemented
+	if reg == nil {
+		return Bundle{}, errors.New("compile: no driver registry")
+	}
+	if err := s.Validate(); err != nil {
+		return Bundle{}, err
+	}
+	if err := checkNames(in); err != nil {
+		return Bundle{}, err
+	}
+	claims := ResolveClaims(in, s.NumberPlan)
+	devs, err := buildDevices(reg, in, claims)
+	if err != nil {
+		return Bundle{}, err
+	}
+
+	b := Bundle{
+		Files:   map[string][]byte{},
+		Devices: map[string]BundleDevice{},
+		AMI:     AMIAccount{Username: AMIUsername, Password: s.AMISecret},
+	}
+	ctx := renderContext(s)
+	owners := map[string]string{} // bundle path -> the first device that rendered it
+	for i := range devs {
+		d := &devs[i]
+		if err := d.render(ctx, in.Secrets); err != nil {
+			return Bundle{}, err
+		}
+		for _, p := range slices.Sorted(maps.Keys(d.files)) {
+			if prev, shared := b.Files[p]; shared {
+				if !bytes.Equal(prev, d.files[p]) {
+					return Bundle{}, fmt.Errorf("compile: %s is rendered differently for devices %s and %s", p, owners[p], d.dev.ID)
+				}
+				continue
+			}
+			owners[p] = d.dev.ID
+			b.Files[p] = d.files[p]
+		}
+		b.Devices[d.dev.ID] = d.index()
+	}
+
+	routedID := map[ResourceRef]string{}
+	var endpoints []endpoint
+	var deviceTargets []dialTarget
+	var directory []directoryEntry
+	for _, d := range devs {
+		if !d.routed() {
+			continue
+		}
+		routedID[d.ref] = d.dev.ID
+		endpoints = append(endpoints, endpoint{dev: d.dev, profile: d.profile})
+		deviceTargets = append(deviceTargets, dialTarget{number: d.dev.Number, comment: d.ref.String(), ring: []string{d.dev.ID}})
+		directory = append(directory, directoryEntry{Name: d.dev.Label, Number: d.dev.Number})
+	}
+	slices.SortFunc(endpoints, func(a, b endpoint) int { return cmp.Compare(a.dev.ID, b.dev.ID) })
+	people, peopleDirectory := personTargets(in.People, claims, routedID)
+	directory = append(directory, peopleDirectory...)
+
+	maps.Copy(b.Files, asteriskFiles(s, endpoints))
+	b.Files[TreeAsterisk+"/extensions.conf"] = extensionsConf(s.NumberPlan,
+		byNumber(deviceTargets), people, streamTargets(in.Streams, claims))
+	if b.Files[DirectoryFile], err = directoryXML(directory); err != nil {
+		return Bundle{}, err
+	}
+
+	index, err := json.Marshal(Index{Devices: b.Devices, AMI: b.AMI})
+	if err != nil {
+		return Bundle{}, fmt.Errorf("compile: encoding the index: %w", err)
+	}
+	refs, err := placeholders(b.Files)
+	if err != nil {
+		return Bundle{}, err
+	}
+	refs = append(refs, b.AMI.Password)
+	for _, d := range b.Devices {
+		if d.ProvisioningToken != nil {
+			refs = append(refs, *d.ProvisioningToken)
+		}
+	}
+	if b.Version, err = version(b.Files, index, refs, in.Secrets); err != nil {
+		return Bundle{}, err
+	}
+	if err := b.Validate(); err != nil {
+		return Bundle{}, fmt.Errorf("compile: the compiled bundle is invalid: %w", err)
+	}
+	return b, nil
+}
+
+// renderContext is what every device's Render gets but its password.
+func renderContext(s Settings) drivers.RenderContext {
+	base := fmt.Sprintf("http://%s:%d", s.PBXAddress, s.DeviceHTTPPort)
+	return drivers.RenderContext{
+		PBXAddress:    s.PBXAddress,
+		SIPPort:       s.SIPPort,
+		DeviceHTTPURL: base,
+		DirectoryURL:  base + strings.TrimPrefix(DirectoryFile, TreeHTTP),
+		NTPServer:     s.NTPServer,
+		Timezone:      s.Timezone,
+		Signalling:    s.Signalling,
+		DialPatterns:  s.NumberPlan.DialPatterns(),
+	}
+}
+
+// checkNames refuses resource names that are not DNS subdomains, or that a
+// kind lists twice: the API server guarantees both, and the compiler writes
+// names into IDs, section names and comments.
+func checkNames(in Inputs) error {
+	var errs []error
+	check := func(kind ResourceKind, names []string) {
+		seen := map[string]bool{}
+		for _, n := range names {
+			if problems := validation.IsDNS1123Subdomain(n); len(problems) > 0 {
+				errs = append(errs, fmt.Errorf("compile: %s %q: %s", kind, n, strings.Join(problems, "; ")))
+			}
+			if seen[n] {
+				errs = append(errs, fmt.Errorf("compile: %s %q is listed twice", kind, n))
+			}
+			seen[n] = true
+		}
+	}
+	names := func(n int, name func(int) string) []string {
+		out := make([]string, n)
+		for i := range n {
+			out[i] = name(i)
+		}
+		return out
+	}
+	check(ResourcePhone, names(len(in.Phones), func(i int) string { return in.Phones[i].Name }))
+	check(ResourceSoftphone, names(len(in.Softphones), func(i int) string { return in.Softphones[i].Name }))
+	check(ResourcePerson, names(len(in.People), func(i int) string { return in.People[i].Name }))
+	check(ResourceStream, names(len(in.Streams), func(i int) string { return in.Streams[i].Name }))
+	return errors.Join(errs...)
+}
+
+// atRun is two or more "@": the start of anything placeholder-shaped.
+var atRun = regexp.MustCompile(`@{2,}`)
+
+// userText neutralizes free text a person wrote (a label, a person's name)
+// before it reaches any file: no run of "@" is longer than one, so it can
+// never form a placeholder (@@secret:...@@) that the agent would resolve.
+func userText(s string) string {
+	return atRun.ReplaceAllLiteralString(s, "@")
+}
+
+// device is one Phone or Softphone on its way into the bundle.
+type device struct {
+	ref     ResourceRef
+	dev     drivers.Device
+	driver  drivers.Driver // nil when no driver serves the model
+	profile drivers.Profile
+	// holds is whether the device holds its number (no claim problem).
+	holds bool
+	// files are the device's files as rendered the second time, and
+	// configFile the bundle path of its config document; nil and empty when
+	// it is not rendered.
+	files      drivers.Files
+	configFile string
+}
+
+// routed is whether the device is rendered, so in the bundle: in
+// pjsip.conf, the dialplan and the directory. Only a device that holds its
+// number is rendered, so every rendered device is routed.
+func (d *device) routed() bool { return d.files != nil }
+
+// buildDevices builds every Phone, then every Softphone, in name order.
+func buildDevices(reg *drivers.Registry, in Inputs, claims Claims) ([]device, error) {
+	var out []device
+	phones := slices.Clone(in.Phones)
+	slices.SortFunc(phones, func(a, b v1alpha1.Phone) int { return cmp.Compare(a.Name, b.Name) })
+	for i := range phones {
+		out = append(out, newDevice(reg, drivers.PhoneDevice(&phones[i]), claims))
+	}
+	softphones := slices.Clone(in.Softphones)
+	slices.SortFunc(softphones, func(a, b v1alpha1.Softphone) int { return cmp.Compare(a.Name, b.Name) })
+	for i := range softphones {
+		out = append(out, newDevice(reg, drivers.SoftphoneDevice(&softphones[i]), claims))
+	}
+	ids := map[string]ResourceRef{}
+	for _, d := range out {
+		if other, dup := ids[d.dev.ID]; dup {
+			return nil, fmt.Errorf("compile: %s and %s have the same device ID %s; rename one", other, d.ref, d.dev.ID)
+		}
+		ids[d.dev.ID] = d.ref
+	}
+	return out, nil
+}
+
+func newDevice(reg *drivers.Registry, dev drivers.Device, claims Claims) device {
+	claims.Apply(&dev)
+	dev.Label = userText(dev.Label)
+	d := device{ref: deviceRef(dev.Kind, dev.Name), dev: dev}
+	d.holds = claims.Holds(d.ref)
+	if drv, err := reg.ForModel(dev.Model); err == nil {
+		d.driver = drv
+		d.profile, _ = drv.Profile(dev.Model)
+	}
+	return d
+}
+
+// treeOf is the tree a device kind's files go in.
+func treeOf(kind drivers.DeviceKind) string {
+	switch kind {
+	case drivers.KindPhone:
+		return TreeTFTP
+	case drivers.KindSoftphone:
+		return TreeProvisioning
+	}
+	return ""
+}
+
+// render renders the device twice (see Compile), or leaves it out.
+func (d *device) render(base drivers.RenderContext, secrets map[SecretRef][]byte) error {
+	if d.driver == nil || !d.holds {
+		return nil
+	}
+	ctx := base
+	ctx.SIPPassword = PasswordRef(d.dev.ID).Placeholder()
+	first, err := d.driver.Render(d.dev, ctx)
+	switch {
+	case errors.Is(err, drivers.ErrInvalidSpec):
+		return nil
+	case err != nil:
+		return fmt.Errorf("compile: %s: %w", d.ref, err)
+	}
+	refs, err := d.checkFiles(first)
+	if err != nil {
+		return err
+	}
+	v, err := version(first, nil, refs, secrets)
+	if err != nil {
+		return fmt.Errorf("compile: %s: %w", d.ref, err)
+	}
+
+	stamped := d.dev
+	stamped.ConfigVersion = v
+	second, err := d.driver.Render(stamped, ctx)
+	if err != nil {
+		return fmt.Errorf("compile: %s: the second render failed: %w", d.ref, err)
+	}
+	if !slices.Equal(slices.Sorted(maps.Keys(first)), slices.Sorted(maps.Keys(second))) {
+		return fmt.Errorf("compile: %s: the second render gave other files (%v, then %v)",
+			d.ref, slices.Sorted(maps.Keys(first)), slices.Sorted(maps.Keys(second)))
+	}
+	if _, err := d.checkFiles(second); err != nil {
+		return err
+	}
+	cfg, err := d.configPath()
+	if err != nil {
+		return err
+	}
+	if _, ok := second[cfg]; !ok {
+		return fmt.Errorf("compile: %s: its config document %s is not among its files", d.ref, cfg)
+	}
+	d.dev.ConfigVersion = v
+	d.files = second
+	d.configFile = cfg
+	return nil
+}
+
+// checkFiles checks a device's rendered files: at least one, each a portable
+// path in the kind's tree, referencing no secret but the device's own SIP
+// password. It returns the secrets they reference.
+func (d *device) checkFiles(files drivers.Files) ([]SecretRef, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("compile: %s: its driver rendered no files", d.ref)
+	}
+	want := treeOf(d.dev.Kind)
+	for _, p := range slices.Sorted(maps.Keys(files)) {
+		tree, err := TreeOf(p)
+		if err != nil {
+			return nil, fmt.Errorf("compile: %s: %w", d.ref, err)
+		}
+		if tree != want {
+			return nil, fmt.Errorf("compile: %s: %s is outside %s/, the only tree a %s's files may go in", d.ref, p, want, d.dev.Kind)
+		}
+	}
+	refs, err := placeholders(files)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %s: %w", d.ref, err)
+	}
+	own := PasswordRef(d.dev.ID)
+	for _, r := range refs {
+		if r != own {
+			return nil, fmt.Errorf("compile: %s: its files reference secret %s key %s, which is not its own", d.ref, r.Name, r.Key)
+		}
+	}
+	return refs, nil
+}
+
+// configPath is the bundle path of the device's config document, from its
+// profile's ConfigFile pattern ({MAC} and {ID} expanded; a bare file name
+// is in the kind's tree).
+func (d *device) configPath() (string, error) {
+	pattern := d.profile.Provisioning.ConfigFile
+	if pattern == "" {
+		return "", fmt.Errorf("compile: %s: model %s's profile names no config file", d.ref, d.dev.Model)
+	}
+	p := strings.NewReplacer("{MAC}", d.dev.MAC, "{ID}", d.dev.ID).Replace(pattern)
+	if tree := treeOf(d.dev.Kind); !strings.HasPrefix(p, tree+"/") {
+		p = tree + "/" + p
+	}
+	return p, nil
+}
+
+// index is the device's entry in the bundle's device index.
+func (d *device) index() BundleDevice {
+	bd := BundleDevice{Kind: d.dev.Kind, Name: d.dev.Name}
+	if !d.dev.MACConflict {
+		bd.MAC = d.dev.MAC
+	}
+	if !d.routed() {
+		return bd
+	}
+	bd.Number = d.dev.Number
+	bd.Version = d.dev.ConfigVersion
+	bd.ConfigFile = d.configFile
+	bd.Files = slices.Sorted(maps.Keys(d.files))
+	if d.dev.Kind == drivers.KindSoftphone {
+		tok := ProvisioningTokenRef(d.dev.ID)
+		bd.ProvisioningToken = &tok
+	}
+	return bd
+}
+
+// personTargets is each Person holding its number, sorted by number, with
+// the routed devices it rings (in ring order, each once), and a directory
+// entry for each that rings at least one.
+func personTargets(people []v1alpha1.Person, claims Claims, routedID map[ResourceRef]string) ([]dialTarget, []directoryEntry) {
+	var targets []dialTarget
+	var directory []directoryEntry
+	for i := range people {
+		p := &people[i]
+		ref := ResourceRef{ResourcePerson, p.Name}
+		if !claims.Holds(ref) {
+			continue
+		}
+		t := dialTarget{number: string(p.Spec.Number), comment: ref.String()}
+		for _, r := range p.Spec.Rings {
+			target := ResourceRef{ResourcePhone, string(r.Phone)}
+			if r.Softphone != "" {
+				target = ResourceRef{ResourceSoftphone, string(r.Softphone)}
+			}
+			if id, ok := routedID[target]; ok && !slices.Contains(t.ring, id) {
+				t.ring = append(t.ring, id)
+			}
+		}
+		if len(t.ring) == 0 {
+			t.comment += ": no routed device to ring"
+		} else {
+			directory = append(directory, directoryEntry{Name: userText(p.Spec.Name), Number: t.number})
+		}
+		targets = append(targets, t)
+	}
+	return byNumber(targets), directory
+}
+
+// streamTargets is each Stream holding its number, sorted by number. In
+// release A there is no stream bridge, so each plays "not available".
+func streamTargets(streams []v1alpha1.Stream, claims Claims) []dialTarget {
+	var targets []dialTarget
+	for i := range streams {
+		s := &streams[i]
+		ref := ResourceRef{ResourceStream, s.Name}
+		if claims.Holds(ref) {
+			targets = append(targets, dialTarget{number: string(s.Spec.Number), comment: ref.String() + ": no stream bridge in this release"})
+		}
+	}
+	return byNumber(targets)
+}
+
+// byNumber sorts targets by number (shorter first, so 99 before 100).
+func byNumber(targets []dialTarget) []dialTarget {
+	slices.SortFunc(targets, func(a, b dialTarget) int {
+		return cmp.Or(cmp.Compare(len(a.number), len(b.number)), cmp.Compare(a.number, b.number))
+	})
+	return targets
 }
