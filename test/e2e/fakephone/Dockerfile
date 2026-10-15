@@ -1,11 +1,11 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 #
 # patchbay-e2e-tools: the e2e suite's simulated phone (fakephone), one static
 # binary on distroless. Build from the repository root:
 #   docker build -f test/e2e/fakephone/Dockerfile \
 #     -t ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e .
-# (`make e2e-images` does this.) The bases are the same digest-pinned images
-# as the main Dockerfile; bump them together.
+# (`make e2e-images` does this.) The frontend and the bases are the same
+# digest-pinned images as the main Dockerfile; bump them together.
 
 FROM --platform=$BUILDPLATFORM golang:1.26.8-trixie@sha256:aae9c439b447d24c93ee483408992857cf39a3fb6ab7fe53affc65d834891fa8 AS build
 

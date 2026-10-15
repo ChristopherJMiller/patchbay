@@ -1,8 +1,10 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 #
-# patchbay: one static binary on distroless. Both base images are pinned by
-# the digest of their multi-arch index, so amd64 and arm64 builds (CI) and
-# every rebuild get exactly these bases. Bump tag and digest together:
+# patchbay: one static binary on distroless. The Dockerfile frontend (the
+# syntax line) and both base images are pinned by the digest of their
+# multi-arch index, so amd64 and arm64 builds (CI) and every rebuild use
+# exactly these. Bump tag and digest together:
+#   docker buildx imagetools inspect docker/dockerfile:<ver>
 #   docker buildx imagetools inspect golang:<ver>-trixie
 #   docker buildx imagetools inspect gcr.io/distroless/static-debian13:nonroot
 # The Go minor here must match the flake's go_1_26.
