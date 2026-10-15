@@ -1,20 +1,25 @@
 // Package agent is the PBX pod's sidecar: it senses and acts, and never
 // decides (design §5).
 //
-// When complete it applies compiled bundles (resolve placeholders, swap the
-// live directory, reload Asterisk over AMI, verify, roll back on mismatch),
-// serves TFTP :69 and HTTP :6970/:8088 from the live directory, scrapes the
-// phones' own web pages, and answers the controller on the control API
-// (:9440). Its memory is disposable: the controller copies anything that must
-// survive into resource status.
+// It applies compiled bundles (resolve placeholders, swap the live
+// directory, reload Asterisk over AMI, verify, roll back on mismatch),
+// serves device HTTP :8088 from the live directory, scrapes the phones' own
+// web pages, records what the separate file server (TFTP :69, HTTP :6970)
+// reports, and answers the controller on the control API (:9440). Its
+// memory is disposable: the controller copies anything that must survive
+// into resource status.
 //
-// Today it serves only the control API's skeleton: health probes, an
-// observations document with nothing observed, and actions that answer 501.
+// This package is the control API: the HTTP layer over the components in
+// its subpackages, which cmd/patchbay wires together (docs/plans/release-a.md,
+// W2 task level, has the package map). Each seam is an Options field; a nil
+// one keeps the skeleton's answer (an empty observations document, 501 for
+// actions and uploads, no /metrics).
 //
-// Notes for the phases that fill it in:
-//   - The live directory's layout is in internal/compile/layout.go. Serve
-//     each tree from its own root (an os.Root on current/tftp, current/http,
-//     ...), never the whole volume: current/asterisk holds every password.
+// Notes for the components behind it:
+//   - The live directory's layout is in internal/compile/layout.go and
+//     internal/agent/layout. Serve each tree from its own root
+//     (layout.OpenTree), never the whole volume: asterisk/ holds every
+//     password.
 //   - The control API token is re-read when its Secret changes (TokenFile).
 //     The AMI password lives in manager.conf, which apply's module reloads do
 //     not touch: when the compiled AMI user changes, apply must also run
@@ -49,10 +54,32 @@ type Options struct {
 	Tokens func() []string
 
 	// Ready reports whether the agent is ready (the native sidecar's startup
-	// probe). Nil means always ready. Once apply exists, ready means "the
-	// first config version has been applied", so Asterisk starts only after
-	// valid config exists.
+	// probe). Nil means always ready. Ready means "the first config version
+	// has been applied and the sound prompts are installed", so Asterisk
+	// starts only after valid config exists.
 	Ready func() error
+
+	// Observations builds GET /v1/observations' document (the observation
+	// store's Document). Nil serves api.Empty. Whatever it returns, the
+	// server sets GeneratedAt (now), Agent.Version and Agent.StartedAt
+	// (this process's), and turns nil lists into empty ones, so the
+	// document never holds null for a list.
+	Observations func(now time.Time) api.Observations
+
+	// Actions sends the service-control NOTIFYs behind POST
+	// /v1/actions/{resync,restart}. Nil answers 501.
+	Actions Actions
+
+	// Firmware handles PUT /v1/firmware/{load}/{name} once the request is
+	// authenticated (the firmware store's upload handler, which reads the
+	// path values "load" and "name" and answers with an
+	// api.FirmwareUploadResponse). Nil answers 501.
+	Firmware http.Handler
+
+	// Metrics serves GET /metrics (Prometheus), without a token like the
+	// probes: it carries counts and version digests, never a secret. Nil
+	// leaves /metrics unrouted (404).
+	Metrics http.Handler
 
 	// Now is the clock; nil means time.Now. Tests pin it.
 	Now func() time.Time
@@ -60,6 +87,21 @@ type Options struct {
 	// Log receives request errors.
 	Log logr.Logger
 }
+
+// Actions sends a Cisco service-control NOTIFY to a device's contact
+// (design §5, Actions). The server has already decoded the request and
+// checked that Device is set; an unknown device, a device with no contact
+// or no Call-ID, AMI being down or Asterisk refusing are all answered with
+// Sent false and the reason, never with an error status.
+type Actions interface {
+	// Resync sends action=restart (re-read config).
+	Resync(ctx context.Context, req api.ActionRequest) api.ActionResponse
+	// Restart sends action=reset (reboot).
+	Restart(ctx context.Context, req api.ActionRequest) api.ActionResponse
+}
+
+// maxActionBody is the largest action request body the server reads.
+const maxActionBody = 4 << 10
 
 // NewHandler returns the control API handler.
 func NewHandler(opts Options) (http.Handler, error) {
@@ -85,9 +127,13 @@ func NewHandler(opts Options) (http.Handler, error) {
 		}
 		writeText(w, http.StatusOK, "ok")
 	})
+	if opts.Metrics != nil {
+		mux.Handle("GET "+api.PathMetrics, opts.Metrics)
+	}
 	mux.Handle("GET "+api.PathObservations, s.auth(http.HandlerFunc(s.observations)))
-	mux.Handle("POST "+api.PathActionResync, s.auth(http.HandlerFunc(s.notImplemented)))
-	mux.Handle("POST "+api.PathActionRestart, s.auth(http.HandlerFunc(s.notImplemented)))
+	mux.Handle("POST "+api.PathActionResync, s.auth(s.action(func(a Actions) actionFunc { return a.Resync })))
+	mux.Handle("POST "+api.PathActionRestart, s.auth(s.action(func(a Actions) actionFunc { return a.Restart })))
+	mux.Handle("PUT "+api.PathFirmware+"/{load}/{name}", s.auth(http.HandlerFunc(s.firmware)))
 	return mux, nil
 }
 
@@ -123,15 +169,60 @@ func accepted(got string, tokens []string) bool {
 }
 
 func (s *server) observations(w http.ResponseWriter, _ *http.Request) {
-	doc := api.Empty(s.opts.Now().UTC(), api.AgentStatus{
-		Version:   version.Version,
-		StartedAt: s.started.UTC(),
-	})
+	now := s.opts.Now()
+	agent := api.AgentStatus{Version: version.Version, StartedAt: s.started.UTC()}
+	doc := api.Empty(now.UTC(), agent)
+	if s.opts.Observations != nil {
+		doc = s.opts.Observations(now)
+		doc.GeneratedAt = now.UTC()
+		doc.Agent.Version, doc.Agent.StartedAt = agent.Version, agent.StartedAt
+		if doc.Devices == nil {
+			doc.Devices = []api.DeviceObservations{}
+		}
+		if doc.UnknownDevices == nil {
+			doc.UnknownDevices = []api.UnknownDevice{}
+		}
+		if doc.Firmware.Files == nil {
+			doc.Firmware.Files = []api.FirmwareFileStatus{}
+		}
+	}
 	writeJSON(w, http.StatusOK, doc)
 }
 
-func (s *server) notImplemented(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, api.Error{Error: r.URL.Path + " is not implemented yet"})
+type actionFunc func(context.Context, api.ActionRequest) api.ActionResponse
+
+// action decodes an ActionRequest (at most maxActionBody bytes, no unknown
+// fields, Device set: else 400) and answers 200 with what the action
+// returns.
+func (s *server) action(pick func(Actions) actionFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.opts.Actions == nil {
+			writeJSON(w, http.StatusNotImplemented, api.Error{Error: r.URL.Path + " is not implemented yet"})
+			return
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxActionBody))
+		dec.DisallowUnknownFields()
+		var req api.ActionRequest
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: "decoding the action request: " + err.Error()})
+			return
+		}
+		if req.Device == "" {
+			writeJSON(w, http.StatusBadRequest, api.Error{Error: "the action request names no device"})
+			return
+		}
+		writeJSON(w, http.StatusOK, pick(s.opts.Actions)(r.Context(), req))
+	})
+}
+
+func (s *server) firmware(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Firmware == nil {
+		writeJSON(w, http.StatusNotImplemented, api.FirmwareUploadResponse{
+			Load: r.PathValue("load"), Name: r.PathValue("name"), Error: "firmware upload is not implemented yet",
+		})
+		return
+	}
+	s.opts.Firmware.ServeHTTP(w, r)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -48,6 +48,10 @@ const (
 	// It backs the native sidecar's startup probe, so Asterisk starts only
 	// after valid config exists. No token.
 	PathReadyz = "/readyz"
+	// PathMetrics is GET: the agent's Prometheus metrics (the chart's
+	// PodMonitor scrapes it). No token: it carries counts and version
+	// digests, never a secret.
+	PathMetrics = "/metrics"
 )
 
 // FirmwarePath is the upload path of one file of one load, e.g.
@@ -216,8 +220,12 @@ type Fetch struct {
 	// Source is the device's IP address.
 	Source string `json:"source"`
 
-	// Version is the config version of the file that was served, when it is
-	// one of the device's own rendered files. Empty otherwise.
+	// Version is the device's config version (its compiled index entry's
+	// version, in the bundle version the file was served from) when the
+	// fetch served one of the device's own rendered files (its index
+	// Files). Empty otherwise. Every served provisioning document carries
+	// it: without it the fetch spends the token but never becomes the
+	// softphone's lastConfigFetch.
 	Version string `json:"version,omitempty"`
 
 	// Error describes a FetchError.
@@ -263,15 +271,23 @@ type Registration struct {
 
 // WebScrape is one scrape of a phone's own web pages, fetched by the agent
 // from the IP in the fetch log, so it works before the phone registers.
+//
+// A scrape reads all three pages; it succeeds only if every one was read
+// and parsed. A failed scrape adopts nothing, not even a page it did read:
+// it carries the previous successful scrape's fields (none if there was
+// none) with its own At and Error. The cisco79x5 driver reads a scrape only
+// when Error is empty and At is not before the phone's last config fetch or
+// firmware download (a "fresh scrape").
 type WebScrape struct {
-	// At is when the scrape finished.
+	// At is when the scrape finished: when its last page was read, or when
+	// it failed.
 	At time.Time `json:"at"`
 
 	// Address is the IP address that was scraped.
 	Address string `json:"address"`
 
-	// Error is why the scrape failed. The fields below are from the last
-	// successful scrape, if any.
+	// Error is why the scrape failed; empty when it succeeded. When set,
+	// the fields below are from the last successful scrape, if any.
 	Error string `json:"error,omitempty"`
 
 	// DeviceInformation is /DeviceInformationX.
@@ -367,7 +383,11 @@ type ActionRequest struct {
 	Version string `json:"version,omitempty"`
 }
 
-// ActionResponse is the body the agent answers an action with.
+// ActionResponse is the body the agent answers an action with: always with
+// 200 once the request decoded and named a device (an unknown device, no
+// contact, no Call-ID or AMI down is Sent false with the reason); a body
+// that does not decode, has unknown fields or names no device gets 400 and
+// an Error.
 type ActionResponse struct {
 	// Sent is true when the NOTIFY went out. It says nothing about whether
 	// the phone acted on it: that shows up later in the fetch log.
