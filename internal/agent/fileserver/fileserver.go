@@ -33,6 +33,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/firmware"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/netlimit"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
 )
 
@@ -176,7 +177,7 @@ func serve(ctx context.Context, cfg Config, udp *net.UDPConn, ln net.Listener, o
 		}
 	}()
 	go func() {
-		if err := hs.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		if err := hs.Serve(netlimit.New(ln, maxHTTPConns, maxHTTPConnsPerSource, cfg.Log)); !errors.Is(err, http.ErrServerClosed) {
 			errc <- fmt.Errorf("fileserver: HTTP: %w", err)
 		}
 	}()

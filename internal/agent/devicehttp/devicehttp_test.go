@@ -1,9 +1,12 @@
 package devicehttp_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -845,5 +848,52 @@ func TestPrunesOnlyAgainstSettledGrants(t *testing.T) {
 	f.s.Prune()
 	if !hasSpend(tokDen2) {
 		t.Error("a server without a settled source pruned")
+	}
+}
+
+// TestConnectionCap: one source cannot hold more than MaxConnsPerSource
+// connections (the next is closed at once), and others still get in.
+func TestConnectionCap(t *testing.T) {
+	f := newFixture(t)
+	writeVersion(t, f.live, v1, v1Files("v1"), v1Devices(denV1, labV1))
+	setCurrent(t, f.live, v1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = f.s.Serve(ctx, ln) }()
+
+	dial := func(from string) net.Conn {
+		t.Helper()
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(from)}}
+		c, err := d.DialContext(context.Background(), "tcp", ln.Addr().String())
+		must(t, err)
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	// Each held connection sends a request and keeps the connection, so
+	// the server has accepted it before the next one is dialled.
+	for range devicehttp.MaxConnsPerSource {
+		c := dial("127.0.0.1")
+		_, err := io.WriteString(c, "GET /directory.xml HTTP/1.1\r\nHost: x\r\n\r\n")
+		must(t, err)
+		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+		must(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	over := dial("127.0.0.1")
+	_ = over.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := over.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("a connection over the per-source cap: read %v, want it closed", err)
+	}
+	other := dial("127.0.0.2")
+	_, err = io.WriteString(other, "GET /directory.xml HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+	must(t, err)
+	resp, err := http.ReadResponse(bufio.NewReader(other), nil)
+	must(t, err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("another source = %d", resp.StatusCode)
 	}
 }

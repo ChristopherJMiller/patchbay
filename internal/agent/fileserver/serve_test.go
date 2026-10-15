@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -723,5 +724,53 @@ func TestProvisioningURLNeverRecorded(t *testing.T) {
 	}
 	if ev := e.rec.next(); ev.File != "p" {
 		t.Errorf("p: event %+v", ev)
+	}
+}
+
+// TestHTTPConnectionCap: one source cannot hold more than
+// maxHTTPConnsPerSource connections to HTTP :6970 (the next is closed at
+// once), and others still get in.
+func TestHTTPConnectionCap(t *testing.T) {
+	e := startEnv(t, nil, fastTFTP())
+	e.live.version(vA, map[string][]byte{sepName: generated("sep", 100)})
+	e.live.swap(vA)
+	dial := func(from string) net.Conn {
+		t.Helper()
+		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(from)}}
+		c, err := d.DialContext(context.Background(), "tcp", e.http)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	get := func(c net.Conn, close bool) int {
+		t.Helper()
+		req := "GET /" + sepName + " HTTP/1.1\r\nHost: x\r\n"
+		if close {
+			req += "Connection: close\r\n"
+		}
+		if _, err := io.WriteString(c, req+"\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		e.rec.next()
+		return resp.StatusCode
+	}
+	for range maxHTTPConnsPerSource {
+		get(dial("127.0.0.1"), false) // accepted, and kept open
+	}
+	over := dial("127.0.0.1")
+	_ = over.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := over.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("a connection over the per-source cap: read %v, want it closed", err)
+	}
+	if code := get(dial("127.0.0.2"), true); code != http.StatusOK {
+		t.Errorf("another source = %d", code)
 	}
 }

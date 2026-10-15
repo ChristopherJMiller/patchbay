@@ -19,14 +19,23 @@ const (
 	methodNotAllowedBody = "405 method not allowed\n"
 )
 
+// The connections HTTP :6970 holds at once, in all and from one source
+// address (package netlimit): anyone on the voice VLAN can connect, and the
+// file server's memory limit must hold them all. Like the TFTP cap, the
+// total matches maxTransfers.
+const (
+	maxHTTPConns          = maxTransfers
+	maxHTTPConnsPerSource = 16
+)
+
 // httpServer is HTTP :6970, which 9.x Cisco firmware may use instead of
 // TFTP: the same names and the same files.
 func (s *server) httpServer() *http.Server {
 	return &http.Server{
 		Handler:           s,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      5 * time.Minute, // a 4.6 MB firmware file on a slow phone
-		IdleTimeout:       time.Minute,
+		WriteTimeout:      5 * time.Minute,  // a 4.6 MB firmware file on a slow phone
+		IdleTimeout:       15 * time.Second, // a phone asks once per connection
 		MaxHeaderBytes:    8 << 10,
 	}
 }

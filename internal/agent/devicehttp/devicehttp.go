@@ -54,6 +54,7 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/layout"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/netlimit"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/provision"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
@@ -64,8 +65,14 @@ const (
 	ReadHeaderTimeout = 5 * time.Second
 	ReadTimeout       = 10 * time.Second
 	WriteTimeout      = 30 * time.Second
-	IdleTimeout       = 60 * time.Second
+	IdleTimeout       = 15 * time.Second // a phone asks once per connection
 	MaxHeaderBytes    = 8 << 10
+
+	// MaxConns and MaxConnsPerSource cap the connections open at once
+	// (package netlimit): anyone on the voice VLAN or the LAN can connect,
+	// and the agent's memory limit must hold them all.
+	MaxConns          = 256
+	MaxConnsPerSource = 32
 
 	// maxDocumentSize bounds a file read into memory: a whole bundle fits
 	// in one ConfigMap (1 MiB).
@@ -198,8 +205,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 
 func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	srv := s.httpServer()
+	capped := netlimit.New(ln, MaxConns, MaxConnsPerSource, s.log)
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() { errc <- srv.Serve(capped) }()
 	s.log.Info("device HTTP listening", "addr", ln.Addr().String())
 	tick := time.NewTicker(s.pruneEvery)
 	defer tick.Stop()
