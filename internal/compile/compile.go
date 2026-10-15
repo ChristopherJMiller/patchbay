@@ -1,10 +1,22 @@
 // Package compile turns resources and install settings into a Bundle: every
 // file the PBX serves or loads (design §5, Compile).
 //
-// Compile is a pure function. It owns /etc/asterisk outright (modules.conf
-// uses autoload=no with an explicit module list; none of the image's stock
-// configs are used), and it renders each device's files through its driver,
-// the directory XML and each softphone's provisioning XML.
+// Compile is a pure function. It owns Asterisk's config directory outright
+// (modules.conf uses autoload=no with an explicit module list; none of the
+// image's stock configs are used), and it renders each device's files through
+// its driver, the directory XML and each softphone's provisioning XML. Every
+// file goes into one of four trees (asterisk/, tftp/, http/, provisioning/;
+// see layout.go), and the tree decides who may read it once applied.
+//
+// manager.conf rules. AMI binds 127.0.0.1, but the PBX pod is on the host
+// network, so that is the node's loopback: every host-network process on the
+// node can connect. The generated AMI user is therefore the only barrier, and
+// the compiler must render it with: a high-entropy generated secret (a
+// placeholder, like every password); deny=0.0.0.0/0.0.0.0 then
+// permit=127.0.0.1/255.255.255.255; and read/write classes limited to what the
+// agent uses (module reloads, PJSIPNotify, registration queries), never all,
+// command or originate. The agent phase confirms the exact classes against
+// Asterisk 22 and the e2e suite asserts them.
 //
 // Secret values never appear in a bundle's files: a password appears only as
 // a placeholder, @@secret:<name>/<key>@@ (see SecretRef), so the ConfigMap the
@@ -25,9 +37,11 @@ import (
 
 // Bundle is the compiled configuration of one install.
 type Bundle struct {
-	// Files maps a slash-separated path, relative to the agent's live config
+	// Files maps a slash-separated path, relative to one applied version's
 	// directory, to its contents (with placeholders, never secret values).
-	// The controller decides how paths are encoded as ConfigMap keys.
+	// The first path element is the file's tree (TreeAsterisk, TreeTFTP,
+	// TreeHTTP or TreeProvisioning); Validate checks the shape. The
+	// controller decides how paths are encoded as ConfigMap keys.
 	Files map[string][]byte
 
 	// Version is the lower-case hex SHA-256 over Files plus the values of the

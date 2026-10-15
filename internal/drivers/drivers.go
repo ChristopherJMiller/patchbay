@@ -16,7 +16,9 @@ package drivers
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,22 +42,37 @@ type Driver interface {
 	Profile(model string) (p Profile, ok bool)
 
 	// Render produces the device's provisioning files (for the 79x5,
-	// SEP<MAC>.cnf.xml; for a softphone, its provisioning XML). Pure. Secret
-	// values never appear in the output, only the placeholders ctx carries.
+	// tftp/SEP<MAC>.cnf.xml; for a softphone, provisioning/<id>.xml). Pure.
+	// Secret values never appear in the output, only the placeholders ctx
+	// carries.
 	Render(dev Device, ctx RenderContext) (Files, error)
 
 	// Decide is one step of the device's state machine: from the device
-	// (intent plus memory) and what the sensors see now, it returns the
-	// state, conditions, actions and next memory. Pure; first matching row
-	// of the driver's ordered rule table wins (design §8.1).
-	Decide(dev Device, obs Observations, now time.Time) Decision
+	// (intent plus memory), what the sensors see now and the install's
+	// settings, it returns the state, conditions, actions and next memory.
+	// Pure; first matching row of the driver's ordered rule table wins
+	// (design §8.1: Decide(spec, observations, status, settings, now)).
+	//
+	// Rules every driver keeps, whatever its table:
+	//   - a spec that breaks a driver rule is Invalid: an unknown model, a
+	//     feature the backend cannot deliver, NumberConflict or MACConflict,
+	//     and a target load (dev.Firmware) that is not a load in Firmware();
+	//   - a human request (dev.Request differs from
+	//     dev.Memory.HandledRequest) is answered at most once: the Decision
+	//     that acts on it sets StatusPatch.HandledRequest to dev.Request.
+	Decide(dev Device, obs Observations, s DecideSettings, now time.Time) Decision
 
-	// Firmware is the manifest of firmware files the driver can stage, with
-	// pinned SHA-256s. Nil for drivers without firmware.
-	Firmware() []FirmwareFile
+	// Firmware is the driver's firmware manifest: the loads it can stage,
+	// each with its files and their pinned SHA-256s. Nil for drivers without
+	// firmware. ValidateFirmware states the rules a manifest keeps.
+	Firmware() []FirmwareLoad
 }
 
-// Files maps a path, relative to the device's served root, to its contents.
+// Files maps a bundle path (see compile.TreeOf: the first element is the
+// tree) to its contents. A driver writes only into the tree its devices fetch
+// from: tftp/ for phones, provisioning/ for softphones. The compiler refuses
+// anything else, so a driver can never put a file next to Asterisk's config
+// or into the tree served to anyone.
 type Files map[string][]byte
 
 // DeviceKind is the resource kind behind a Device.
@@ -95,7 +112,8 @@ type Device struct {
 	Label string
 
 	// Firmware is the target load: spec.firmware, or empty for the driver
-	// default.
+	// default. A name that is not a load in the driver's manifest makes the
+	// device Invalid.
 	Firmware string
 
 	// ConfigVersion is this device's compiled config version (see
@@ -106,6 +124,22 @@ type Device struct {
 	// NumberConflict is true when an older resource holds this number.
 	NumberConflict bool
 
+	// MACConflict is true when an older Phone has the same MAC. Always false
+	// for softphones.
+	MACConflict bool
+
+	// Request is the value of the device kind's request annotation
+	// (v1alpha1.AnnotationResyncRequested on a Phone,
+	// AnnotationReissueRequested on a Softphone), or empty when it is absent
+	// or too long. It is a new request when it differs from
+	// Memory.HandledRequest.
+	Request string
+
+	// LastState is status.state as last written, read-only: Decide may
+	// return it as Decision.State when it cannot tell (Unknown keeps the last
+	// known state for display), but only Decision.State writes status.state.
+	LastState State
+
 	// Memory is the state machine's memory, from status.
 	Memory Memory
 }
@@ -114,10 +148,6 @@ type Device struct {
 // machine's only memory (design §8.1). Fields mirror the v1alpha1 status
 // fields of the same names; fields a driver does not use stay zero.
 type Memory struct {
-	// State is the state last written to status.state. Decide keeps it when
-	// it cannot tell (Unknown keeps the last known state for display).
-	State State
-
 	FirstSeen        *metav1.Time
 	Firmware         string
 	Address          string
@@ -125,6 +155,10 @@ type Memory struct {
 	LastRegistered   *metav1.Time
 	UpgradeStartedAt *metav1.Time
 	LastAction       *v1alpha1.LastAction
+
+	// HandledRequest is the request annotation value last acted on
+	// (status.handledRequest).
+	HandledRequest string
 }
 
 // Observations is what the four sensors (design §8.2) see of one device,
@@ -147,14 +181,15 @@ type Observations struct {
 	// web scrape (sensor 3) for this device. Nil when no sensor has seen it.
 	Device *agentapi.DeviceObservations
 
-	// Firmware is the firmware store (sensor 4): which manifest files are
-	// staged with a matching SHA-256.
+	// Firmware is the firmware store (sensor 4): which files of which loads
+	// are staged with a matching SHA-256.
 	Firmware agentapi.FirmwareStore
 }
 
 // Decision is the result of one Decide step (design §8.1).
 type Decision struct {
-	// State is the display summary written to status.state.
+	// State is the display summary, and the only thing that writes
+	// status.state (Memory has no state; dev.LastState is read-only).
 	State State
 
 	// Conditions to set on the resource. The controller fills in
@@ -216,6 +251,20 @@ const (
 	StateProvisioned State = "Provisioned"
 	StateOffline     State = "Offline"
 )
+
+// DecideSettings is what Decide needs beyond the device and its
+// observations: the install-wide settings that change which rule matches.
+// Grace periods and rate limits (3 min, 5 min, 20 min, ...) are not settings;
+// they are rows of each driver's table.
+type DecideSettings struct {
+	// Signalling is the install-wide signalling backend (design §8.5). A
+	// spec asking for a feature it cannot deliver is Invalid / Unsupported.
+	Signalling Signalling
+
+	// StaleAfter is how old Observations.PolledAt may be before the
+	// observations count as stale and the device is Unknown.
+	StaleAfter time.Duration
+}
 
 // RenderContext is what Render needs beyond the device: install-wide
 // settings, already resolved by the compiler.
@@ -387,14 +436,110 @@ type PasswordPolicy struct {
 	Alphabet string
 }
 
-// FirmwareFile is one entry of a driver's firmware manifest.
+// FirmwareLoad is one load in a driver's firmware manifest: everything a
+// device needs on TFTP to boot that load.
+//
+// The firmware store keeps files per load, because loads can share a file
+// name with different contents: every Cisco SIP zip carries its own
+// term45.default.loads and term65.default.loads, the files a factory-reset
+// phone asks for to learn which load to boot. Such files are Shared. TFTP
+// serves a Shared file from the driver's default load only (its profile's
+// DefaultFirmware), so a reset phone always lands on the default load;
+// every other file name belongs to exactly one load and is served by name.
+type FirmwareLoad struct {
+	// Name is the load ID, as the device reports it and as the SEP file's
+	// loadInformation names it, e.g. SIP45.9-4-2SR4-3S. It is what
+	// Phone.spec.firmware selects.
+	Name string
+	// Models are the models that can run this load.
+	Models []string
+	// Files are the files of the load. FirmwareAvailable means every one of
+	// them is staged with its SHA-256.
+	Files []FirmwareFile
+}
+
+// FirmwareFile is one file of a firmware load.
 type FirmwareFile struct {
-	// Name is the file name phones request, e.g. term45.default.loads.
+	// Name is the file name devices request, e.g. apps45.9-4-2SR4-3.sbn.
 	Name string
 	// SHA256 is the lower-case hex digest the file must have.
 	SHA256 string
 	// Size in bytes, for progress and sanity checks.
 	Size int64
+	// Shared marks a file whose name several loads carry with different
+	// contents (Cisco's term*.default.loads). See FirmwareLoad.
+	Shared bool
+}
+
+// LoadByName returns the load called name from a manifest.
+func LoadByName(loads []FirmwareLoad, name string) (FirmwareLoad, bool) {
+	for _, l := range loads {
+		if l.Name == name {
+			return l, true
+		}
+	}
+	return FirmwareLoad{}, false
+}
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// ValidateFirmware checks the rules a firmware manifest keeps:
+//   - every load has a unique, non-empty name, at least one model and at
+//     least one file;
+//   - every file has a plain file name (no slash), a lower-case hex SHA-256
+//     and a positive size, and appears once per load;
+//   - a file name appears in more than one load only if it is Shared in
+//     every load that carries it, because TFTP serves files by name.
+func ValidateFirmware(loads []FirmwareLoad) error {
+	var errs []error
+	loadNames := map[string]bool{}
+	owners := map[string][]string{} // file name -> the loads carrying it
+	unshared := map[string]bool{}   // file name -> some load carries it not Shared
+	for _, l := range loads {
+		switch {
+		case l.Name == "":
+			errs = append(errs, errors.New("firmware: a load has no name"))
+		case loadNames[l.Name]:
+			errs = append(errs, fmt.Errorf("firmware: load %s is listed twice", l.Name))
+		}
+		loadNames[l.Name] = true
+		if len(l.Models) == 0 {
+			errs = append(errs, fmt.Errorf("firmware: load %s names no models", l.Name))
+		}
+		if len(l.Files) == 0 {
+			errs = append(errs, fmt.Errorf("firmware: load %s has no files", l.Name))
+		}
+		inLoad := map[string]bool{}
+		for _, f := range l.Files {
+			switch {
+			case f.Name == "" || strings.ContainsAny(f.Name, `/\`) || f.Name == "." || f.Name == "..":
+				errs = append(errs, fmt.Errorf("firmware: load %s: %q is not a plain file name", l.Name, f.Name))
+			case inLoad[f.Name]:
+				errs = append(errs, fmt.Errorf("firmware: load %s lists %s twice", l.Name, f.Name))
+			}
+			inLoad[f.Name] = true
+			if !sha256Hex.MatchString(f.SHA256) {
+				errs = append(errs, fmt.Errorf("firmware: load %s: %s: SHA-256 must be 64 lower-case hex digits", l.Name, f.Name))
+			}
+			if f.Size <= 0 {
+				errs = append(errs, fmt.Errorf("firmware: load %s: %s: size must be positive", l.Name, f.Name))
+			}
+			unshared[f.Name] = unshared[f.Name] || !f.Shared
+			owners[f.Name] = append(owners[f.Name], l.Name)
+		}
+	}
+	names := make([]string, 0, len(owners))
+	for n := range owners {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		if len(owners[n]) > 1 && unshared[n] {
+			errs = append(errs, fmt.Errorf("firmware: %s is in loads %s but not Shared in all of them; TFTP serves files by name",
+				n, strings.Join(owners[n], ", ")))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Registry maps model names to the drivers that serve them.
@@ -403,14 +548,18 @@ type Registry struct {
 	drivers []Driver
 }
 
-// NewRegistry builds a registry. It fails if two drivers claim one model or
-// a driver claims none.
+// NewRegistry builds a registry. It fails if two drivers claim one model, a
+// driver claims none, or a driver's firmware manifest breaks
+// ValidateFirmware.
 func NewRegistry(ds ...Driver) (*Registry, error) {
 	r := &Registry{byModel: map[string]Driver{}}
 	for _, d := range ds {
 		models := d.Models()
 		if len(models) == 0 {
 			return nil, fmt.Errorf("drivers: %s serves no models", d.Name())
+		}
+		if err := ValidateFirmware(d.Firmware()); err != nil {
+			return nil, fmt.Errorf("drivers: %s: %w", d.Name(), err)
 		}
 		for _, m := range models {
 			if other, dup := r.byModel[m]; dup {

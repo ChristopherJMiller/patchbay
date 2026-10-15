@@ -282,15 +282,20 @@ type UnknownDevice struct {
 	LastSeen time.Time `json:"lastSeen"`
 }
 
-// FirmwareStore is the firmware store sensor: which files of each driver's
-// manifest are on the firmware volume with the pinned SHA-256.
+// FirmwareStore is the firmware store sensor: which files of each load in
+// each driver's manifest are on the firmware volume with the pinned SHA-256.
+// The store keeps files per load, because loads can share a file name with
+// different contents (see drivers.FirmwareLoad).
 type FirmwareStore struct {
-	// Files lists every manifest file the agent knows about.
+	// Files lists every manifest file the agent knows about, one entry per
+	// (load, name).
 	Files []FirmwareFileStatus `json:"files"`
 }
 
 // FirmwareFileStatus is one manifest file's presence on the firmware volume.
 type FirmwareFileStatus struct {
+	// Load is the load the file belongs to, e.g. SIP45.9-4-2SR4-3S.
+	Load string `json:"load"`
 	// Name is the file name as phones request it.
 	Name string `json:"name"`
 	// Present is true when the file exists and its SHA-256 matches the

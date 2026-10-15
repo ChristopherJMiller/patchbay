@@ -156,7 +156,13 @@ spec:
             - -{{ repeat (int $p.asterisk.verbosity) "v" }}
             {{- end }}
             - -C
+            {{- if $p.staticConfig.enabled }}
             - /etc/asterisk/asterisk.conf
+            {{- else }}
+            # Through the `current` symlink the agent swaps on apply, so a
+            # reload reads the new version (internal/compile/layout.go).
+            - /var/lib/patchbay/config/current/asterisk/asterisk.conf
+            {{- end }}
           ports:
             - name: sip-udp
               containerPort: {{ $p.ports.sip }}
@@ -194,9 +200,11 @@ spec:
               readOnly: true
             {{- else }}
             # The live config the agent applies. The compiler owns every file
-            # Asterisk loads; none of the image's stock configs are used.
+            # Asterisk loads (current/asterisk/); none of the image's stock
+            # configs are used. The whole volume is mounted, because a subPath
+            # would pin one version and miss the symlink swap.
             - name: config
-              mountPath: /etc/asterisk
+              mountPath: /var/lib/patchbay/config
               readOnly: true
             {{- end }}
             - name: asterisk-run
