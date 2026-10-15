@@ -12,10 +12,12 @@
 #
 # `ci-ok` is the one check the main ruleset requires: it passes only when
 # check, e2e and image all passed, so Renovate's PRs auto-merge on it and
-# nothing else (docs/releasing.md). Publishing happens only on a push to
-# main (image `sha-<commit>`, `main`) or a `v*` tag (image `<version>`,
-# `<major>.<minor>`, then the chart and the GitHub release), and only after
-# every test passed.
+# nothing else (docs/releasing.md). Publishing happens only in the publish
+# job, on a push to main (image `sha-<commit>`, `main`) or a `v*` tag
+# (image `<version>`, `<major>.<minor>`, then the chart, pinned to that
+# image's digest, and the GitHub release), and only after every test
+# passed. No other job can write packages: a PR's run holds a read-only
+# token.
 name: CI
 
 on:
@@ -194,6 +196,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  # Every event: both architectures build. Nothing is pushed and the token
+  # can only read, so a PR's code (its flake, `make sounds`, the actions a
+  # Renovate PR bumps) never runs with the right to publish.
   image:
     name: image (amd64, arm64)
     needs: [check, e2e]
@@ -201,14 +206,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      packages: write # push to ghcr.io (publishing events only)
-      id-token: write # sign the build provenance (Sigstore, keyless)
-      attestations: write
-    env:
-      IMAGE: ghcr.io/christopherjmiller/patchbay
-      # A push to main or a v* tag publishes; every other event (PRs, the
-      # weekly run) only proves both architectures build.
-      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,8 +229,64 @@ jobs:
       # stage has no RUN, so arm64 needs no emulation.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # The same build arguments as publish's, so its build hits this cache.
+      - name: Build arguments
+        id: args
+        run: echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.args.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # A push to main (`sha-<7>`, `main`) or a v* tag (`<version>`,
+  # `<major>.<minor>`) only, after every test passed: the one job that may
+  # push to ghcr.io. Each primary tag (`sha-<7>` on main, `<version>` on a
+  # tag) is written once: a re-run finds it and reuses its digest rather
+  # than push another build under the same name. The digest goes to
+  # release, which pins the chart to it.
+  publish:
+    name: publish (ghcr.io)
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [check, e2e, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+      id-token: write # sign the build provenance (Sigstore, keyless)
+      attestations: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+    env:
+      IMAGE: ghcr.io/christopherjmiller/patchbay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
+        with:
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
+          save: false
+
+      - name: Sound prompts
+        run: nix develop -c make sounds
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: env.PUBLISH == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -243,56 +296,97 @@ jobs:
         id: meta
         with:
           images: ${{ env.IMAGE }}
-          # sha-<7> is what deployments pin (with the digest); main moves.
+          # sha-<7> is what deployments of main pin (with the digest), and
+          # only main's build carries it; main moves.
           tags: |
-            type=sha,prefix=sha-,format=short
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref_type != 'tag' }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      # The primary tag, the version stamped into the binary, and the commit
+      # time as its date (as the Makefile does), so two builds of one
+      # commit stamp the same binary.
+      - name: Primary tag
+        id: primary
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" == tag ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not v<semver>"
+              exit 1
+            fi
+            echo "tag=$v" >> "$GITHUB_OUTPUT"
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "version=main" >> "$GITHUB_OUTPUT"
+          fi
+          echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
+
+      - name: Already published?
+        id: existing
+        env:
+          TAG: ${{ steps.primary.outputs.tag }}
+        run: |
+          if manifest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' 2>/dev/null); then
+            digest=$(jq -r .digest <<<"$manifest")
+            echo "::notice::${IMAGE}:${TAG} is already published (${digest}): not pushed again"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
+        if: steps.existing.outputs.digest == ''
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: ${{ env.PUBLISH == 'true' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.primary.outputs.version }}
             COMMIT=${{ github.sha }}
-            DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            DATE=${{ steps.primary.outputs.date }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
 
       # Verify with: gh attestation verify oci://<image>@<digest> --repo ChristopherJMiller/patchbay
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        if: env.PUBLISH == 'true'
+        if: steps.existing.outputs.digest == ''
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
       - name: Published
-        if: env.PUBLISH == 'true'
+        id: digest
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
+          PRIMARY: ${{ steps.primary.outputs.tag }}
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no image digest (got '$DIGEST')"
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           {
             echo "### Published"
             echo
-            echo "Pin: \`${IMAGE}:sha-${GITHUB_SHA::7}@${DIGEST}\`"
+            echo "Pin: \`${IMAGE}:${PRIMARY}@${DIGEST}\`"
             echo
             echo '```'
             echo "$TAGS"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # A v* tag: the chart (version and appVersion = the tag) as a GitHub
-  # release asset, and the Helm repository index on gh-pages, served at
+  # A v* tag: the chart (version and appVersion = the tag, the image pinned
+  # by the digest publish pushed) as a GitHub release asset, and the Helm
+  # repository index on gh-pages, served at
   # https://christopherjmiller.github.io/patchbay. This is chart-releaser's
   # layout, done in four commands because the app and the chart share one
   # version (chart-releaser-action releases a chart only when charts/
@@ -300,7 +394,7 @@ jobs:
   release:
     name: release (chart + GitHub release)
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [image]
+    needs: [publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -325,15 +419,32 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
           save: false
 
+      # The released chart runs exactly the image publish pushed for this
+      # tag: tag and digest, never the tag alone.
       - name: Package the chart
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
         run: |
           v="${GITHUB_REF_NAME#v}"
           if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::tag $GITHUB_REF_NAME is not v<semver>"
             exit 1
           fi
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::publish gave no image digest (got '$DIGEST')"
+            exit 1
+          fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
+          DIGEST="$DIGEST" nix develop -c yq -i '.image.digest = strenv(DIGEST)' charts/patchbay/values.yaml
           nix develop -c helm package charts/patchbay --version "$v" --app-version "$v" -d dist
+          nix develop -c helm template patchbay "dist/patchbay-${v}.tgz" \
+            --set pbx.nodeName=n --set pbx.address=192.0.2.10 > dist/rendered.yaml
+          want="ghcr.io/christopherjmiller/patchbay:${v}@${DIGEST}"
+          if [[ "$(grep -c "image: \"${want}\"" dist/rendered.yaml)" -lt 3 ]]; then
+            echo "::error::the packaged chart does not run ${want}"
+            exit 1
+          fi
+          rm dist/rendered.yaml
 
       - name: GitHub release
         env:
