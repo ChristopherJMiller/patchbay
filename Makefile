@@ -146,7 +146,7 @@ asterisk-check: asterisk-check-orphans ## Boot every compile golden in the chart
 	docker pull --quiet $(ASTERISK_REPO):$(ASTERISK_TAG)@$(ASTERISK_DIGEST)
 	@# Static (CGO_ENABLED=0): the test binary also runs inside the Asterisk
 	@# container, as the SIP client (internal/compile/sipclient_asterisk_test.go).
-	CGO_ENABLED=0 go test -tags asterisk -count=1 -timeout 10m -run '^TestRealAsterisk' -v ./internal/compile/
+	CGO_ENABLED=0 go test -tags asterisk -count=1 -timeout 10m -run '^TestRealAsterisk' -v ./internal/compile/ ./internal/agent/ami/
 
 .PHONY: asterisk-check-orphans
 asterisk-check-orphans: ## Remove asterisk-check containers whose test process is gone.
