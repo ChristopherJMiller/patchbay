@@ -159,6 +159,49 @@ departs from it, the departure is recorded here (and in the code's docs).
   `1XX`), because the 79x5 dial template would dial the short number
   first. Numbers only a reserved pattern holds may be shadowed (`911`
   dials before `9.`'s `9111` could).
+- **Settings come from a chart-rendered file** (§5 has the controller
+  compile with the install's settings; nothing says where they live): the
+  chart renders `<fullname>-settings` (`settings.json`, `compile.Settings`)
+  from its values, the controller reads the mounted file once at start
+  (strict JSON, `install.CheckSettings`), and a `checksum/settings`
+  annotation rolls the controller when one changes. No watch, no RBAC.
+- **The controller mints the agent token** (§4) into `<fullname>-agent-token`;
+  the chart's override and its "create it first" note are gone. The PBX
+  pod's Secret volume is not optional, so the pod waits in
+  ContainerCreating until the controller has written it.
+- **The softphone's provisioning URL shows the compiled token**
+  (`pbx-secrets`' value, only while its version is `pbx-config`'s), not the
+  device Secret's: a rotated token is shown once the agent can serve it.
+- **No status before the first poll** (a restarted controller never flips
+  every phone to Unknown for one poll) and none for a device that is not in
+  the compiled index, or while `pbx-config` does not exist.
+- **One leader-election Lease per install**
+  (`<fullname>-controller.patchbay.chrismiller.xyz`), so two installs in a
+  namespace never share a leader, and the Role names it.
+- **The controller's Role is least privilege**: it reads its resources and
+  writes only their status (and phones'/softphones' finalizers, for
+  `blockOwnerDeletion`); it creates ConfigMaps and Secrets and updates them
+  (pbx-config by name; a device Secret's name is per resource); it never
+  deletes or patches. So its objects outlive `helm uninstall` (§11 of the
+  plan says how to remove them).
+- **The controller refuses unusable Secrets** (`secrets.ErrInvalid`): a
+  value outside its generator's alphabet, a Secret of another type or
+  owner. The agent resolves values into config files unescaped, so a
+  hand-edited Secret is a `CompileFailed` Event, not a broken file.
+- **Discovery is once per MAC per agent start, in the controller's
+  memory**: a controller restart reports each still-asking phone once more.
+- **The CLI never uses the in-cluster config**: `--kubeconfig`, else
+  `$KUBECONFIG`, else `~/.kube/config`.
+- **Two more metrics** than §10 lists: `patchbay_compile_failures_total`
+  and `patchbay_agent_reachable` (the "agent unreachable" alert).
+- **The control API caps its connections** (64, 16 per source) like device
+  HTTP and :6970.
+- **A phone that only asks for its `.sgn` is never scraped** (§8.2 takes
+  the phone's IP from the fetch log, before it registers): the agent
+  takes it only from a fetch it served or a registration (W2), so the
+  Desk phone with its old trust list never has its log read for the trust
+  error; it becomes NeedsTrustReset by the 3 min `.sgn` rule (e2e
+  `TestPhoneLifecycle/reset`; plan §11).
 
 ## Commands
 
@@ -170,13 +213,14 @@ cd /path/to/patchbay && nix develop -c make <target>
 make generate     # after ANY api/v1alpha1 change; commit the generated files
 make fmt vet lint # golangci-lint v2 (.golangci.yml) + helm lint
 make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake), then
-                  # the unit tests again with -tags e2e (cisco79x5's e2e test load)
+                  # the unit tests again with -tags e2e (cisco79x5's e2e test load),
+                  # and the one envtest that needs that load (TestPhoneLifecycleFirmware)
 make test-unit    # -short: skips envtest
 make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev (GO_TAGS=e2e
-                  # only for e2e images: the e2e firmware load)
+                  # only for e2e images and .e2e/bin/patchbay: the e2e firmware load)
 make sounds       # the prompts (espeak-ng + ffmpeg) into build/sounds; make image runs it
 make tools-versions
-make e2e          # kind + chart + real Asterisk + fakephone; docs/e2e.md
+make e2e          # kind + chart + controller + real Asterisk + fakephones; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
 make check-hygiene # no tracked binaries, big files, firmware types or secrets

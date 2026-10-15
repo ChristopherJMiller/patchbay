@@ -33,19 +33,55 @@ line. The design, including the per-device state machines, is
 
 ## Status
 
-**Pre-alpha.** The `v1alpha1` API and its CRDs, the compiler and the two
-drivers (Cisco 79x5 and softphone: rendering and the state machines), and the
-PBX pod are built: the agent applies compiled bundles (resolve, swap, reload
-over AMI, verify, roll back), serves device HTTP and one-time softphone
-provisioning, keeps the observations and sends resync NOTIFYs; a separate,
-unprivileged file server serves TFTP and HTTP :6970; Asterisk loads only the
-compiled modules. The e2e suite in kind runs all of it against real Asterisk
-with a simulated phone. The controller's reconcilers and the CLI are next
-(W3), so today the e2e harness compiles the bundle itself. Nothing here runs
-a real phone yet.
+**Pre-alpha.** Release A ("core calling") is built end to end: the
+`v1alpha1` API, the compiler, the Cisco 79x5 and softphone drivers (rendering
+and the state machines), the controller (it mints every Secret, compiles the
+resources into the bundle, polls the PBX agent, decides each device's state
+and writes status, sends resyncs, reports unknown phones), the PBX pod (the
+agent applies, verifies and rolls back bundles, serves device HTTP and
+one-time softphone provisioning; an unprivileged file server serves TFTP and
+HTTP :6970; Asterisk loads only the compiled modules) and the CLI. The e2e
+suite in kind runs all of it against real Asterisk with simulated phones: a
+79x5 walking from SCCP firmware to `Registered`, a factory-reset one,
+Linphone's one-time QR code, calls both ways, a person ringing two devices, a
+blind transfer, a label change reaching the screen, a resync held during a
+call. Nothing here has run a real phone yet: the bench questions are in
+[docs/plans/release-a.md §8](docs/plans/release-a.md).
 
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
 extras (wallpaper, ringtones, speed dials, a Services menu, push messages).
+
+## Quickstart
+
+On a cluster of Kubernetes 1.33 or later, in a namespace that admits
+host-network pods (`pod-security.kubernetes.io/enforce: privileged`), pick
+the node the PBX lives on and its LAN address:
+
+```sh
+helm install patchbay charts/patchbay -n telephony --create-namespace \
+  --set pbx.nodeName=top --set pbx.address=192.168.0.240
+```
+
+The settings phones get (time zone, NTP server, number plan, the networks
+allowed to register) are chart values, rendered into
+`patchbay-settings`. There is nothing to create by hand: the controller
+mints the agent token, the AMI password and each device's password, and the
+PBX pod starts once it has (the agent token) and has applied the first
+bundle. Then declare the phones (`config/samples` has one of each):
+
+```sh
+kubectl -n telephony apply -f config/samples/
+patchbay status -n telephony                     # every device, what it waits for, unknown phones
+patchbay softphone qr chris-laptop -n telephony  # scan it in Linphone; it works once
+patchbay firmware load cmterm-7945_7965-sip.9-4-2SR4-3.zip -n telephony
+patchbay phone resync desk -n telephony
+patchbay models                                  # what each model supports (no cluster needed)
+```
+
+The CLI uses `--kubeconfig`, else `$KUBECONFIG`, else `~/.kube/config`
+(never the in-cluster config), and reaches the agent through a
+port-forward. A phone's `status.humanAction` says, in words, the one thing
+a person must do next (connect it, stage firmware, factory-reset it).
 
 ## Development
 
@@ -63,7 +99,7 @@ make build                     # bin/patchbay
 make sounds                    # the 911 and "not available" prompts (espeak-ng) into build/sounds
 make image                     # ghcr.io/christopherjmiller/patchbay:dev (renders the prompts first)
 make asterisk-check            # every compile golden booted in the pinned Asterisk (docker)
-make e2e                       # kind + the chart + real Asterisk + a simulated phone
+make e2e                       # kind + the chart + the controller + real Asterisk + simulated phones
 make check-hygiene             # no binaries, firmware or secrets in git (CI runs it)
 ```
 
@@ -77,9 +113,11 @@ api/v1alpha1/          resource types -> generated CRDs
 internal/compile/      pure: resources + settings -> config bundle
 internal/drivers/      the driver contract, and the cisco79x5 and softphone drivers
 internal/agent/        the PBX pod's sidecar (apply, device HTTP, AMI, observations) and file server
-internal/controller/   the controller manager and, soon, its reconcilers
+internal/controller/   the controller: Setup, and its pieces (install, secrets, bundle, poller,
+                       devices, numbers, discovery, metrics)
+internal/cli/          the client commands (status, softphone qr, phone resync, firmware load, models)
 charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk, agent sidecar, file server)
-test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5
+test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5 and Linphone
 test/chart/            the rendered chart checked against the Go layout contracts
 hack/                  check-hygiene.sh, gen-sounds.sh
 config/samples/        one example of each resource

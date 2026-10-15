@@ -3308,6 +3308,157 @@ Done when every 6.2.5–6.2.9 test exists and passes, every carry-over in
 6.2.2 is closed or in §11, every §9 row marked W3 has its test, and
 CLAUDE.md "Deviations" lists what W3 changed.
 
+#### 6.2.11 W3 as built
+
+Where W3 departs from 6.2.1–6.2.10. The stage-level deviations are the
+stages' reports, condensed; CLAUDE.md records the departures from the
+design.
+
+**Core** (settings, secrets, bundle, agentclient, poller, metrics)
+- **bundle compares the whole of `pbx-config`** (data, binary data, the
+  `bundle-version` annotation, the managed labels), not only the index
+  version: a hand-edited file key is written back. `pbx-secrets` is
+  compared on data, annotation and labels. The ConfigWritten Event follows
+  any write; `Metrics.ConfigWritten` follows every reconcile that leaves
+  `pbx-config` at a version, so `patchbay_config_version_info` survives a
+  controller restart that writes nothing.
+- **`secrets.ErrInvalid`**: a value outside its generator's alphabet, a
+  Secret that is not Opaque, an immutable one lacking a key, or a device
+  Secret controlled by another object is refused (messages name the Secret
+  and key, never the value), handled like a compile failure (CompileFailed,
+  metric, 5 min requeue): the agent resolves values into config files
+  unescaped. The agent token is trimmed and any printable non-space ASCII
+  is accepted (an old hand-made token survives). Adopted Secrets get the
+  managed labels added; an existing label value is kept. A Phone whose
+  model no driver serves gets no device Secret; every Softphone gets a
+  provisioning token.
+- agentclient sets per-call timeouts (5 s observations, 10 s actions, 5 s
+  dial), never a client-wide one, and copies a caller's client to forbid
+  redirects. metrics: `patchbay_registered_endpoints` and the observation
+  age are absent before the first good poll, `patchbay_agent_reachable`
+  before the first attempt. poller: an attempt cut short by shutdown
+  publishes nothing; a failed index read keeps the old fingerprints (the
+  next poll enqueues again); attempts and enqueues are bounded at twice the
+  interval; no backoff (a backoff would delay noticing the agent past
+  StaleAfter).
+
+**Devices** (devices, numbers, discovery)
+- The Softphone controller also watches `pbx-secrets` (its informer can
+  deliver after `pbx-config`'s, and the URL needs both).
+- **Stale-cache guard**: each reconciler remembers the resourceVersion it
+  read before its last status write; a cached copy at exactly that version
+  is requeued after 250 ms, not decided (it re-sent a recorded resync and
+  then lost the write to a conflict).
+- Status-write errors are wrapped so an Invalid error quotes nothing from
+  the object (it could quote `provisioningURL`); ActionFailed for
+  rotateToken names no version; ApplyFailed names the compiled bundle's
+  version (the one the agent refused).
+- Open: a label with `@@` is collapsed by Compile but not in the
+  LabelShortened condition (status text only); on a failed action the
+  Decision's conditions still say "resync sent" while `lastAction` is kept;
+  an action is sent before its status write, so a real write conflict
+  (not cache lag) sends it again.
+
+**CLI**
+- `firmware load` matches names before reading (a large non-firmware entry
+  never fails a run), names a refused file by its path in the zip, and
+  prints a few lines 6.2.7 does not list (duplicates, non-regular files,
+  read errors, connection errors); `status` prints a blank line between
+  sections and `no config applied yet`; `NewEnv("")` uses `$KUBECONFIG`,
+  then `~/.kube/config`, without client-go's migration and never the
+  in-cluster config; `--reissue` prints one progress line (no URL) on
+  stderr; `models` marks shared files and a default load missing from the
+  manifest.
+
+**Fakephone**
+- A check-sync NOTIFY also refetches; `MinToneFrames` 0 means at least one
+  packet; `run` has `--local-ip` and `--sip-port`; a Register step that
+  expects a refusal uses its own Call-ID and leaves the registration alone;
+  the config parsers refuse an unresolved placeholder; one-shot commands
+  answer an INVITE with 486; after a 202 to its REFER the phone waits up to
+  10 s for the final NOTIFY before its BYE.
+
+**Integrator** (wiring, cmd, chart, build, e2e)
+- `controller.Setup` as 6.2.9, plus `Options.Registerer` (nil:
+  controller-runtime's registry; a process registers once). The
+  **leader-election Lease is per install**,
+  `<fullname>-controller.patchbay.chrismiller.xyz` (the same name as
+  before for the default release), so the Role can name it and two
+  installs in a namespace never share a leader.
+- **The controller's Role is least privilege** (6.2.9 said unchanged; the
+  task asked for it): read its resources, `update` only their status, and
+  phones'/softphones' finalizers (`blockOwnerDeletion`); ConfigMaps
+  `get/list/watch/create`, `update` by name for `pbx-config` only; Secrets
+  `get/list/watch/create/update` (device Secret names are per resource);
+  Events in both APIs (leader election uses the core one); Leases `create`,
+  `get/update` by name. No `delete`, no `patch`. test/chart pins it rule
+  by rule.
+- The chart's settings render every number-plan entry as a string
+  whatever YAML made of it; the controller gets `--agent-url` from
+  `pbx.ports.control` (the default would ignore an override).
+- `make test` also runs controller-devices' e2e-tagged envtest
+  (`TestPhoneLifecycleFirmware`), which no target ran.
+- **e2e, against 6.2.9's design**:
+  - `TestRegister` registers kitchen over TCP only; the Softphone over UDP
+    is `TestDeskLoop`'s laptop (its registration from the Linphone pod).
+    The W2 tests run in the parallel group; `TestRegister` and
+    `TestResyncNotify` take turns on kitchen's one contact.
+  - **`TestPhoneLifecycle/reset` reaches NeedsTrustReset by the 3 min .sgn
+    rule**, not the trust log the plan scripted: the agent scrapes only a
+    phone it has served or that registered (`observe.ScrapeTargets`), and
+    a phone asking only for its `.sgn` is neither, so its web page is never
+    read. That is the real Desk phone's path too (§11). After the reset the
+    phone takes its config before the firmware: a firmware fetch from an
+    address the agent has not served a config to is attributed to nobody.
+    The reset path is therefore 3 min + the 3 min download window, and the
+    parallel group takes about 6 min, not 225 s.
+  - **`TestRollback`**: a restarted controller reads `pbx-config` as it
+    finds it (`install.ReadCompiled`, 6.2.1's stateless choice), so until
+    its own compile replaces the test's broken bundle a device may report
+    `ApplyFailed` for that version; the test asserts that no ApplyFailed
+    names any other version and that none shows it at the end. And the
+    controller's `pbx-secrets` rewrite (only its annotation changes) makes
+    the agent apply the refused version again, another 30 s of
+    verification (§11), so the first `--reissue` can time out; the test
+    reissues once more.
+  - `TestDeskLoop/transfer`: desk waits 2 s after answering before its
+    REFER. A REFER at once is accepted (202) but fails before Asterisk has
+    bridged the call (`SIP/2.0 400 Bad Request` in the refer NOTIFY); a
+    person always talks first. The test also checks the final NOTIFY says
+    200.
+  - `TestProvisioningOneTime` scales the controller to 0 around the agent
+    restart: with the controller up, it rotates the spent token at once,
+    the rotated version settles, and the agent then forgets the spend (it
+    guards a token no bundle grants any more), so a restart has no served
+    fetch to remember (the first fresh-cluster run failed so). The test
+    checks the case that matters: the agent restarting before the
+    controller acted on the fetch; scaled back, the controller rotates.
+  - Scripted phones' scripts travel in Secrets (a provisioning URL holds a
+    token), never pod args or plain env; CLI runs are bounded at 60 s.
+- **First runs against real Asterisk** (fakephone's open items): the
+  in-dialog REFER works on stock `res_pjsip_refer` (202, then sipfrag
+  NOTIFYs `100 Trying`, then `200 OK`; Asterisk sends the transferee to 150
+  in `patchbay-devices`, where laptop hears it); the resync NOTIFY reaches
+  a run-mode phone over TCP; TFTP and HTTP :6970 fetches attribute as W2
+  documented.
+
+**Measured** (a fresh cluster, images cached, this workstation; `make e2e`
+took 558 s wall, `go test` 551 s), against 6.2.9's budget of about 7 min:
+
+| Phase | Budget | Measured |
+|---|---|---|
+| kind create and image load | 60 s | 37 s + 24 s |
+| install, token, compile, rollout | 40 s | 10 s (helm 1 s, the controller 2 s, the PBX pod 6 s, its first bundle already applied) |
+| sequential tests | 100 s (TestRollback 60 s) | 111 s: TestPBXUp 12, TestController 1, TestFirmwareUploadAndServe 4, TestProvisioningOneTime 16, TestRollback 79 |
+| parallel group | 225 s | 368 s, set by TestPhoneLifecycle (the reset path's 3 min `.sgn` rule, then its 3 min download window); TestDeskLoop 127 s, the rest under 40 s |
+| teardown | 15 s | about 5 s |
+| total | about 7 min | about 9.3 min |
+
+The overrun is the reset path above: the plan scripted a trust-log scrape
+that cannot happen. TestRollback is 79 s: the broken version's 30 s
+verification, the agent's second one after the controller's
+`pbx-secrets` rewrite (§11), and a reissue.
+
 ---
 
 ## 7. Agent ↔ controller interfaces
@@ -3357,6 +3508,7 @@ change.
 | *(review)* Which `/DeviceInformationX` field holds the load ID? | none: the fold reads `versionID`, then `appLoadID`, through `runsLoad` | both accepted | record what the real phone reports in the research notes; `FirmwareCurrent` must be True on the bench |
 | *(review)* Does the screen show non-ASCII labels? | none (rendered as UTF-8 XML) | as written | if they show garbled, `ScreenLabel`/`LineLabel` transliterate to ASCII and `LabelShortened` reports it |
 | *(review)* Does Linphone honour `userid`, `misc/config-uri` and the `video` keys? | the provisioning document (softphone/render.go) | as in T2 | fix the key names; the golden changes |
+| *(W3)* After a factory reset, does the 79x5 fetch its config before its firmware? | none: the agent attributes a load's files by source address, and only to a device that fetched its config (or registered) from that address (`observe`) | as is (the e2e reset phone fetches its config first) | if it downloads first, its download is nobody's and the controller never shows Upgrading: attribute a load's files to the devices whose SEP names that load |
 
 ---
 
@@ -3388,6 +3540,23 @@ to that point.
 | Second phone appears as "unknown phone" before a resource | e2e `TestDiscovery`: fakephone with an unknown MAC → Event + `patchbay status` lists it (W3) | `[real]` second 7945 |
 | … reaches `Registered` once a Phone is written | e2e (W3) | `[real]` |
 | Phone↔phone calls and transfer | e2e calls between two fakephones (W3); e2e `TestTransfer`: A calls B, B sends an in-dialog REFER to `150`, the softphone fakephone rings and A's audio reaches it (proves `res_pjsip_refer.so` loads and the transfer lands in `patchbay-devices`) (W3) | `[real]` blind and attended transfer on the 7945 (bench) |
+
+**Status after W3.** Every automated test in this table exists and passes
+(`make test`, `make e2e`); the `[real]` column is still open. The W3 rows,
+by test: `firmware load` accepts the zip, and rejects a wrong checksum:
+`TestPhoneLifecycle/firmware-load` (the CLI refuses a corrupted file
+locally and stores the good zip) with the CLI's `TestFirmwareLoadLayouts`,
+and `TestFirmwareUploadAndServe` (a forced PUT gets 422). Desk walks to
+`Registered`: `TestPhoneLifecycle` (lifecycle; and reset, the Desk phone's
+own path, which reaches NeedsTrustReset by the 3 min `.sgn` rule with P6,
+6.2.11). Softphone: `TestDeskLoop/softphone`. `100`↔`150`:
+`TestDeskLoop/calls`. `301`: `TestDeskLoop/person`. `911` and the
+reserved numbers: `TestPrompts` (`911`; `0`, `999`, `205`; `199`
+unassigned). Label change: `TestDeskLoop/label`, and Review Focus 5
+`TestDeskLoop/change-during-call`. Deleting desk's Secret:
+`TestDeskLoop/secret-heals`. Rollback: `TestRollback` and the envtest
+`TestApplyFailedControllerHalf`. Second phone: `TestDiscovery`. Transfer:
+`TestDeskLoop/transfer`.
 
 ---
 
@@ -3491,3 +3660,29 @@ The five inputs most likely to break a real user that no test covers yet.
 - *(W3)* **A controller restart reports each unknown phone again**, once:
   discovery remembers which MACs it reported for the agent's current
   process in memory only.
+- *(W3, found in e2e)* **The Desk phone's trust log is never read.** The
+  agent scrapes only a phone it has served a file to or that holds a
+  registration, and a phone with its old CUCM's trust list asks only for
+  `SEP<MAC>.cnf.xml.sgn`, which is never served. So the cisco79x5 rule's
+  trust-log clause cannot fire for it; the other clause does: after 3 min
+  of only `.sgn` requests the Phone is NeedsTrustReset, with P6 (stage the
+  default load first) until that load's digests are filled in and it is
+  staged, then P5. `TestPhoneLifecycle/reset` walks this path.
+- *(W3, found in e2e)* **Firmware fetched before any config fetch is
+  nobody's.** The agent attributes a file without a MAC in its name (a
+  load's `.loads` and `.sbn`) by its source address, and only to a device
+  that fetched its config, or registered, from that address. A phone that
+  downloads firmware before it fetches its config would not be seen
+  Upgrading. The 79x5 reads its config first to learn its load (bench: §8).
+- *(W3, found in e2e)* **A refused version is applied once more when
+  `pbx-secrets` is rewritten with the same values** (only the controller's
+  `bundle-version` annotation changing, as after someone wrote
+  `pbx-config` by hand): the agent's intake keys a failure by the Secret's
+  resourceVersion, so it applies and verifies the refused version again,
+  holding its one worker for the 30 s verification, and a fixed version
+  written meanwhile waits. Nothing is lost; the next version applies after
+  it.
+- *(W3)* **A restarted controller reports what it finds in `pbx-config`**
+  (6.2.1, "how the device reconcilers read the compiled index"): if that
+  bundle was written by hand and refused, devices show `ApplyFailed` for
+  it until the controller's own compile replaces it, moments later.
