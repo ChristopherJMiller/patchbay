@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -25,6 +28,7 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
+	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/controller"
 )
 
@@ -116,12 +120,15 @@ func TestCRDs(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-// TestPBXUp checks the PBX pod's shape, that Asterisk runs the static config,
-// and that the agent answers through its Service from the pod network (the
+// TestPBXUp checks the PBX pod's shape; that every process in it runs with
+// the identity and privilege the design gives it, as the kernel reports it
+// in /proc (not just the pod spec); that the file server's identity cannot
+// read the resolved config; that Asterisk runs the compiled bundle; and
+// that the agent answers through its Service from the pod network (the
 // path the controller will use).
 func TestPBXUp(t *testing.T) {
 	f := features.New("PBX pod").
-		Assess("runs on the host network of the pinned node, agent as a native sidecar", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		Assess("runs on the host network of the pinned node: modules, agent sidecar, Asterisk, file server", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			pod := pbxPod(ctx, t)
 			if !pod.Spec.HostNetwork || pod.Spec.DNSPolicy != corev1.DNSClusterFirstWithHostNet {
 				t.Errorf("hostNetwork=%v dnsPolicy=%s", pod.Spec.HostNetwork, pod.Spec.DNSPolicy)
@@ -136,12 +143,26 @@ func TestPBXUp(t *testing.T) {
 			if !ready {
 				t.Errorf("PBX pod %s is not Ready", pod.Name)
 			}
-			if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "agent" ||
-				pod.Spec.InitContainers[0].RestartPolicy == nil ||
-				*pod.Spec.InitContainers[0].RestartPolicy != corev1.ContainerRestartPolicyAlways {
-				t.Errorf("the agent is not a native sidecar: %+v", pod.Spec.InitContainers)
+			var inits, mains []string
+			for _, c := range pod.Spec.InitContainers {
+				inits = append(inits, c.Name)
+			}
+			for _, c := range pod.Spec.Containers {
+				mains = append(mains, c.Name)
+			}
+			if !slices.Equal(inits, []string{"asterisk-modules", "agent"}) || !slices.Equal(mains, []string{"asterisk", "fileserver"}) {
+				t.Errorf("containers: init %v, main %v", inits, mains)
+			}
+			if rp := pod.Spec.InitContainers[1].RestartPolicy; rp == nil || *rp != corev1.ContainerRestartPolicyAlways {
+				t.Errorf("the agent is not a native sidecar")
 			}
 			for _, s := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
+				if s.Name == "asterisk-modules" {
+					if s.State.Terminated == nil || s.State.Terminated.ExitCode != 0 {
+						t.Errorf("asterisk-modules did not complete: %+v", s.State)
+					}
+					continue
+				}
 				if !s.Ready || s.State.Running == nil {
 					t.Errorf("container %s: ready=%v state=%+v", s.Name, s.Ready, s.State)
 				}
@@ -155,30 +176,97 @@ func TestPBXUp(t *testing.T) {
 			// PID 1 of the asterisk container is Asterisk itself (the chart
 			// bypasses the image's root entrypoint), so its own /proc entry
 			// is what the kernel enforces, not just what the spec asks for.
-			st := procStatus(execInPBX(ctx, t, cfg, "asterisk", "cat", "/proc/1/status"))
+			st := procStatus(execInAsterisk(ctx, t, cfg, "cat", "/proc/1/status"))
 			if st["Name"] != "asterisk" {
 				t.Errorf("PID 1 is %q, not asterisk", st["Name"])
 			}
-			for field, want := range map[string]string{
-				"Uid":        "1000 1000 1000 1000",
-				"Gid":        "1000 1000 1000 1000",
-				"CapPrm":     "0000000000000000",
-				"CapEff":     "0000000000000000",
-				"CapBnd":     "0000000000000000",
-				"CapAmb":     "0000000000000000",
+			wantStatus(t, "asterisk", st, map[string]string{
+				"Uid": "1000 1000 1000 1000", "Gid": "1000 1000 1000 1000",
+				"CapInh": capsNone, "CapPrm": capsNone, "CapEff": capsNone, "CapBnd": capsNone, "CapAmb": capsNone,
 				"NoNewPrivs": "1",
-			} {
-				if st[field] != want {
-					t.Errorf("asterisk %s = %q, want %q", field, st[field], want)
-				}
-			}
-			opts := rootMountOptions(execInPBX(ctx, t, cfg, "asterisk", "cat", "/proc/1/mounts"))
+			})
+			opts := rootMountOptions(execInAsterisk(ctx, t, cfg, "cat", "/proc/1/mounts"))
 			if !slices.Contains(opts, "ro") {
 				t.Errorf("asterisk's root filesystem is mounted %v, want ro", opts)
 			}
 			return ctx
 		}).
-		Assess("Asterisk 22 runs the static config", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("the agent runs as 65532 and the file server as 65533, both with no capabilities", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// The agent and the file server are distroless: no shell, no
+			// cat. A hostPID tools pod reads their /proc entries instead.
+			agent := startTool(ctx, t, toolPod{name: "proc-agent", hostPID: true, args: []string{"proc", "patchbay", "agent"}})
+			fs := startTool(ctx, t, toolPod{name: "proc-fileserver", hostPID: true, args: []string{"proc", "patchbay", "fileserver"}})
+			for _, tc := range []struct {
+				name, pod string
+				want      map[string]string
+			}{
+				{"agent", agent, map[string]string{
+					"Uid": "65532 65532 65532 65532", "Gid": "65532 65532 65532 65532",
+					// The pod's fsGroup (it writes the live config with it) and
+					// its own gid, which the runtime lists too.
+					"Groups": strconv.Itoa(layoutFSGroup) + " 65532",
+					"CapInh": capsNone, "CapPrm": capsNone, "CapEff": capsNone, "CapBnd": capsNone, "CapAmb": capsNone,
+					"NoNewPrivs": "1",
+				}},
+				{"file server", fs, map[string]string{
+					"Uid": "65533 65533 65533 65533", "Gid": "65533 65533 65533 65533",
+					"Groups": "", // dropped, the pod's fsGroup with them
+					"CapInh": capsNone, "CapPrm": capsNone, "CapEff": capsNone, "CapAmb": capsNone,
+					// The bounding set keeps the three capabilities the
+					// container started with: clearing it needs CAP_SETPCAP.
+					// With no_new_privs and a static image (no setuid or
+					// file-capability binary) they can never come back.
+					"CapBnd":     capsFileserverBounding,
+					"NoNewPrivs": "1",
+				}},
+			} {
+				r := waitTool(ctx, t, tc.pod, true)
+				procs := splitProcs(r.Logs)
+				if len(procs) != 1 {
+					t.Errorf("%s: want exactly one process, found %d:\n%s", tc.name, len(procs), r.Logs)
+					continue
+				}
+				for _, st := range procs {
+					wantStatus(t, tc.name, st, tc.want)
+				}
+			}
+			return ctx
+		}).
+		Assess("the file server's identity reads tftp/ and nothing resolved", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// The live config volume, from the node (an emptyDir of the PBX
+			// pod), mounted where the PBX pod mounts it, and read as
+			// 65533:65533 with no other group: the file server after its
+			// drop (the previous assess shows it has exactly that identity).
+			pod := pbxPod(ctx, t)
+			hostDir := fmt.Sprintf("/var/lib/kubelet/pods/%s/volumes/kubernetes.io~empty-dir/config", pod.UID)
+			cur := compile.LiveDir + "/" + compile.CurrentLink
+			laptop := h.bundle.Devices[laptopID].ConfigFile
+			readable := []string{cur + "/tftp/" + deskSEP}
+			unreadable := []string{
+				cur + "/asterisk/manager.conf", cur + "/asterisk/pjsip.conf",
+				cur + "/" + laptop, cur + "/bundle.json",
+			}
+			r := runTool(ctx, t, toolPod{
+				name: "read-as-fileserver", runAsUser: ptr.To[int64](65533), runAsGroup: ptr.To[int64](65533),
+				args: append(append([]string{"read"}, readable...), unreadable...),
+				volumes: []corev1.Volume{{Name: "live", VolumeSource: corev1.VolumeSource{
+					HostPath: &corev1.HostPathVolumeSource{Path: hostDir, Type: ptr.To(corev1.HostPathDirectory)},
+				}}},
+				mounts: []corev1.VolumeMount{{Name: "live", MountPath: compile.LiveDir, ReadOnly: true}},
+			}, true)
+			for _, p := range readable {
+				if !strings.Contains(r.Logs, "read "+p+": ok") {
+					t.Errorf("65533 cannot read %s", p)
+				}
+			}
+			for _, p := range unreadable {
+				if !strings.Contains(r.Logs, "read "+p+": error: ") || !strings.Contains(r.Logs, "read "+p+": error: open "+p+": permission denied") {
+					t.Errorf("65533 is not denied %s", p)
+				}
+			}
+			return ctx
+		}).
+		Assess("Asterisk 22 runs the compiled config", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			if v := asterisk(ctx, t, cfg, "core show version"); !strings.HasPrefix(v, "Asterisk 22.") {
 				t.Errorf("core show version: %q", v)
 			}
@@ -191,12 +279,14 @@ func TestPBXUp(t *testing.T) {
 					t.Errorf("pjsip show transports lacks %q:\n%s", want, transports)
 				}
 			}
+			endpoints := asterisk(ctx, t, cfg, "pjsip show endpoints")
+			for _, id := range []string{deskID, laptopID} {
+				if !strings.Contains(endpoints, " "+id+" ") && !strings.Contains(endpoints, " "+id+"/") {
+					t.Errorf("no endpoint %s:\n%s", id, endpoints)
+				}
+			}
 			modules := asterisk(ctx, t, cfg, "module show")
-			for _, m := range []string{
-				"res_pjsip.so", "chan_pjsip.so", "res_pjsip_registrar.so", "res_pjsip_notify.so",
-				"res_rtp_asterisk.so", "codec_ulaw.so", "codec_g722.so", "app_echo.so", "pbx_config.so",
-				"res_audiosocket.so", "app_audiosocket.so",
-			} {
+			for _, m := range compile.Modules() {
 				if !moduleRunning(modules, m) {
 					t.Errorf("module %s is not Running", m)
 				}
@@ -207,28 +297,24 @@ func TestPBXUp(t *testing.T) {
 			if httpStatus := asterisk(ctx, t, cfg, "http show status"); !strings.Contains(httpStatus, "Server Disabled") {
 				t.Errorf("Asterisk's HTTP server is not disabled:\n%s", httpStatus)
 			}
-			if plan := asterisk(ctx, t, cfg, "dialplan show "+echoNumber+"@e2e"); !strings.Contains(plan, "Echo()") {
+			if plan := asterisk(ctx, t, cfg, "dialplan show "+echoNumber+"@"+compile.DevicesContext); !strings.Contains(plan, "Echo()") {
 				t.Errorf("no echo extension:\n%s", plan)
 			}
 			return ctx
 		}).
 		Assess("the agent answers through its Service from the pod network", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			base := fmt.Sprintf("http://%s.%s.svc:%d", agentService, namespace, controlPort)
-			if r := runFakephone(ctx, t, "readyz", true, nil, "http", "get", base+agentapi.PathReadyz); !r.Succeeded {
+			if r := runTool(ctx, t, toolPod{name: "readyz", args: []string{"http", "get", base + agentapi.PathReadyz}}, true); !r.Succeeded {
 				t.Errorf("GET %s from a pod failed", agentapi.PathReadyz)
 			}
-			if r := runFakephone(ctx, t, "noauth", true, nil,
-				"http", "get", "--expect-status", "401", base+agentapi.PathObservations); !r.Succeeded {
+			if r := runTool(ctx, t, toolPod{name: "noauth", args: []string{"http", "get", "--expect-status", "401", base + agentapi.PathObservations}}, true); !r.Succeeded {
 				t.Errorf("GET %s without the token was not refused with 401", agentapi.PathObservations)
 			}
-			token := []corev1.EnvVar{{Name: "AGENT_TOKEN", ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: agentTokenSecret},
-					Key:                  "token",
-				},
-			}}}
-			r := runFakephone(ctx, t, "observations", true, token,
-				"http", "get", "--header", "Authorization: Bearer $(AGENT_TOKEN)", base+agentapi.PathObservations)
+			r := runTool(ctx, t, toolPod{
+				name: "observations",
+				env:  []corev1.EnvVar{secretEnv("AGENT_TOKEN", agentTokenSecret, "token")},
+				args: []string{"http", "get", "--header", "Authorization: Bearer $(AGENT_TOKEN)", base + agentapi.PathObservations},
+			}, true)
 			if !r.Succeeded {
 				t.Fatalf("GET %s with the token failed", agentapi.PathObservations)
 			}
@@ -243,9 +329,173 @@ func TestPBXUp(t *testing.T) {
 			if err := json.Unmarshal([]byte(body), &obs); err != nil {
 				t.Fatalf("observations are not an Observations document: %v\n%s", err, r.Logs)
 			}
-			if obs.Agent.StartedAt.IsZero() || obs.Devices == nil {
-				t.Errorf("observations: %+v", obs)
+			if obs.Agent.StartedAt.IsZero() || obs.Devices == nil || obs.Agent.AppliedVersion != h.bundle.Version {
+				t.Errorf("observations: %+v, want version %s applied", obs.Agent, h.bundle.Version)
 			}
+			// And through the port-forward the CLI will use: Asterisk is up
+			// over AMI and the version is verified (no apply error).
+			h.eventually(ctx, t, "AMI up", time.Minute, func(o agentapi.Observations) (bool, string) {
+				a := o.Agent
+				return a.AsteriskUp && strings.HasPrefix(a.AsteriskVersion, "22.") && a.LastApplyError == "" &&
+					a.AppliedVersion == h.bundle.Version, fmt.Sprintf("%+v", a)
+			})
+			return ctx
+		}).
+		Feature()
+	testenv.Test(t, f)
+}
+
+// Capability sets as /proc/<pid>/status prints them.
+const (
+	capsNone = "0000000000000000"
+	// capsFileserverBounding is CAP_NET_BIND_SERVICE (10), CAP_SETUID (7) and
+	// CAP_SETGID (6).
+	capsFileserverBounding = "00000000000004c0"
+	// layoutFSGroup is the chart's pbx.fsGroup (layout.DefaultFSGroup).
+	layoutFSGroup = 1000
+)
+
+// wantStatus checks /proc status fields.
+func wantStatus(t *testing.T, who string, st, want map[string]string) {
+	t.Helper()
+	for field, v := range want {
+		if got, ok := st[field]; !ok || got != v {
+			t.Errorf("%s %s = %q (present: %v), want %q", who, field, got, ok, v)
+		}
+	}
+}
+
+// splitProcs parses `fakephone proc` output: one status per process.
+func splitProcs(logs string) []map[string]string {
+	var out []map[string]string
+	for chunk := range strings.SplitSeq(logs, "=== pid ") {
+		if strings.Contains(chunk, "Uid:") {
+			out = append(out, procStatus(chunk))
+		}
+	}
+	return out
+}
+
+// TestRegister registers fakephone on the compiled config: the Phone over
+// TCP (what the 79x5 uses) and the Softphone over UDP, each with its number
+// as SIP user and its device ID as digest username; Asterisk challenged
+// first and holds the pod's contact, and the agent reports it with its
+// Call-ID. Then the refusals: a wrong password and a contact outside the
+// allowed networks end on 401 (Asterisk re-challenges an endpoint's own
+// refusals), and only a source outside them meets the global ACL's 403.
+func TestRegister(t *testing.T) {
+	f := features.New("REGISTER")
+	for _, tc := range []struct {
+		transport, id, number string
+		rewritten             bool
+	}{
+		{"tcp", deskID, deskNumber, false},
+		{"udp", laptopID, laptopNumber, true},
+	} {
+		f = f.Assess(tc.id+" over "+tc.transport, func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			r := runTool(ctx, t, toolPod{
+				name: "register-" + tc.transport, env: deviceEnv(tc.id, tc.number),
+				args: []string{"register", "--transport", tc.transport, "--expires", "300"},
+			}, true)
+			if !r.Succeeded {
+				t.Fatalf("fakephone register as %s over %s failed", tc.id, tc.transport)
+			}
+			// An endpoint without auth would accept the first, unanswered
+			// REGISTER; fakephone reports whether it was challenged.
+			if !strings.Contains(r.Logs, "challenged=true") {
+				t.Errorf("Asterisk accepted REGISTER without a digest challenge")
+			}
+			ip := r.Pod.Status.PodIP
+			// The Phone keeps the Contact it sent (rewrite_contact = no, the
+			// 79x5 profile); the Softphone's is rewritten to where the
+			// REGISTER came from (rewrite_contact = yes, Linphone over UDP).
+			want := fmt.Sprintf("sip:%s@%s:%d;transport=%s", tc.number, ip, sipPort, tc.transport)
+			if tc.rewritten {
+				m := regexp.MustCompile(`contact=<(sip:` + tc.number + `@` + regexp.QuoteMeta(ip) + `:\d+)>`).FindStringSubmatch(r.Logs)
+				if m == nil {
+					t.Fatalf("the registrar did not echo a contact at %s", ip)
+				}
+				want = m[1]
+			}
+			if ip == "" || !strings.Contains(r.Logs, "contact=<"+want+">") {
+				t.Fatalf("the registrar did not echo the contact %s", want)
+			}
+			// pjsip show contacts truncates long URIs; astdb holds the
+			// contact in full.
+			db := asterisk(ctx, t, cfg, "database show registrar")
+			if !strings.Contains(db, `"uri":"`+want+`"`) || !strings.Contains(db, `"user_agent":"patchbay-fakephone"`) {
+				t.Errorf("Asterisk does not hold contact %s from fakephone:\n%s", want, db)
+			}
+			// The agent sees it over AMI, with the REGISTER's Call-ID.
+			h.eventually(ctx, t, tc.id+"'s registration in the observations", 30*time.Second, func(o agentapi.Observations) (bool, string) {
+				d := device(o, tc.id)
+				if d == nil || d.Registration == nil {
+					return false, "no registration"
+				}
+				reg := d.Registration
+				return reg.Address == ip && reg.CallID != "" && reg.UserAgent == "patchbay-fakephone" &&
+					strings.HasPrefix(reg.Contact, "sip:"+tc.number+"@"+ip), fmt.Sprintf("%+v", *reg)
+			})
+			return ctx
+		})
+	}
+	f = f.Assess("a wrong password ends on 401 and registers nothing", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		r := runFakephone(ctx, t, "register-wrong-password", false,
+			"register", "--password", "not-the-password", "--expires", "300")
+		if r.Succeeded || !strings.Contains(r.Logs, "REGISTER: 401") || !strings.Contains(r.Logs, "challenged=true") {
+			t.Errorf("want a 401 after a digest challenge, got:\n%s", r.Logs)
+		}
+		if db := asterisk(ctx, t, cfg, "database show registrar"); strings.Contains(db, "@"+r.Pod.Status.PodIP+":") {
+			t.Errorf("Asterisk holds a contact for %s after a wrong password:\n%s", r.Pod.Status.PodIP, db)
+		}
+		return ctx
+	})
+	f = f.Assess("a contact outside the allowed networks ends on 401 (the endpoint's contact ACL)", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		r := runFakephone(ctx, t, "register-contact-acl", false,
+			"register", "--contact-host", "192.0.2.7", "--expires", "300")
+		if r.Succeeded || !strings.Contains(r.Logs, "REGISTER: 401") || !strings.Contains(r.Logs, "challenged=true") {
+			t.Errorf("want a 401 after a digest challenge, got:\n%s", r.Logs)
+		}
+		if db := asterisk(ctx, t, cfg, "database show registrar"); strings.Contains(db, "192.0.2.7") {
+			t.Errorf("Asterisk holds the refused contact:\n%s", db)
+		}
+		return ctx
+	})
+	f = f.Assess("a source outside the allowed networks gets 403 from the global ACL, unchallenged", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		// On the host network, fakephone's REGISTER comes from the node's
+		// own address, which is not in the allowed pod CIDR.
+		r := runTool(ctx, t, toolPod{
+			name: "register-global-acl", hostNetwork: true, env: deviceEnv(deskID, deskNumber),
+			args: []string{"register", "--sip-port", "5099", "--expires", "300"},
+		}, false)
+		if r.Succeeded || !strings.Contains(r.Logs, "REGISTER: 403") || !strings.Contains(r.Logs, "challenged=false") {
+			t.Errorf("want an unchallenged 403, got:\n%s", r.Logs)
+		}
+		return ctx
+	})
+	testenv.Test(t, f.Feature())
+}
+
+// TestEchoCall calls the echo test from a pod as Phone desk: SIP to the
+// node's address, RTP between the pod network and the host network, and a
+// 1 kHz tone that must come back from the node's own address.
+func TestEchoCall(t *testing.T) {
+	f := features.New("echo call").
+		Assess("600 echoes a 1 kHz tone", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			r := runFakephone(ctx, t, "call-echo", true, "call", echoNumber, "--duration", "3s")
+			stats, ok := parseMedia(r.Logs)
+			if !r.Succeeded || !ok {
+				t.Fatalf("fakephone call %s failed", echoNumber)
+			}
+			// 3 s of 20 ms packets is 150; fakephone already insists on
+			// 50 tone packets, so this restates the bar for the report.
+			if stats.Sent != 150 || stats.ToneFrames < 50 {
+				t.Errorf("media: %+v", stats)
+			}
+			if !strings.HasPrefix(stats.Source, h.nodeIP+":") {
+				t.Errorf("RTP came back from %s, want the node %s", stats.Source, h.nodeIP)
+			}
+			t.Logf("echo media: sent %d, received %d, tone in %d, from %s", stats.Sent, stats.Received, stats.ToneFrames, stats.Source)
 			return ctx
 		}).
 		Feature()
@@ -273,97 +523,6 @@ func TestController(t *testing.T) {
 				t.Fatalf("no holder of Lease %s/%s within a minute: %v (lease %+v)", namespace, controller.LeaderElectionID, err, lease)
 			}
 			t.Logf("Lease %s held by %s", controller.LeaderElectionID, *lease.Spec.HolderIdentity)
-			return ctx
-		}).
-		Feature()
-	testenv.Test(t, f)
-}
-
-// TestRegister registers fakephone, over TCP as the 79x5 does and over UDP,
-// and checks that Asterisk demanded digest auth, holds the pod's contact,
-// and refuses a wrong password.
-func TestRegister(t *testing.T) {
-	f := features.New("REGISTER")
-	for _, transport := range []string{"tcp", "udp"} {
-		f = f.Assess("over "+transport, func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "register-"+transport, true, nil,
-				"register", "--transport", transport, "--expires", "300")
-			if !r.Succeeded {
-				t.Fatalf("fakephone register over %s failed", transport)
-			}
-			// An endpoint without auth would accept the first, unanswered
-			// REGISTER; fakephone reports whether it was challenged.
-			if !strings.Contains(r.Logs, "challenged=true") {
-				t.Errorf("Asterisk accepted REGISTER without a digest challenge")
-			}
-			want := fmt.Sprintf("sip:%s@%s:%d;transport=%s", sipUser, r.Pod.Status.PodIP, sipPort, transport)
-			if r.Pod.Status.PodIP == "" || !strings.Contains(r.Logs, "contact=<"+want+">") {
-				t.Fatalf("the registrar did not echo the contact %s", want)
-			}
-			// pjsip show contacts truncates long URIs; astdb holds the
-			// contact in full.
-			db := asterisk(ctx, t, cfg, "database show registrar")
-			if !strings.Contains(db, `"uri":"`+want+`"`) {
-				t.Errorf("Asterisk does not hold contact %s:\n%s", want, db)
-			}
-			if !strings.Contains(db, `"user_agent":"patchbay-fakephone"`) {
-				t.Errorf("Asterisk did not record fakephone's User-Agent:\n%s", db)
-			}
-			if c := asterisk(ctx, t, cfg, "pjsip show contacts"); !strings.Contains(c, sipUser+"/sip:"+sipUser+"@"+r.Pod.Status.PodIP) {
-				t.Errorf("pjsip show contacts:\n%s", c)
-			}
-			return ctx
-		})
-	}
-	f = f.Assess("a wrong password is refused and registers nothing", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		r := runFakephone(ctx, t, "register-wrong-password", false, nil,
-			"register", "--password", "not-the-password", "--expires", "300")
-		if r.Succeeded {
-			t.Fatal("REGISTER with a wrong password succeeded")
-		}
-		refused := strings.Contains(r.Logs, "REGISTER: 401") || strings.Contains(r.Logs, "REGISTER: 403")
-		if !refused || !strings.Contains(r.Logs, "challenged=true") {
-			t.Errorf("want a 401/403 after a digest challenge, got:\n%s", r.Logs)
-		}
-		ip := r.Pod.Status.PodIP
-		if ip == "" {
-			t.Fatal("the fakephone pod has no IP")
-		}
-		if db := asterisk(ctx, t, cfg, "database show registrar"); strings.Contains(db, "@"+ip+":") {
-			t.Errorf("Asterisk holds a contact for %s after a wrong password:\n%s", ip, db)
-		}
-		return ctx
-	})
-	testenv.Test(t, f.Feature())
-}
-
-// TestEchoCall calls the echo test from a pod: SIP to the node's address,
-// RTP between the pod network and the host network, and a 1 kHz tone that
-// must come back.
-func TestEchoCall(t *testing.T) {
-	f := features.New("echo call").
-		Assess("600 echoes a 1 kHz tone", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "call-echo", true, nil, "call", echoNumber, "--duration", "3s")
-			stats, ok := parseMedia(r.Logs)
-			if !r.Succeeded || !ok {
-				t.Fatalf("fakephone call %s failed", echoNumber)
-			}
-			// 3 s of 20 ms packets is 150; fakephone already insists on
-			// 50 tone packets, so this restates the bar for the report.
-			if stats.Sent != 150 || stats.ToneFrames < 50 {
-				t.Errorf("media: %+v", stats)
-			}
-			if !strings.HasPrefix(stats.Source, h.nodeIP+":") {
-				t.Errorf("RTP came back from %s, want the node %s", stats.Source, h.nodeIP)
-			}
-			t.Logf("echo media: sent %d, received %d, tone in %d, from %s", stats.Sent, stats.Received, stats.ToneFrames, stats.Source)
-			return ctx
-		}).
-		Assess("an unrouted number is refused, and fakephone says so", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-			r := runFakephone(ctx, t, "call-unrouted", false, nil, "call", "699", "--expect-tone=false")
-			if r.Succeeded || !strings.Contains(r.Logs, "404") {
-				t.Fatalf("calling an unrouted number: succeeded=%v, want a 404 failure", r.Succeeded)
-			}
 			return ctx
 		}).
 		Feature()

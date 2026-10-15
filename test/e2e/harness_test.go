@@ -35,9 +35,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/yaml"
+
+	"github.com/ChristopherJMiller/patchbay/internal/compile"
 )
 
 const (
@@ -55,12 +58,12 @@ const (
 	agentService         = release + "-agent"
 	agentTokenSecret     = release + "-agent-token"
 
-	// These match test/e2e/values.yaml (the static config).
-	sipUser     = "e2e-phone"
-	sipPassword = "e2e-only-not-a-secret" // a fixed test-only password for a throwaway cluster
-	echoNumber  = "600"
-	sipPort     = 5060
-	controlPort = 9440
+	// The chart's default ports (test/e2e/values.yaml keeps them).
+	sipPort        = 5060
+	tftpPort       = 69
+	ciscoHTTPPort  = 6970
+	deviceHTTPPort = 8088
+	controlPort    = 9440
 
 	// fakephoneSelector labels every fakephone pod.
 	fakephoneSelector = "app.kubernetes.io/name=fakephone"
@@ -87,7 +90,13 @@ type harness struct {
 
 	nodeName string // the kind node (the PBX's pbx.nodeName)
 	nodeIP   string // its InternalIP (the PBX's pbx.address)
+	podCIDR  string // its pod CIDR, where fakephone runs (the allowed network)
 	cs       *kubernetes.Clientset
+	rest     *rest.Config
+
+	bundle     *e2eBundle // the compiled install the agent applies
+	agentToken string     // the control API token
+	agentFwd   agentForward
 
 	// stoppedDiagnosed is set once diagnostics were saved after the suite
 	// was stopped (interrupt or budget); later failures are only fallout.
@@ -302,7 +311,8 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 		}
 	}
 
-	h.cs, err = kubernetes.NewForConfig(cfg.Client().RESTConfig())
+	h.rest = cfg.Client().RESTConfig()
+	h.cs, err = kubernetes.NewForConfig(h.rest)
 	if err != nil {
 		return ctx, err
 	}
@@ -320,10 +330,11 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 			h.nodeIP = a.Address
 		}
 	}
-	if h.nodeName == "" || h.nodeIP == "" {
-		return ctx, fmt.Errorf("node %s has no hostname label or InternalIP", node.Name)
+	h.podCIDR = node.Spec.PodCIDR
+	if h.nodeName == "" || h.nodeIP == "" || h.podCIDR == "" {
+		return ctx, fmt.Errorf("node %s has no hostname label, InternalIP or pod CIDR", node.Name)
 	}
-	log.Printf("node %s, InternalIP %s", h.nodeName, h.nodeIP)
+	log.Printf("node %s, InternalIP %s, pod CIDR %s", h.nodeName, h.nodeIP, h.podCIDR)
 
 	// Docker starts every container, kind's node included, with
 	// net.ipv4.ip_unprivileged_port_start=0, so in kind a non-root process
@@ -354,7 +365,8 @@ func (h *harness) loadImages(ctx context.Context, _ *envconf.Config) (context.Co
 	return ctx, nil
 }
 
-// install creates the namespace and the agent token, then installs the chart
+// install creates the namespace, the agent token and the compiled bundle
+// (the controller's part until W3: applyBundle), then installs the chart
 // with the e2e values plus what only runtime knows (node, address, image IDs).
 func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Context, error) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
@@ -389,6 +401,17 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 			return ctx, err
 		}
 	} else if err != nil {
+		return ctx, err
+	}
+	tok, err := h.secretValue(ctx, compile.SecretRef{Name: agentTokenSecret, Key: "token"})
+	if err != nil {
+		return ctx, err
+	}
+	h.agentToken = string(tok)
+
+	// The compiled bundle, before the chart: the agent applies it as soon
+	// as it starts, and Asterisk starts only once it has.
+	if h.bundle, err = h.applyBundle(ctx); err != nil {
 		return ctx, err
 	}
 
@@ -522,6 +545,7 @@ func (h *harness) saveDiagnostics(ctx context.Context, label string) string {
 
 // teardown deletes the cluster unless PATCHBAY_E2E_KEEP=1.
 func (h *harness) teardown(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+	h.agentFwd.close()
 	if h.keep {
 		log.Printf("PATCHBAY_E2E_KEEP=1: keeping kind cluster %s (kubeconfig %s; `make e2e-down` deletes it)", clusterName, h.kubeconfig)
 		return ctx, nil
