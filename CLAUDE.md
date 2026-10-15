@@ -41,8 +41,9 @@ resources (Phone, Softphone, Person, Stream)
 Contracts: `internal/compile` (Bundle with its device index, Inputs, Boot,
 Settings, device Secret names; in `layout.go` the bundle's four trees, the
 live directory the agent swaps and the sound prompts; in `configmap.go` the
-pbx-config ConfigMap encoding), `internal/drivers` (Driver, Device and the
-DeviceID format, Memory, Observations, DecideSettings, Decision, Profile with
+pbx-config ConfigMap encoding), `internal/drivers` (Driver and the optional
+SettingsChecker, Device and the DeviceID format, Memory and its DeepCopy,
+UserText, RegistrationGrace, Observations, DecideSettings, Decision, Profile with
 EndpointOptions, FirmwareLoad), `internal/agent/api` (the control API's
 JSON), and the agent's internal seams: `internal/agent/sensor` (fetch
 events, the file server's socket format, the scrape and firmware sensors),
@@ -273,6 +274,8 @@ make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev (GO_TA
                   # only for e2e images and .e2e/bin/patchbay: the e2e firmware load)
 make sounds       # the prompts (espeak-ng + ffmpeg) into build/sounds; make image runs it
 make tools-versions
+make check-versions # envtest's kube-apiserver minor = go.mod's k8s.io minor, flake Go minor =
+                    # the Dockerfile's (hard rule 1, checked; make test runs it first)
 make e2e          # kind + chart + controller + real Asterisk + fakephones; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
@@ -298,7 +301,8 @@ the other.
 1. **Toolchain from the flake only.** Bump nixpkgs with `nix flake update`, then
    run `make tools-versions` and `make test` before committing the lock. Keep
    the kube-apiserver minor (envtest) in step with the `k8s.io/*` minor in
-   `go.mod`, and the Go minor in step with the Dockerfile's builder.
+   `go.mod`, and the Go minor in step with the Dockerfile's builder
+   (`make check-versions` fails otherwise; `make test` runs it).
 2. **Kubeconfig isolation.** Never read or write `~/.kube/config`, and never
    touch any cluster other than the e2e kind cluster. Its kubeconfig lives
    only at `.e2e/kubeconfig` (gitignored; `$PATCHBAY_E2E_KUBECONFIG` in the

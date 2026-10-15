@@ -3493,6 +3493,58 @@ cluster before or after. Then the reused-cluster case of finding 8:
 `PATCHBAY_E2E_REUSE=1` (the agent not restarted between): both passed
 (362 s each).
 
+### 6.3 Final review (the whole branch)
+
+Before the first deployment to the home cluster the whole branch was
+reviewed from five lenses (security, spec, operability, quality, and
+the correctness of what earlier stages fixed); each finding survived an
+adversarial verifier. Each was reproduced first where a test could show
+it, fixed, and the test kept. Two pairs were one defect seen twice.
+
+| Finding | Severity | Outcome | Commit | Pinned by |
+|---|---|---|---|---|
+| `ami-secret-sent-to-port-squatter`: the agent sent `Secret:` in clear to whatever answered on 127.0.0.1:5038, which every host-network process on the node shares; it dials there before Asterisk runs at every PBX pod start | minor | fixed: MD5 challenge-response (`Challenge`, then `Login` with `Key` md5(challenge + secret)); no plaintext fallback; the e2e fakephone logs in the same way | `dd3cbc8`, `39697d5` | `TestLoginNeverSendsTheSecret`, `TestLoginAndVersion`; `make asterisk-check` against Asterisk 22.11; e2e `TestModulesNarrowed` |
+| `control-api-cap-starves-kubelet-probes`: LAN hosts holding the control API's 64 connections failed the agent's probes, and the kubelet restarted it again and again | minor | fixed: the node's loopback is outside the total (its own per-source cap); the chart's agent probes set `host: 127.0.0.1`; an IPv6 source is its /64; idle control connections close after 15 s. Residue in §11 | `7537cae` | `TestServeCapsConnections`, `TestExemptLoopback`, `TestIPv6SourcesByPrefix`, `TestChartAgentProbesUseLoopback` |
+| `released-chart-image-not-digest-pinned`: the released chart ran `patchbay:<v>` by tag alone, and the image job held packages/id-token/attestations write on every PR run | minor | fixed: `image` builds with a read-only token on every event; `publish` (push to main or a tag only) is the one job that pushes; `release` writes publish's digest into `image.digest` before `helm package` and checks the packaged chart runs `<repo>:<v>@<digest>` | `7d67c68` | actionlint; the packaging steps run locally on a copy of the chart |
+| `ci-sha-tag-not-immutable`: a tag push or a re-run pushed `sha-<7>` again with another binary | nit | fixed: a tag no longer pushes `sha-<7>`; each primary tag is written once (a re-run reuses its digest); the binary's date is the commit time | `7d67c68` | actionlint |
+| `renovate-automerges-image-digests-immediately`: image tag and digest updates, Asterisk's included, merged as soon as ci-ok passed | nit | fixed: docker updates wait 3 days (`timestamp-optional`, so gcr.io's distroless is not held for ever); `andrius/asterisk` never merges itself (label `asterisk`) | `ba9c081` | `renovate-config-validator --strict` (Renovate 44.126.1 from the flake) |
+| `settings-restart-races-recompile` and `nonreloadable-change-races-recompile`: a change of the SIP bind or the module list rolled the PBX pod and the controller together; Asterisk booted on the old controller's version, the new one went in by a reload that kept the old transports, and verify reported it good | minor | fixed, differently from both suggestions: `compile.Boot` is the restart-only part of a bundle (asterisk.conf, modules.conf, the transports); the agent takes `--sip-bind` and refuses, before writing, a version whose Boot is not its pod's. Every version that goes live, the one Asterisk boots on included, is one Asterisk runs as compiled; the new pod waits, not ready, for the new controller's version. No boot tracking and no restart from the agent (AMI cannot restart Asterisk without the `command` class) | `7c7875e` | `TestBoot`, `TestBootIgnoresComments`, `TestRefusesAnotherBoot`, `TestAgentRefusesAnotherSIPBind`, `TestChartAgentKnowsItsSIPBind` |
+| `asterisk-down-reads-as-agent-unreachable` and `agent-service-gated-on-asterisk-readiness`: the PBX pod is NotReady while Asterisk is down, the agent Service dropped it, and every device read `AgentUnreachable` instead of §7's `PBXDown` | minor | fixed: the agent Service publishes not-ready addresses; `patchbay_asterisk_up` for a PBX-down alert | `d852a19` | e2e `TestPBXDown`, `TestChartAgentServicePublishesNotReady`, `TestEveryMetric` |
+| `registration-liveness-no-slack`: a phone refreshing 5 s before expiry read Unreachable for the seconds before the controller saw the refresh | minor | fixed: `drivers.RegistrationGrace` (15 s) in both drivers; the e2e fakephone's cisco mode refreshes 5 s before expiry | `676090f` | `TestFold` (14 s past expiry live, the grace past not), `TestRefreshAfter` |
+| `timezone-unvalidated-freezes-compile`: a time zone the 79x5 cannot name failed every compile once the first Phone existed | minor | fixed: `drivers.SettingsChecker`, `compile.Settings.CheckDrivers`; the controller refuses to start, naming the zones it takes; values.yaml lists them | `fa34c93` | `TestCheckSettings`, `TestCheckDrivers`, `TestControllerReadsItsSettings` |
+| `status-blind-to-controller-outage`: `patchbay status` looked the same with the controller down or every compile failing | nit | fixed: a `Controller` line per install (Lease holder, renewal age, stale after 30 s), a `Config` line (pbx-config's version beside the applied one; a CompileFailed newer than the last ConfigWritten), a mark on a resource changed since its status | `314c91b` | `TestStatusController`, `TestStatusMarksUndecidedChanges` |
+| `cleanup-selector-deletes-device-secrets`: NOTES' cleanup command deleted every device Secret too | nit | fixed: NOTES names the four objects and says why not the label | `df32e4d` | `helm lint` (NOTES renders) |
+| `no-operator-runbook` | minor | fixed: [docs/operations.md](../operations.md), linked from the README and NOTES | `5a0a1f6` | — |
+| `no-ready-printcolumn` | nit | fixed: Ready and Reason columns on phones and softphones | `dcae83e` | `TestChartDeviceColumns` |
+| `verify-skips-unrendered-untested` | minor | fixed: the tests' fake Asterisk registers the endpoints of the live pjsip.conf; a test applies a bundle holding a 7975 | `87964b3` | `TestVerifyIgnoresUnrenderedDevices` (kills the `\|\| true` mutation) |
+| `firmware-upload-cut-at-30s`: the control API's 30 s timeouts cut a slow upload the CLI gave 5 min | nit | fixed: `api.FirmwareUploadTimeout` is the one contract; the agent extends an authenticated upload's deadline to it | `7e03580` | `TestFirmwareUploadOutlastsTheRequestTimeout` |
+| `fakephone-freeport-udp-flake` | minor | fixed: a port free in UDP and TCP; and four more races a stress run showed (startRun's select, a NOTIFY answered before it was recorded, a BYE counted after its answer, the refused REGISTER found by position); then the Event series tests counted writes, not what is stored | `6601d1f`, `baa74b1` | `go test -race -short -count=6 -cpu 1,4` over the agent, CLI and fakephone packages: green |
+| `k8s-minor-lockstep-unenforced` | nit | fixed: `hack/check-versions.sh` (`make check-versions`, run by `make test`) | `d23dfad` | run against a fake kube-apiserver 1.38: fails naming both |
+| `api-contract-doc-drift` | nit | fixed: GeneratedAt is informational; `/readyz` needs the prompts too | `12bc3a4` | — |
+| `driver-helpers-duplicated` | nit | fixed: `drivers.Memory.DeepCopy`, `FloorSecond`, `CeilSecond`, `LatestFetch`, `EarliestFetch`; a test ties the agent's MAC file names to `cisco79x5.ConfigFileName` | `eb6dfa9` | `TestMemoryDeepCopy` (kills the aliasing mutation), `TestMACFilesAreTheDriversNames` |
+
+The items the W3 fix stage left open:
+
+| Item | Outcome | Commit |
+|---|---|---|
+| A label holding `@@` is collapsed by Compile, but `LabelShortened` said AsWritten | fixed: the collapse is `drivers.UserText`, which the condition applies too | `32d5cbc` |
+| After a failed action the conditions still said "resync sent" | fixed: Ready keeps its status and reason and says what failed ("… not sent: <reason>; trying again"); ConfigCurrent's "resyncs sent: N" may still count the unsent one until the retry 30 s later (§11) | `4e1c8ca` |
+| An action is sent before its status write, so a real write conflict sent it again | fixed: after an action went out, a Conflict on the status write is retried on a fresh copy | `4e1c8ca` |
+| The agent's store kept a device's history after it left the bundle | fixed: a device that leaves the applied index, or changes MAC, is forgotten; §11 keeps the residue (a delete and re-create the agent never sees a version between) | `7854673` |
+| The intake re-applied a refused version when only pbx-secrets' annotation changed | fixed: an attempt is keyed by the Secret's values, not its resourceVersion; `TestRollback` reissues once | `ff869e3`, `de600b1` |
+| Repeated ActionFailed and CompileFailed Events kept the first note | fixed: a new compile error names itself in `related`; an ActionFailed with a new note regards a new resourceVersion (its predecessor is in Ready) | `50816fc` |
+
+Verified after the fixes (this workstation, images cached): `make generate`
+leaves no diff; `make check-generated fmt vet lint test check-hygiene
+vulncheck build`, `go mod tidy -diff` and `actionlint` are green;
+`make asterisk-check` passes against Asterisk 22.11, the agent's MD5 login
+included; `make e2e` from scratch passed 16/16 in 10 min 46 s wall (`go
+test` 599 s; TestPhoneLifecycle 371 s, TestDeskLoop 128 s, TestRollback
+51 s, TestPBXDown 33 s: PBXDown on kitchen 3.2 s after Asterisk was first
+stopped, and never AgentUnreachable), no kind cluster before or after. A
+stress run, `go test -race -short -count=6 -cpu 1,4` over the agent, CLI
+and fakephone packages together, was green.
+
 ---
 
 ## 7. Agent ↔ controller interfaces
@@ -3742,3 +3794,27 @@ The five inputs most likely to break a real user that no test covers yet.
   (6.2.1, "how the device reconcilers read the compiled index"): if that
   bundle was written by hand and refused, devices show `ApplyFailed` for
   it until the controller's own compile replaces it, moments later.
+- *(final review)* **A LAN host can still fill the control API.** It
+  listens on every address of the PBX's node (:9440) and holds at most 64
+  connections, 16 per source (an IPv4 address or an IPv6 /64). The node's
+  loopback is outside that total, so the kubelet's probes and the CLI's
+  port-forward always get in; but four LAN addresses holding 16 idle
+  connections each (refreshed within the 15 s idle timeout) keep the
+  controller's polls out: every device `AgentUnreachable` while it lasts,
+  calls unaffected. The control API needs its token for anything but the
+  probes and `/metrics`; a host firewall on the node letting :9440 in from
+  the pod network only would close it (not the chart's to do).
+- *(final review)* **After a settings change the PBX waits for the new
+  controller.** A change of `pbx.address` or `pbx.ports.sip`, or a release
+  that changes the module list, restarts the PBX pod, whose agent applies
+  only versions compiled for its SIP bind and release (`compile.Boot`).
+  Were the new controller unable to start (another value it refuses)
+  while the old one keeps running on the old settings, the PBX pod would
+  stay unready, and calls down, until the values are fixed: the agent's
+  log and `patchbay status` say so. Booting Asterisk on the old version
+  instead is what the final review found silently wrong.
+- *(final review)* **ConfigCurrent can count a resync that did not go
+  out.** After a failed resync Ready says so, but ConfigCurrent's
+  "resyncs sent: N" is the Decision's, which counted the attempt, for the
+  30 s until the retry; `status.lastAction` (the rate limit) counts only
+  the ones that went out.
