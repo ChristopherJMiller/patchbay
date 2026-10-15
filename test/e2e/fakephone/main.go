@@ -81,7 +81,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().DurationVar(&rf.timeout, "timeout", 30*time.Second,
 		"give up after this long")
 	root.AddCommand(newRegisterCmd(rf), newCallCmd(rf), newTFTPCmd(rf), newHTTPCmd(rf),
-		newAMICmd(rf), newProcCmd(), newReadCmd())
+		newAMICmd(rf), newProcCmd(), newReadCmd(), newRunCmd(rf))
 	return root
 }
 

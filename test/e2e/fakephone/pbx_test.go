@@ -138,6 +138,13 @@ func (pbx *fakePBX) setAnswerHz(hz float64) {
 	pbx.answerHz = hz
 }
 
+// setDeskPassword changes the desk phone's password (deskAuthUser).
+func (pbx *fakePBX) setDeskPassword(password string) {
+	pbx.mu.Lock()
+	defer pbx.mu.Unlock()
+	pbx.passwords[deskAuthUser] = password
+}
+
 // authorized checks req's Authorization against the PBX's passwords; it
 // returns the digest username, or "" without (valid) credentials.
 func (pbx *fakePBX) authorized(req *sip.Request) (string, bool) {
@@ -294,6 +301,89 @@ func (pbx *fakePBX) onRefer(req *sip.Request, tx sip.ServerTransaction) {
 	}()
 }
 
+// contact is the contact the desk phone (deskNumber) last registered,
+// waiting for it.
+func (pbx *fakePBX) contact() sip.Uri {
+	const user = deskNumber
+	pbx.t.Helper()
+	var c sip.Uri
+	waitFor(pbx.t, 5*time.Second, "a registered contact for "+user, func() bool {
+		pbx.mu.Lock()
+		defer pbx.mu.Unlock()
+		var ok bool
+		c, ok = pbx.contacts[user]
+		return ok
+	})
+	return c
+}
+
+// notify sends the phone registered as deskNumber an out-of-dialog NOTIFY and
+// returns the status it answered.
+func (pbx *fakePBX) notify(event string, body string) int {
+	pbx.t.Helper()
+	c := pbx.contact()
+	req := sip.NewRequest(sip.NOTIFY, c)
+	req.AppendHeader(sip.NewHeader("Event", event))
+	req.AppendHeader(sip.NewHeader("Subscription-State", "terminated"))
+	req.AppendHeader(sip.NewHeader("Subscription-State", "active"))
+	ct := sip.ContentTypeHeader("text/plain")
+	req.AppendHeader(&ct)
+	req.SetBody([]byte(body))
+	if tr, ok := c.UriParams.Get("transport"); ok {
+		req.SetTransport(strings.ToUpper(tr))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := pbx.client.Do(ctx, req)
+	if err != nil {
+		pbx.t.Fatalf("NOTIFY: %v", err)
+	}
+	return res.StatusCode
+}
+
+// call INVITEs the phone registered as deskNumber from number with extra
+// headers; ctx ending before the answer CANCELs it. On success the call
+// is up and acknowledged; rtpHz is the tone the PBX's side sends.
+func (pbx *fakePBX) call(ctx context.Context, from, display string, rtpHz float64, hdrs ...sip.Header) (*sipgo.DialogClientSession, error) {
+	pbx.t.Helper()
+	c := pbx.contact()
+	rtpAddr := tonePeer(pbx.t, rtpHz)
+	fromHdr := &sip.FromHeader{DisplayName: display, Address: sip.Uri{Scheme: "sip", User: from, Host: "127.0.0.1"}, Params: sip.NewParams()}
+	fromHdr.Params.Add("tag", sip.GenerateTagN(16))
+	ct := sip.ContentTypeHeader("application/sdp")
+	all := append([]sip.Header{fromHdr, &ct}, hdrs...)
+	d, err := pbx.uac.Invite(ctx, c, buildOffer(rtpAddr.Addr(), int(rtpAddr.Port()), 7), all...)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.WaitAnswer(ctx, sipgo.AnswerOptions{}); err != nil {
+		_ = d.Close()
+		return nil, err
+	}
+	if err := d.Ack(ctx); err != nil {
+		_ = d.Close()
+		return nil, err
+	}
+	return d, nil
+}
+
+func (pbx *fakePBX) registerLog() []pbxRegister {
+	pbx.mu.Lock()
+	defer pbx.mu.Unlock()
+	return append([]pbxRegister(nil), pbx.registers...)
+}
+
+// okRegisters are the REGISTERs the PBX accepted.
+func (pbx *fakePBX) okRegisters() []pbxRegister {
+	var out []pbxRegister
+	for _, r := range pbx.registerLog() {
+		if r.Status == sip.StatusOK {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // tonePeer is an RTP peer on 127.0.0.1 that answers every packet it
 // receives with one 20 ms frame of a continuous hz tone, or echoes the
 // packet when hz is 0.
@@ -333,4 +423,16 @@ func tonePeer(t *testing.T, hz float64) netip.AddrPort {
 		}
 	}()
 	return c.LocalAddr().(*net.UDPAddr).AddrPort()
+}
+
+// waitFor polls cond every 10 ms until it holds, failing the test after d.
+func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for %s", d, what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
