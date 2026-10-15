@@ -1,0 +1,27 @@
+# Build output
+/bin/
+/dist/
+cover.out
+*.test
+
+# e2e: kind kubeconfig, logs, scratch (never commit a kubeconfig)
+/.e2e/
+
+# Firmware never lands in this repo, encrypted or not (spec §12).
+firmware/
+*.zip
+*.sbn
+*.loads
+
+# Secrets of any kind
+*.secret*
+
+# Nix
+result
+result-*
+/.direnv/
+
+# Editors
+.idea/
+.vscode/
+*.swp
