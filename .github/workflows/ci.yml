@@ -169,6 +169,7 @@ jobs:
             ${{ github.workspace }}/.e2e/
             !${{ github.workspace }}/.e2e/kubeconfig
             !${{ github.workspace }}/.e2e/kube-cache/
+            !${{ github.workspace }}/.e2e/bin/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

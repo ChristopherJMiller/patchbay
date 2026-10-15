@@ -99,11 +99,15 @@ lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
 # load, which the kind suite relies on), so the unit tests run under it too.
 # -short skips envtest, which already ran untagged.
 E2E_TAGGED_TESTS = go test $(GO_TEST_FLAGS) -short -tags e2e ./internal/...
+# The one envtest that needs the e2e load (the only stageable one):
+# controller-devices' TestPhoneLifecycleFirmware.
+E2E_TAGGED_ENVTEST = go test $(GO_TEST_FLAGS) -tags e2e -run '^TestPhoneLifecycleFirmware$$' ./internal/controller/devices/
 
 .PHONY: test
 test: envtest-assets ## Unit tests plus envtest (real kube-apiserver + etcd), then the unit tests with the e2e tag.
 	go test $(GO_TEST_FLAGS) ./...
 	$(E2E_TAGGED_TESTS)
+	$(E2E_TAGGED_ENVTEST)
 
 .PHONY: test-unit
 test-unit: ## Unit tests only (skips envtest), untagged and with the e2e tag.
@@ -178,6 +182,8 @@ E2E_KUBECONFIG := $(CURDIR)/.e2e/kubeconfig
 E2E_KUBECACHE  := $(CURDIR)/.e2e/kube-cache
 E2E_IMG        := ghcr.io/christopherjmiller/patchbay:e2e
 E2E_TOOLS_IMG  := ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e
+# The CLI the e2e suite runs, built with the e2e tag (the e2e firmware load).
+E2E_CLI        := $(CURDIR)/.e2e/bin/patchbay
 E2E_TIMEOUT    ?= 30m
 # The Asterisk image is whatever the chart pins.
 CHART_VALUES    := charts/patchbay/values.yaml
@@ -200,9 +206,11 @@ e2e-down: ## Delete the e2e kind cluster.
 	kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_KUBECONFIG)
 
 .PHONY: e2e-images
-e2e-images: ## Build the patchbay (GO_TAGS=e2e) and fakephone images; pull the chart's Asterisk image by digest.
+e2e-images: ## Build the patchbay image and CLI (GO_TAGS=e2e) and the fakephone image; pull the chart's Asterisk image by digest.
 	@# The e2e tag gives the agent the e2e firmware load (E2E45.0-0-1S).
 	$(MAKE) image IMG=$(E2E_IMG) GO_TAGS=e2e
+	@# And the CLI: `patchbay firmware load` must know the e2e load too.
+	CGO_ENABLED=0 go build -trimpath -tags e2e -ldflags '$(LDFLAGS)' -o $(E2E_CLI) ./cmd/patchbay
 	docker build -f test/e2e/fakephone/Dockerfile -t $(E2E_TOOLS_IMG) .
 	@# Pulled by digest, then tagged so `kind load` can carry it (kind load
 	@# drops registry digests; the e2e values reference the tag).
