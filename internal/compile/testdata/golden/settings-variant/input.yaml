@@ -1,0 +1,31 @@
+# Every setting away from its default reaches its file.
+settings:
+  pbxAddress: 10.0.0.5
+  sipPort: 5070
+  rtpPorts: {first: 20000, last: 20099}
+  deviceHTTPPort: 8090
+  ntpServer: 10.0.0.1
+  timezone: America/New_York
+  numberPlan:
+    devices: 4XX
+    people: 5XX
+    streams: 8XX
+    echoTest: "601"
+    emergency: "999"
+    reserved: ["2XX", "0", "9.", "*8"]
+  allowedNetworks: [10.0.0.0/24]
+  amiSecret: {name: pbx-ami, key: secret}
+phones:
+  - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915E8C8, number: "400", label: Desk}
+softphones:
+  - metadata: {name: chris-laptop, creationTimestamp: "2026-10-01T12:05:00Z"}
+    spec: {number: "450", label: "Chris (laptop)"}
+people:
+  - metadata: {name: chris, creationTimestamp: "2026-10-01T12:10:00Z"}
+    spec: {number: "501", name: Chris, rings: [{softphone: chris-laptop}, {phone: desk}]}
+secrets:
+  - {name: pbx-ami, key: secret, value: not-a-secret-ami-0002}
+  - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
+  - {name: patchbay-softphone-chris-laptop, key: sip-password, value: not-a-secret-laptop-0001}
+  - {name: patchbay-softphone-chris-laptop, key: provisioning-token, value: not-a-secret-token-0001}

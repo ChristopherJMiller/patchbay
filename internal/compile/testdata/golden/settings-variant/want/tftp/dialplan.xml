@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<dialTemplate>
+  <versionStamp>b8f17473603ce9a103f4649596e35b6a</versionStamp>
+  <TEMPLATE match="601" timeout="0"/>
+  <TEMPLATE match="999" timeout="0"/>
+  <TEMPLATE match="0" timeout="0"/>
+  <TEMPLATE match="4.." timeout="0"/>
+  <TEMPLATE match="5.." timeout="0"/>
+  <TEMPLATE match="8.." timeout="0"/>
+  <TEMPLATE match="2.." timeout="0"/>
+  <TEMPLATE match="9.*" timeout="3"/>
+  <TEMPLATE match="*" timeout="5"/>
+</dialTemplate>

@@ -1,0 +1,11 @@
+# A 7975 (its load is not in the manifest: Invalid) holds its number but is
+# not rendered or routed; a Person ringing only it plays "not available".
+phones:
+  - metadata: {name: lobby, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7975, mac: D0C78915A001, number: "110", label: Lobby}
+people:
+  - metadata: {name: reception, creationTimestamp: "2026-10-01T12:10:00Z"}
+    spec: {number: "310", name: Reception, rings: [{phone: lobby}]}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-phone-lobby, key: sip-password, value: not-a-secret-lobby-0001}

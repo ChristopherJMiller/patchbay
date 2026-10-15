@@ -1,0 +1,38 @@
+{
+  "version": "2196c42069dade98dd44978f8aabdfa6001c4c5706751ee0719c7c97d27aa829",
+  "devices": {
+    "phone-desk": {
+      "kind": "Phone",
+      "name": "desk",
+      "number": "400",
+      "mac": "D0C78915E8C8",
+      "version": "c7597602a513fc00b30e83d284c695bf268aa7bc62e59f14f6a93a309df0f118",
+      "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915E8C8.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "softphone-chris-laptop": {
+      "kind": "Softphone",
+      "name": "chris-laptop",
+      "number": "450",
+      "version": "7e6acb938461910f5a44cfbc6e918c7d2542ec82bcc40841d2b5863fa0dedf1d",
+      "configFile": "provisioning/softphone-chris-laptop.xml",
+      "files": [
+        "provisioning/softphone-chris-laptop.xml"
+      ],
+      "provisioningToken": {
+        "name": "patchbay-softphone-chris-laptop",
+        "key": "provisioning-token"
+      }
+    }
+  },
+  "ami": {
+    "username": "patchbay-agent",
+    "password": {
+      "name": "pbx-ami",
+      "key": "secret"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "version": "5f8d846b0d418dc320437808fccf6a2ca4ceed10c5962aadaf8c0b3a5105df12",
+  "devices": {
+    "phone-desk": {
+      "kind": "Phone",
+      "name": "desk",
+      "number": "100",
+      "mac": "D0C78915E8C8",
+      "version": "bd2729d817f5d71e924766852b0536e34b7433d21fb074166274c8cf50c9ab95",
+      "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915E8C8.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "phone-kitchen": {
+      "kind": "Phone",
+      "name": "kitchen",
+      "mac": "D0C78915EBB5"
+    },
+    "phone-lab": {
+      "kind": "Phone",
+      "name": "lab",
+      "mac": "D0C78915F001"
+    },
+    "phone-office": {
+      "kind": "Phone",
+      "name": "office"
+    },
+    "softphone-tablet": {
+      "kind": "Softphone",
+      "name": "tablet"
+    }
+  },
+  "ami": {
+    "username": "patchbay-agent",
+    "password": {
+      "name": "patchbay-ami",
+      "key": "password"
+    }
+  }
+}

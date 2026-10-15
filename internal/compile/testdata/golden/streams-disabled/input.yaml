@@ -1,0 +1,7 @@
+# A Stream without a stream bridge (release A): its number plays
+# "not available".
+streams:
+  - metadata: {name: king5, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "705", name: KING 5, source: "http://192.0.2.58:5004/auto/v5.1"}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}

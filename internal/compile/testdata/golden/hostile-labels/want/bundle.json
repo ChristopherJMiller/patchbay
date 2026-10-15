@@ -1,0 +1,50 @@
+{
+  "version": "769abac9a6c24946051a7466d47016e6ec41b32a74cc44524b4cc2d12243bd0a",
+  "devices": {
+    "phone-lab": {
+      "kind": "Phone",
+      "name": "lab",
+      "number": "100",
+      "mac": "D0C78915E8C8",
+      "version": "c72f443f4d95f6c4561f2ce275a331416957de2bb563a6f3eae2675834168372",
+      "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915E8C8.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "phone-long": {
+      "kind": "Phone",
+      "name": "long",
+      "number": "101",
+      "mac": "D0C78915EBB5",
+      "version": "6455e54dbb0098ef752f39e443b052e503d43d2fed8bf40920c39f9224c92eca",
+      "configFile": "tftp/SEPD0C78915EBB5.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915EBB5.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "softphone-den": {
+      "kind": "Softphone",
+      "name": "den",
+      "number": "150",
+      "version": "97d65010e151415731d1a7b8cecbdb4ad415629bee2e70ee02db1e638a38deec",
+      "configFile": "provisioning/softphone-den.xml",
+      "files": [
+        "provisioning/softphone-den.xml"
+      ],
+      "provisioningToken": {
+        "name": "patchbay-softphone-den",
+        "key": "provisioning-token"
+      }
+    }
+  },
+  "ami": {
+    "username": "patchbay-agent",
+    "password": {
+      "name": "patchbay-ami",
+      "key": "password"
+    }
+  }
+}

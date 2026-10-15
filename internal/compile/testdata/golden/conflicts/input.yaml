@@ -1,0 +1,33 @@
+# Claims: the older resource keeps a number or a MAC; losers are indexed but
+# not rendered or routed, and a Person rings only its routed targets.
+phones:
+  # desk and kitchen both claim 100: desk is older.
+  - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915E8C8, number: "100", label: Desk}
+  - metadata: {name: kitchen, creationTimestamp: "2026-10-02T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915EBB5, number: "100", label: Kitchen}
+  # office has desk's MAC, in lower case: desk is older.
+  - metadata: {name: office, creationTimestamp: "2026-10-03T12:00:00Z"}
+    spec: {model: cisco-7965, mac: d0c78915e8c8, number: "102", label: Office}
+  # 600 is the echo test, outside the device range.
+  - metadata: {name: lab, creationTimestamp: "2026-10-04T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915F001, number: "600", label: Lab}
+softphones:
+  # 1500 is outside 1XX.
+  - metadata: {name: tablet, creationTimestamp: "2026-10-05T12:00:00Z"}
+    spec: {number: "1500", label: Tablet}
+people:
+  # Rings a device that does not exist and one that lost its number.
+  - metadata: {name: chris, creationTimestamp: "2026-10-06T12:00:00Z"}
+    spec: {number: "301", name: Chris, rings: [{phone: attic}, {phone: kitchen}, {phone: desk}]}
+  # A Person may not take a device number, even when it is the oldest.
+  - metadata: {name: front-door, creationTimestamp: "2026-09-01T12:00:00Z"}
+    spec: {number: "100", name: Front door, rings: [{phone: desk}]}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
+  - {name: patchbay-phone-kitchen, key: sip-password, value: not-a-secret-kitchen-0001}
+  - {name: patchbay-phone-office, key: sip-password, value: not-a-secret-office-0001}
+  - {name: patchbay-phone-lab, key: sip-password, value: not-a-secret-lab-0001}
+  - {name: patchbay-softphone-tablet, key: sip-password, value: not-a-secret-tablet-0001}
+  - {name: patchbay-softphone-tablet, key: provisioning-token, value: not-a-secret-token-0002}

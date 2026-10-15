@@ -1,0 +1,17 @@
+{
+  "version": "ac38c1fe9532c3542999e74672c282dbd248d3c4ee1634138b35d3b07ef51e0d",
+  "devices": {
+    "phone-lobby": {
+      "kind": "Phone",
+      "name": "lobby",
+      "mac": "D0C78915A001"
+    }
+  },
+  "ami": {
+    "username": "patchbay-agent",
+    "password": {
+      "name": "patchbay-ami",
+      "key": "password"
+    }
+  }
+}

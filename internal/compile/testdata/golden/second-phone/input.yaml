@@ -1,0 +1,10 @@
+# Desk plus a 7965 in the kitchen: two SEP files, one shared dialplan.xml.
+phones:
+  - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915E8C8, number: "100", label: Desk}
+  - metadata: {name: kitchen, creationTimestamp: "2026-10-02T12:00:00Z"}
+    spec: {model: cisco-7965, mac: D0C78915EBB5, number: "101", label: Kitchen}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
+  - {name: patchbay-phone-kitchen, key: sip-password, value: not-a-secret-kitchen-0001}

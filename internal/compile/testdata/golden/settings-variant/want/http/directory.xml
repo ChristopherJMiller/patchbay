@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneDirectory>
+  <Title>patchbay</Title>
+  <DirectoryEntry>
+    <Name>Desk</Name>
+    <Telephone>400</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Chris (laptop)</Name>
+    <Telephone>450</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Chris</Name>
+    <Telephone>501</Telephone>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>
