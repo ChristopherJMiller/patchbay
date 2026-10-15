@@ -4,25 +4,38 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 	"github.com/ChristopherJMiller/patchbay/internal/version"
 )
 
-// run executes the CLI with args and returns its stdout and error. Every run
-// gets a --kubeconfig that does not exist, so no test can ever fall back to
-// a real kubeconfig.
+// run executes the CLI with args and returns its output and error. Every run
+// gets a --kubeconfig that does not exist, and $KUBECONFIG and $HOME in a
+// temporary directory, so no test can ever reach a real kubeconfig
+// (client-go fixes ~/.kube/config from $HOME at start, so only a non-empty
+// $KUBECONFIG keeps its default chain off it).
 func run(t *testing.T, ctx context.Context, args ...string) (string, error) {
 	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("KUBECONFIG", filepath.Join(tmp, "no-such-kubeconfig"))
+	t.Setenv("HOME", tmp)
 	root := newRootCmd()
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs(append(args, "--kubeconfig", filepath.Join(t.TempDir(), "missing")))
+	root.SetArgs(append(args, "--kubeconfig", missingKubeconfig(t)))
 	err := root.ExecuteContext(ctx)
 	return out.String(), err
+}
+
+// missingKubeconfig is the --kubeconfig every run passes.
+func missingKubeconfig(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(os.Getenv("HOME"), "missing")
 }
 
 func TestVersion(t *testing.T) {
@@ -35,35 +48,110 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestStubsExitNonZero(t *testing.T) {
+func TestStreamBridgeIsAStub(t *testing.T) {
+	if _, err := run(t, context.Background(), "stream-bridge"); !errors.Is(err, errNotImplemented) {
+		t.Fatalf("error = %v, want errNotImplemented", err)
+	}
+}
+
+// TestClientCommandsLoadOnlyTheGivenKubeconfig: each client command builds
+// its client from --kubeconfig alone, so with a file that does not exist
+// it fails naming that file, before any request (cli.NewEnv never falls
+// back to $KUBECONFIG, ~/.kube/config or the in-cluster config when a
+// file is named).
+func TestClientCommandsLoadOnlyTheGivenKubeconfig(t *testing.T) {
+	zip := filepath.Join(t.TempDir(), "cmterm.zip")
 	for _, args := range [][]string{
 		{"status"},
-		{"models"},
-		{"firmware", "load", "cmterm.zip"},
+		{"status", "-n", "telephony"},
+		{"status", "--namespace", "telephony", "--instance", "patchbay"},
+		{"firmware", "load", zip},
 		{"softphone", "qr", "chris-laptop"},
-		{"softphone", "qr", "chris-laptop", "--reissue"},
-		{"phone", "resync", "desk"},
-		{"stream-bridge"},
+		{"softphone", "qr", "chris-laptop", "--reissue", "-n", "telephony"},
+		{"phone", "resync", "desk", "--instance", "patchbay"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := run(t, context.Background(), args...)
-			if !errors.Is(err, errNotImplemented) {
-				t.Fatalf("error = %v, want errNotImplemented", err)
+			if err == nil || !strings.Contains(err.Error(), "kubeconfig "+missingKubeconfig(t)+" does not exist") {
+				t.Fatalf("error = %v, want the missing --kubeconfig named", err)
 			}
 		})
 	}
 }
 
-func TestStubsCheckArgs(t *testing.T) {
-	if _, err := run(t, context.Background(), "phone", "resync"); err == nil || errors.Is(err, errNotImplemented) {
-		t.Fatalf("phone resync with no name: error = %v, want an argument error", err)
+func TestClientCommandsCheckArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"phone", "resync"},
+		{"softphone", "qr"},
+		{"firmware", "load"},
+		{"status", "extra"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			_, err := run(t, context.Background(), args...)
+			if err == nil || strings.Contains(err.Error(), "kubeconfig") {
+				t.Fatalf("error = %v, want an argument error", err)
+			}
+		})
 	}
 }
 
-func TestControllerRequiresNamespace(t *testing.T) {
+// TestModelsNeedsNoCluster: models prints the built-in drivers' profiles
+// without loading any kubeconfig.
+func TestModelsNeedsNoCluster(t *testing.T) {
+	out, err := run(t, context.Background(), "models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"cisco-7945", "softphone"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("models does not mention %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestControllerRequiresNamespaceAndFullname(t *testing.T) {
 	t.Setenv("POD_NAMESPACE", "")
 	_, err := run(t, context.Background(), "controller")
-	if err == nil || !strings.Contains(err.Error(), "namespace") {
-		t.Fatalf("error = %v, want a namespace error", err)
+	if err == nil || !strings.Contains(err.Error(), "namespace") || !strings.Contains(err.Error(), "--fullname") {
+		t.Fatalf("error = %v, want the namespace and --fullname named", err)
+	}
+	_, err = run(t, context.Background(), "controller", "--namespace", "telephony",
+		"--fullname", strings.Repeat("p", install.MaxFullnameLength+1))
+	if err == nil || !strings.Contains(err.Error(), "--fullname") {
+		t.Fatalf("error = %v, want --fullname refused", err)
+	}
+}
+
+// TestControllerReadsItsSettings: the settings file is read and checked
+// before any kubeconfig: a missing file, settings that do not parse, and
+// settings of another install each stop it, naming why.
+func TestControllerReadsItsSettings(t *testing.T) {
+	dir := t.TempDir()
+	good, err := os.ReadFile(filepath.Join("..", "..", "internal", "controller", "settings", "testdata", "chart-defaults.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name, file, fullname, want string
+	}{
+		{"missing", filepath.Join(dir, "nothing.json"), "patchbay", "nothing.json"},
+		{"not settings", write("bad.json", `{"pbxAddress": "192.0.2.10", "surprise": 1}`), "patchbay", "surprise"},
+		{"another install's", write("other.json", string(good)), "other", "other-ami"},
+		{"good, then the kubeconfig", write("good.json", string(good)), "patchbay", "kubeconfig"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := run(t, context.Background(), "controller", "--namespace", "telephony",
+				"--fullname", tc.fullname, "--settings-file", tc.file)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want one naming %q", err, tc.want)
+			}
+		})
 	}
 }

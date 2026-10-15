@@ -43,7 +43,7 @@ Client commands need only a kubeconfig.`,
 	}
 	root.SetVersionTemplate("patchbay {{.Version}}\n")
 	root.PersistentFlags().StringVar(&g.kubeconfig, "kubeconfig", "",
-		"path to a kubeconfig (default: $KUBECONFIG, in-cluster config, then ~/.kube/config)")
+		"path to a kubeconfig (client commands: default $KUBECONFIG, then ~/.kube/config, never the in-cluster config; server modes: $KUBECONFIG, the in-cluster config, then ~/.kube/config)")
 
 	root.AddCommand(
 		newControllerCmd(g),
@@ -60,8 +60,10 @@ Client commands need only a kubeconfig.`,
 	return root
 }
 
-// restConfig loads the Kubernetes client config: the --kubeconfig file when
-// given, otherwise controller-runtime's usual chain.
+// restConfig loads the server modes' Kubernetes client config: the
+// --kubeconfig file when given, otherwise controller-runtime's usual chain
+// ($KUBECONFIG, the in-cluster config, ~/.kube/config). The client commands
+// never use it: cli.NewEnv never falls back to the in-cluster config.
 func (g *globalFlags) restConfig() (*rest.Config, error) {
 	if g.kubeconfig != "" {
 		cfg, err := clientcmd.BuildConfigFromFlags("", g.kubeconfig)
