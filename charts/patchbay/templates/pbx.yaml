@@ -194,19 +194,25 @@ spec:
             - name: device-http
               containerPort: {{ $p.ports.deviceHTTP }}
               protocol: TCP
+          # The probes go to the node's loopback (the pod is on the host
+          # network), which the control API keeps outside its connection
+          # cap: LAN hosts holding every other place cannot fail them.
           startupProbe:
             httpGet:
+              host: 127.0.0.1
               path: /readyz
               port: control
             periodSeconds: 2
             failureThreshold: 150
           readinessProbe:
             httpGet:
+              host: 127.0.0.1
               path: /readyz
               port: control
             periodSeconds: 10
           livenessProbe:
             httpGet:
+              host: 127.0.0.1
               path: /healthz
               port: control
             periodSeconds: 20

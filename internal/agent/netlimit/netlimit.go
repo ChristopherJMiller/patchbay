@@ -8,7 +8,13 @@
 //
 // A connection over either cap is closed as soon as it is accepted, so a
 // flood from one host cannot keep the others out, and a flood from many
-// cannot exhaust memory.
+// cannot exhaust memory. A source is an IPv4 address, or an IPv6 /64: a
+// host on an IPv6 LAN can pick any address in its /64.
+//
+// The control API also exempts the node's own loopback (ExemptLoopback):
+// the kubelet probes it there, and the CLI's port-forward arrives there, so
+// LAN hosts that fill the total can neither fail the agent's probes (and
+// have the kubelet restart it) nor lock out the operator.
 package netlimit
 
 import (
@@ -24,11 +30,13 @@ import (
 type Listener struct {
 	net.Listener
 	total, perSource int
+	exemptLoopback   bool
 	log              logr.Logger
 	now              func() time.Time
 
 	mu       sync.Mutex
-	open     int
+	open     int // every connection held
+	counted  int // those the total counts (all but an exempt loopback's)
 	bySource map[netip.Addr]int
 	refused  uint64
 	loggedAt time.Time
@@ -38,12 +46,21 @@ type Listener struct {
 const logEvery = time.Minute
 
 // New caps ln at total connections open at once, and perSource from any
-// one source address. Refusals are logged at most once a minute.
+// one source. Refusals are logged at most once a minute.
 func New(ln net.Listener, total, perSource int, log logr.Logger) *Listener {
 	return &Listener{
 		Listener: ln, total: total, perSource: perSource, log: log, now: time.Now,
 		bySource: map[netip.Addr]int{},
 	}
+}
+
+// ExemptLoopback takes connections from 127.0.0.1 and ::1 out of the
+// total: they neither count toward it nor are refused by it, and they keep
+// the per-source cap (as one source). Other 127/8 addresses are ordinary
+// sources. It returns l; call it before the first Accept.
+func (l *Listener) ExemptLoopback() *Listener {
+	l.exemptLoopback = true
+	return l
 }
 
 // Accept returns the next connection within the caps, closing those over
@@ -55,11 +72,12 @@ func (l *Listener) Accept() (net.Conn, error) {
 			return nil, err
 		}
 		src := sourceOf(c.RemoteAddr())
-		if !l.take(src) {
+		exempt := l.exemptLoopback && src == loopback
+		if !l.take(src, exempt) {
 			_ = c.Close()
 			continue
 		}
-		return &conn{Conn: c, l: l, src: src}, nil
+		return &conn{Conn: c, l: l, src: src, exempt: exempt}, nil
 	}
 }
 
@@ -77,10 +95,10 @@ func (l *Listener) Open() int {
 	return l.open
 }
 
-func (l *Listener) take(src netip.Addr) bool {
+func (l *Listener) take(src netip.Addr, exempt bool) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.open >= l.total || l.bySource[src] >= l.perSource {
+	if (!exempt && l.counted >= l.total) || l.bySource[src] >= l.perSource {
 		l.refused++
 		if now := l.now(); now.Sub(l.loggedAt) >= logEvery {
 			l.loggedAt = now
@@ -91,14 +109,20 @@ func (l *Listener) take(src netip.Addr) bool {
 		return false
 	}
 	l.open++
+	if !exempt {
+		l.counted++
+	}
 	l.bySource[src]++
 	return true
 }
 
-func (l *Listener) release(src netip.Addr) {
+func (l *Listener) release(src netip.Addr, exempt bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.open--
+	if !exempt {
+		l.counted--
+	}
 	if l.bySource[src]--; l.bySource[src] <= 0 {
 		delete(l.bySource, src)
 	}
@@ -107,22 +131,36 @@ func (l *Listener) release(src netip.Addr) {
 // conn releases its place once, on its first Close.
 type conn struct {
 	net.Conn
-	l    *Listener
-	src  netip.Addr
-	once sync.Once
+	l      *Listener
+	src    netip.Addr
+	exempt bool
+	once   sync.Once
 }
 
 func (c *conn) Close() error {
 	err := c.Conn.Close()
-	c.once.Do(func() { c.l.release(c.src) })
+	c.once.Do(func() { c.l.release(c.src, c.exempt) })
 	return err
 }
 
-// sourceOf is a remote address's IP, unmapped; the zero Addr (one shared
-// slot) for anything else.
+// loopback is the one source 127.0.0.1 and ::1 both count as.
+var loopback = netip.IPv6Loopback()
+
+// sourceOf is the source a remote address counts as: its IPv4 address
+// (unmapped), its IPv6 /64, loopback for 127.0.0.1 and ::1, and the zero
+// Addr (one shared slot) for anything else.
 func sourceOf(a net.Addr) netip.Addr {
-	if ap, err := netip.ParseAddrPort(a.String()); err == nil {
-		return ap.Addr().Unmap().WithZone("")
+	ap, err := netip.ParseAddrPort(a.String())
+	if err != nil {
+		return netip.Addr{}
 	}
-	return netip.Addr{}
+	ip := ap.Addr().Unmap().WithZone("")
+	switch {
+	case ip == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || ip == loopback:
+		return loopback
+	case ip.Is6():
+		return netip.PrefixFrom(ip, 64).Masked().Addr()
+	default:
+		return ip
+	}
 }

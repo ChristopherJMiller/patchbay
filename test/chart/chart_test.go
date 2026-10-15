@@ -419,3 +419,23 @@ func containsSeq(args []string, a, b string) bool {
 	}
 	return false
 }
+
+// TestChartAgentProbesUseLoopback: the agent's probes reach the control
+// API on the node's loopback (host 127.0.0.1; the pod is on the host
+// network), which its connection caps keep outside the total, so LAN hosts
+// holding every other connection cannot fail them (agent.MaxControlConns).
+func TestChartAgentProbesUseLoopback(t *testing.T) {
+	agent := container(t, pbx(t, render(t)), "agent")
+	probes := map[string]*corev1.Probe{
+		"startup": agent.StartupProbe, "readiness": agent.ReadinessProbe, "liveness": agent.LivenessProbe,
+	}
+	for name, p := range probes {
+		if p == nil || p.HTTPGet == nil {
+			t.Errorf("agent %s probe %+v is not an httpGet", name, p)
+			continue
+		}
+		if p.HTTPGet.Host != "127.0.0.1" || p.HTTPGet.Port.String() != "control" {
+			t.Errorf("agent %s probe goes to %q port %s, want 127.0.0.1 port control", name, p.HTTPGet.Host, p.HTTPGet.Port.String())
+		}
+	}
+}

@@ -151,7 +151,9 @@ func TestServeShutsDownOnCancel(t *testing.T) {
 // MaxControlConnsPerSource connections from one address and
 // MaxControlConns in all (the W2 review's caps, now on :9440 too); a
 // connection over either is closed when accepted, and one closed frees
-// its place.
+// its place. The node's own loopback is outside the total: the kubelet's
+// probes (host 127.0.0.1) and the CLI's port-forward still get in while
+// LAN hosts hold every other place (the final review's probe starvation).
 func TestServeCapsConnections(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -172,7 +174,7 @@ func TestServeCapsConnections(t *testing.T) {
 	// held opens a keep-alive connection from source and completes one
 	// request on it, so the server holds it idle; it reports whether the
 	// server answered.
-	held := func(source string) (net.Conn, bool) {
+	held := func(source, path string) (net.Conn, bool) {
 		t.Helper()
 		d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(source)}, Timeout: 5 * time.Second}
 		c, err := d.Dial("tcp", ln.Addr().String())
@@ -181,7 +183,7 @@ func TestServeCapsConnections(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = c.Close() })
 		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-		if _, err := io.WriteString(c, "GET "+api.PathHealthz+" HTTP/1.1\r\nHost: agent\r\n\r\n"); err != nil {
+		if _, err := io.WriteString(c, "GET "+path+" HTTP/1.1\r\nHost: agent\r\n\r\n"); err != nil {
 			return c, false
 		}
 		buf := make([]byte, 64)
@@ -189,9 +191,10 @@ func TestServeCapsConnections(t *testing.T) {
 		return c, err == nil && strings.HasPrefix(string(buf[:n]), "HTTP/1.1 200")
 	}
 
+	const lan = "127.0.0.7" // any address but the node's loopback is a LAN host here
 	var first net.Conn
 	for i := range MaxControlConnsPerSource {
-		c, ok := held("127.0.0.1")
+		c, ok := held(lan, api.PathHealthz)
 		if !ok {
 			t.Fatalf("connection %d from one source was refused; the cap is %d", i+1, MaxControlConnsPerSource)
 		}
@@ -199,13 +202,13 @@ func TestServeCapsConnections(t *testing.T) {
 			first = c
 		}
 	}
-	if _, ok := held("127.0.0.1"); ok {
+	if _, ok := held(lan, api.PathHealthz); ok {
 		t.Fatalf("connection %d from one source was served", MaxControlConnsPerSource+1)
 	}
 	_ = first.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, ok := held("127.0.0.1"); ok {
+		if _, ok := held(lan, api.PathHealthz); ok {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -214,17 +217,23 @@ func TestServeCapsConnections(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Other sources fill the total; then nobody new gets in.
+	// Other sources fill the total; then no other LAN host gets in.
 	open := MaxControlConnsPerSource
-	for src := 2; open < MaxControlConns; src++ {
+	for src := 10; open < MaxControlConns; src++ {
 		for i := 0; i < MaxControlConnsPerSource && open < MaxControlConns; i++ {
-			if _, ok := held("127.0.0." + strconv.Itoa(src)); !ok {
+			if _, ok := held("127.0.0."+strconv.Itoa(src), api.PathHealthz); !ok {
 				t.Fatalf("connection %d of %d was refused", open+1, MaxControlConns)
 			}
 			open++
 		}
 	}
-	if _, ok := held("127.0.0.99"); ok {
+	if _, ok := held("127.0.0.99", api.PathHealthz); ok {
 		t.Fatalf("connection %d in all was served", MaxControlConns+1)
+	}
+	// The kubelet still probes, from the node's loopback.
+	for _, path := range []string{api.PathReadyz, api.PathHealthz} {
+		if _, ok := held("127.0.0.1", path); !ok {
+			t.Errorf("a probe of %s from 127.0.0.1 was refused while LAN hosts held the total", path)
+		}
 	}
 }

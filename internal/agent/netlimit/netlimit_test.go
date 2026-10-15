@@ -137,3 +137,59 @@ func TestTotalCap(t *testing.T) {
 		t.Errorf("refused %d, open %d", l.Refused(), l.Open())
 	}
 }
+
+// TestExemptLoopback: with the node's own loopback exempt, 127.0.0.1 gets
+// in when other sources fill the total (the kubelet's probes and the
+// CLI's port-forward arrive from it), keeps its own per-source cap, and is
+// not counted against the total; 127.0.0.2 is an ordinary source.
+func TestExemptLoopback(t *testing.T) {
+	l := netlimit.New(listen(t), 2, 2, funcr.New(func(_, _ string) {}, funcr.Options{})).ExemptLoopback()
+	serve(t, l)
+	dial(t, l.Addr(), "127.0.0.2")
+	dial(t, l.Addr(), "127.0.0.3")
+	waitOpen(t, l, 2)
+	if c := dial(t, l.Addr(), "127.0.0.4"); !closedByServer(c) {
+		t.Error("a connection over the total was kept")
+	}
+	lo1, lo2 := dial(t, l.Addr(), "127.0.0.1"), dial(t, l.Addr(), "127.0.0.1")
+	waitOpen(t, l, 4)
+	if closedByServer(lo1) || closedByServer(lo2) {
+		t.Error("a loopback connection was refused while others filled the total")
+	}
+	if c := dial(t, l.Addr(), "127.0.0.1"); !closedByServer(c) {
+		t.Error("loopback went over its per-source cap")
+	}
+	if c := dial(t, l.Addr(), "127.0.0.5"); !closedByServer(c) {
+		t.Error("loopback connections freed room in the total")
+	}
+}
+
+// TestIPv6SourcesByPrefix: one host on an IPv6 LAN can pick any address in
+// its /64, so IPv6 sources are counted by /64; IPv4 by address.
+func TestIPv6SourcesByPrefix(t *testing.T) {
+	for _, tc := range []struct{ a, b string }{
+		{"[2001:db8:1:2::10]:5000", "[2001:db8:1:2:ffff::1]:6000"},
+		{"[::ffff:192.168.0.10]:5000", "192.168.0.10:6000"},
+	} {
+		if netlimit.SourceOf(addr(t, tc.a)) != netlimit.SourceOf(addr(t, tc.b)) {
+			t.Errorf("%s and %s are different sources", tc.a, tc.b)
+		}
+	}
+	for _, tc := range []struct{ a, b string }{
+		{"[2001:db8:1:2::10]:5000", "[2001:db8:1:3::10]:5000"},
+		{"192.168.0.10:5000", "192.168.0.11:5000"},
+	} {
+		if netlimit.SourceOf(addr(t, tc.a)) == netlimit.SourceOf(addr(t, tc.b)) {
+			t.Errorf("%s and %s are one source", tc.a, tc.b)
+		}
+	}
+}
+
+func addr(t *testing.T, s string) net.Addr {
+	t.Helper()
+	a, err := net.ResolveTCPAddr("tcp", s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}

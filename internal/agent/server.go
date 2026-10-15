@@ -242,18 +242,27 @@ func writeText(w http.ResponseWriter, code int, msg string) {
 // host network, where anything that reaches the node can connect before a
 // token is checked, and each connection costs the agent (128 MiB) its
 // buffers and a goroutine. The controller keeps one or two keep-alive
-// connections from its pod's address, the CLI's port-forward arrives from
-// the node's loopback one request at a time, and the kubelet probes from
-// the node's own address.
+// connections from its pod's address. The node's loopback (127.0.0.1, ::1)
+// is outside the total, with its own per-source cap: the kubelet probes
+// there (the chart's probes set host 127.0.0.1) and the CLI's
+// port-forward arrives there, so LAN hosts holding every other place can
+// neither fail the probes, which would have the kubelet restart the agent
+// again and again, nor lock out the operator.
 const (
 	MaxControlConns          = 64
 	MaxControlConnsPerSource = 16
 )
 
+// ControlIdleTimeout is how long the control API keeps an idle keep-alive
+// connection: the controller polls every few seconds and reuses its own,
+// and a place held by a host that sent one request is freed soon.
+const ControlIdleTimeout = 15 * time.Second
+
 // Serve runs the control API on addr until ctx is done, then shuts down
 // gracefully. It holds at most MaxControlConns connections, and at most
-// MaxControlConnsPerSource from any one address: a connection over either
-// cap is closed as soon as it is accepted.
+// MaxControlConnsPerSource from any one source: a connection over either
+// cap is closed as soon as it is accepted. The node's loopback is outside
+// the total (see MaxControlConns).
 func Serve(ctx context.Context, addr string, h http.Handler, log logr.Logger) error {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
@@ -264,13 +273,13 @@ func Serve(ctx context.Context, addr string, h http.Handler, log logr.Logger) er
 
 // serveOn serves h on ln, within the connection caps, until ctx is done.
 func serveOn(ctx context.Context, ln net.Listener, h http.Handler, log logr.Logger) error {
-	ln = netlimit.New(ln, MaxControlConns, MaxControlConnsPerSource, log)
+	ln = netlimit.New(ln, MaxControlConns, MaxControlConnsPerSource, log).ExemptLoopback()
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		IdleTimeout:       ControlIdleTimeout,
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

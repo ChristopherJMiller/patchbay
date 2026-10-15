@@ -217,7 +217,11 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **Two more metrics** than §10 lists: `patchbay_compile_failures_total`
   and `patchbay_agent_reachable` (the "agent unreachable" alert).
 - **The control API caps its connections** (64, 16 per source) like device
-  HTTP and :6970.
+  HTTP and :6970, but the node's loopback (127.0.0.1, ::1) is outside the
+  total: the agent's probes set `host: 127.0.0.1`, so LAN hosts holding
+  every other place cannot fail them, and the CLI's port-forward arrives
+  there too. A source is an IPv4 address or an IPv6 /64 on all three
+  listeners. Idle control connections close after 15 s.
 - **A phone that only asks for its `.sgn` is never scraped** (§8.2 takes
   the phone's IP from the fetch log, before it registers): the agent
   takes it only from a fetch it served or a registration (W2), so the
