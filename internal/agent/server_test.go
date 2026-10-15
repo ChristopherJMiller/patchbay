@@ -237,3 +237,96 @@ func TestServeCapsConnections(t *testing.T) {
 		}
 	}
 }
+
+// TestFirmwareUploadOutlastsTheRequestTimeout: an authenticated firmware
+// upload may take api.FirmwareUploadTimeout, the budget the CLI gives one
+// file through its port-forward, not the 30 s every other request gets (a
+// 4.6 MB image below 150 KB/s was cut, with an error that did not say
+// why). Another route, and an upload without the token, keep the short
+// deadline. Scaled down here: 200 ms for requests, 5 s for uploads.
+func TestFirmwareUploadOutlastsTheRequestTimeout(t *testing.T) {
+	SetTimeouts(t, 200*time.Millisecond, 5*time.Second)
+	read := make(chan string, 1)
+	h, err := NewHandler(Options{
+		Tokens:  StaticToken(token),
+		Actions: sentActions{},
+		Firmware: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				read <- err.Error()
+				return
+			}
+			read <- strconv.Itoa(len(b))
+			w.WriteHeader(http.StatusCreated)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- serveOn(ctx, ln, h, logr.Discard()) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	// slowPut sends 8 chunks 100 ms apart (800 ms in all) and returns the
+	// status line, or the error.
+	slowPut := func(method, path, bearer string) string {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+		head := method + " " + path + " HTTP/1.1\r\nHost: agent\r\nContent-Length: 8\r\n"
+		if bearer != "" {
+			head += "Authorization: Bearer " + bearer + "\r\n"
+		}
+		if _, err := io.WriteString(c, head+"\r\n"); err != nil {
+			return err.Error()
+		}
+		for range 8 {
+			time.Sleep(100 * time.Millisecond)
+			if _, err := io.WriteString(c, "x"); err != nil {
+				return err.Error()
+			}
+		}
+		buf := make([]byte, 64)
+		n, err := c.Read(buf)
+		if err != nil {
+			return err.Error()
+		}
+		return strings.SplitN(string(buf[:n]), "\r\n", 2)[0]
+	}
+
+	path := api.FirmwarePath("L", "f.sbn")
+	if got := slowPut(http.MethodPut, path, token); got != "HTTP/1.1 201 Created" {
+		t.Errorf("a slow authenticated upload: %q, want 201", got)
+	}
+	if got := <-read; got != "8" {
+		t.Errorf("the handler read %s, want all 8 bytes", got)
+	}
+	if got := slowPut(http.MethodPut, path, ""); strings.HasPrefix(got, "HTTP/1.1 201") {
+		t.Errorf("a slow upload without the token got %q", got)
+	}
+	if got := slowPut(http.MethodPost, api.PathActionResync, token); strings.HasPrefix(got, "HTTP/1.1 2") {
+		t.Errorf("a slow action request outlived the request timeout: %q", got)
+	}
+}
+
+// sentActions answers every action as sent.
+type sentActions struct{}
+
+func (sentActions) Resync(context.Context, api.ActionRequest) api.ActionResponse {
+	return api.ActionResponse{Sent: true}
+}
+
+func (sentActions) Restart(context.Context, api.ActionRequest) api.ActionResponse {
+	return api.ActionResponse{Sent: true}
+}

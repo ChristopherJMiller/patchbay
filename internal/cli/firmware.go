@@ -12,15 +12,15 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 )
 
 // uploadTimeout bounds one file's upload through the port-forward (the
-// largest 79x5 file is about 4.6 MB).
-const uploadTimeout = 5 * time.Minute
+// largest 79x5 file is about 4.6 MB): the agent gives the firmware route
+// the same deadline, so the two never disagree.
+const uploadTimeout = agentapi.FirmwareUploadTimeout
 
 // FirmwareLoad checks the files of a firmware zip against every driver's
 // manifest (env.Registry) locally, then uploads each match to the agent

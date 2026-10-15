@@ -217,6 +217,14 @@ func (s *server) action(pick func(Actions) actionFunc) http.Handler {
 }
 
 func (s *server) firmware(w http.ResponseWriter, r *http.Request) {
+	// An authenticated upload may take api.FirmwareUploadTimeout (the CLI's
+	// budget for one file), not controlTimeout: a 4.6 MB image over a slow
+	// port-forward would otherwise be cut mid-body.
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(firmwareUploadTimeout)
+	if err := errors.Join(rc.SetReadDeadline(deadline), rc.SetWriteDeadline(deadline)); err != nil {
+		s.opts.Log.Info("firmware upload: cannot extend the deadline", "error", err.Error())
+	}
 	if s.opts.Firmware == nil {
 		writeJSON(w, http.StatusNotImplemented, api.FirmwareUploadResponse{
 			Load: r.PathValue("load"), Name: r.PathValue("name"), Error: "firmware upload is not implemented yet",
@@ -253,6 +261,14 @@ const (
 	MaxControlConnsPerSource = 16
 )
 
+// controlTimeout bounds reading a request (body included) and writing its
+// answer; firmwareUploadTimeout replaces it for an authenticated firmware
+// upload. Variables so tests can shorten them.
+var (
+	controlTimeout        = 30 * time.Second
+	firmwareUploadTimeout = api.FirmwareUploadTimeout
+)
+
 // ControlIdleTimeout is how long the control API keeps an idle keep-alive
 // connection: the controller polls every few seconds and reuses its own,
 // and a place held by a host that sent one request is freed soon.
@@ -277,8 +293,8 @@ func serveOn(ctx context.Context, ln net.Listener, h http.Handler, log logr.Logg
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadTimeout:       controlTimeout,
+		WriteTimeout:      controlTimeout,
 		IdleTimeout:       ControlIdleTimeout,
 	}
 	errc := make(chan error, 1)

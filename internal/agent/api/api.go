@@ -63,6 +63,12 @@ func FirmwarePath(load, name string) string {
 	return PathFirmware + "/" + load + "/" + name
 }
 
+// FirmwareUploadTimeout is how long one firmware file's upload may take,
+// end to end: the CLI's budget for each file through its port-forward,
+// and the agent's deadline for an authenticated PUT on PathFirmware (every
+// other request gets 30 s). A 32 MiB file needs about 110 KB/s.
+const FirmwareUploadTimeout = 5 * time.Minute
+
 // MaxFirmwareFileSize is the largest firmware file the agent accepts. The
 // largest 79x5 file is about 4.6 MB.
 const MaxFirmwareFileSize = 32 << 20
