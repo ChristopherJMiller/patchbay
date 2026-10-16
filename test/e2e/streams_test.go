@@ -51,6 +51,15 @@ const streamBridgeSelector = "app.kubernetes.io/instance=" + release + ",app.kub
 // pins it).
 const e2eCallLimit = 20 * time.Second
 
+// firstToneWithin bounds how soon a stream call hears its tone, from the
+// caller's first packet. The design's "within about 3 s" is the real
+// tuner's, measured at the bench (plan §8 B1); here every call logs its
+// time (logCall), and the bound only catches a pipeline that stopped
+// starting promptly. In kind, under the parallel group's load, the radio
+// took 0.08 s to 2.98 s and the tuner (its 1.5 s lock included) 1.46 s to
+// 2.38 s (plan §6.5): 3 s would be a coin toss on a busy CI runner.
+const firstToneWithin = 5 * time.Second
+
 // The fake sources' stream paths (SourceStatus counts by path).
 const (
 	tunerAPath = "/auto/v5.1"
@@ -429,19 +438,19 @@ func TestStreamBridgeDown(t *testing.T) {
 }
 
 // TestStreamRadio: two stations play at once (no pool, no limit), each
-// within 3 s; the Streams show one listener each while they play and Idle
-// after; the fake radio's streams close within 10 s of the hang-ups (the
-// bridge's 5 s grace); and a call left up is ended by the PBX at the time
-// limit, having heard the station until then.
+// within firstToneWithin; the Streams show one listener each while they
+// play and Idle after; the fake radio's streams close within 10 s of the
+// hang-ups (the bridge's 5 s grace); and a call left up is ended by the
+// PBX at the time limit, having heard the station until then.
 func TestStreamRadio(t *testing.T) {
 	t.Parallel()
 	f := features.New("internet radio").
 		Assess("two stations at once, then Idle and closed", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			before := fakeSourceStatus(ctx, t, fakeRadioService, script.DefaultRadioPort)
 			a := streamCall{Number: radioANumber, Duration: 10 * time.Second, ExpectHz: radioAHz, MinToneFrames: 200,
-				FirstToneWithin: 3 * time.Second, EndedBy: "local"}
+				FirstToneWithin: firstToneWithin, EndedBy: "local"}
 			b := streamCall{Number: radioBNumber, Duration: 10 * time.Second, ExpectHz: radioBHz, MinToneFrames: 200,
-				FirstToneWithin: 3 * time.Second, EndedBy: "local"}
+				FirstToneWithin: firstToneWithin, EndedBy: "local"}
 			pa := startStreamCall(ctx, t, "call-750", a)
 			pb := startStreamCall(ctx, t, "call-751", b)
 			missing := watchFor(ctx, 25*time.Second, map[string]func(context.Context) (bool, string){
@@ -479,7 +488,7 @@ func TestStreamRadio(t *testing.T) {
 		}).
 		Assess("the PBX ends a call at the time limit", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			long := streamCall{Number: radioBNumber, Duration: 2 * e2eCallLimit, ExpectHz: radioBHz,
-				MinToneFrames: int((e2eCallLimit - 4*time.Second) / (20 * time.Millisecond)), FirstToneWithin: 3 * time.Second, EndedBy: "remote"}
+				MinToneFrames: int((e2eCallLimit - 4*time.Second) / (20 * time.Millisecond)), FirstToneWithin: firstToneWithin, EndedBy: "remote"}
 			answered, by := logCall(t, radioBNumber, callStream(ctx, t, "call-751-long", long))
 			if by != "remote" || answered < e2eCallLimit-2*time.Second || answered > e2eCallLimit+2*time.Second {
 				t.Errorf("the call was up %s and ended by %s, want the PBX to end it at %s ± 2 s", answered, by, e2eCallLimit)
@@ -504,7 +513,7 @@ func TestStreamTuner(t *testing.T) {
 	f := features.New("tuner").
 		Assess("shared: two callers of 705 use one tuner", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			before := fakeSourceStatus(ctx, t, fakeTunerService, script.DefaultTunerPort)
-			c := streamCall{Number: tunerANumber, Duration: 12 * time.Second, ExpectHz: tunerAHz, FirstToneWithin: 3 * time.Second, EndedBy: "local"}
+			c := streamCall{Number: tunerANumber, Duration: 12 * time.Second, ExpectHz: tunerAHz, FirstToneWithin: firstToneWithin, EndedBy: "local"}
 			p1 := startStreamCall(ctx, t, "call-705-a", c)
 			p2 := startStreamCall(ctx, t, "call-705-b", c)
 			missing := watchFor(ctx, 25*time.Second, map[string]func(context.Context) (bool, string){
@@ -659,7 +668,7 @@ func TestStreamAdded(t *testing.T) {
 			waitStream(ctx, t, addedName, "Pending", 30*time.Second, streamReady(metav1.ConditionFalse, v1alpha1.ReasonBridgePending, "Pending"))
 			waitStream(ctx, t, addedName, "Idle", 150*time.Second, streamReady(metav1.ConditionTrue, v1alpha1.ReasonIdle, "Idle"))
 			t.Logf("Stream %s Idle %s after it was created (the kubelet's sync of %s)", addedName, time.Since(start).Round(time.Second), names.StreamsConfigMap)
-			c := streamCall{Number: addedNumber, Duration: 6 * time.Second, ExpectHz: addedHz, FirstToneWithin: 3 * time.Second, EndedBy: "local"}
+			c := streamCall{Number: addedNumber, Duration: 6 * time.Second, ExpectHz: addedHz, FirstToneWithin: firstToneWithin, EndedBy: "local"}
 			logCall(t, addedNumber, callStream(ctx, t, "call-759", c))
 			return ctx
 		}).
