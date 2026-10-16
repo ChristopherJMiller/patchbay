@@ -263,7 +263,7 @@ func TestFFmpegRefusesRedirectToFile(t *testing.T) {
 
 func TestFFmpegHTTPS(t *testing.T) {
 	ffmpeg := needFFmpeg(t)
-	srv := httptest.NewTLSServer(realTime(wav(30, 1000, 16000, 1), 32000, "audio/wav"))
+	srv := httptest.NewTLSServer(realTime(wav(30, 1300, 16000, 1), 32000, "audio/wav"))
 	defer srv.Close()
 	ca := filepath.Join(t.TempDir(), "ca.pem")
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
@@ -279,7 +279,7 @@ func TestFFmpegHTTPS(t *testing.T) {
 		if _, err := io.ReadFull(dec, pcm); err != nil {
 			t.Fatalf("reading: %v (%v)", err, dec.Wait())
 		}
-		if r := toneRatio(samples(pcm), 1000); r < 0.8 {
+		if r := toneRatio(samples(pcm), 1300); r < 0.8 {
 			t.Errorf("tone %.2f", r)
 		}
 		cancel()
