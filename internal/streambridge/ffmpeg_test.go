@@ -296,6 +296,7 @@ func TestFFmpegHTTPS(t *testing.T) {
 }
 
 func TestFFmpegStop(t *testing.T) {
+	needFFmpeg(t)
 	srv := httptest.NewServer(realTime(wav(60, 1000, 48000, 2), 48000*2*2, "audio/wav"))
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(t.Context())
