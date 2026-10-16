@@ -18,13 +18,18 @@ person would:
 | Phone `kitchen` | cisco-7945, MAC `0200E2E00002`, 101, label `Kitchen` | the W2 tests (one-shot fakephone runs), and the third phone in `TestDeskLoop` |
 | Softphone `laptop` | 150, label `Laptop` | `TestProvisioningOneTime`, `TestRollback`, `TestDeskLoop` |
 | Person `chris` | 301, rings desk then laptop | `TestController`, `TestDeskLoop` |
+| Stream `tuner-a` | 705, `http://fake-tuner.patchbay-e2e.svc:5004/auto/v5.1?hz=1100` (pool `tuner`) | `TestStreamBridgeUp`, `TestStreamTuner` |
+| Stream `tuner-b` | 707, `…/auto/v7.1?hz=1300` (pool `tuner`) | `TestStreamBridgeUp`, `TestStreamTuner` |
+| Stream `radio-a` | 750, `http://fake-radio.patchbay-e2e.svc:8000/radio-a?hz=500` (no pool) | `TestStreamBridgeUp`, `TestStreamBridgeDown`, `TestStreamRadio` |
+| Stream `radio-b` | 751, `…/radio-b?hz=700` (no pool) | `TestStreamBridgeUp`, `TestStreamRadio` |
 
 The **controller** does the rest, as in production: it mints the agent
 token (the PBX pod waits for it in ContainerCreating), the AMI password and
 a password per device (and laptop's provisioning token), compiles the site
-into `patchbay-pbx-secrets` and then `patchbay-pbx-config`, and the agent
-applies the bundle. The install's settings are the chart's values with the
-kind node's InternalIP as `pbx.address` and the node's **pod CIDR**
+into `patchbay-streams` (the stream bridge waits for it in
+ContainerCreating), `patchbay-pbx-secrets` and then `patchbay-pbx-config`,
+and the agent applies the bundle. The install's settings are the chart's
+values with the kind node's InternalIP as `pbx.address` and the node's **pod CIDR**
 (`10.244.0.0/24`) as the only `allowedNetworks` entry: every fakephone
 registers from the pod network, and the compiled ACL refuses everything
 else. Tests read the compiled bundle back from the cluster
@@ -32,8 +37,8 @@ else. Tests read the compiled bundle back from the cluster
 never from a copy of their own.
 
 A test that needs more devices creates its own (`lifecycle-<hex>` 111,
-`reset-<hex>` 112, `discovered` 113), deleting any a previous run left
-first, and deletes them at the end. `TestPhoneLifecycle`'s names are random
+`reset-<hex>` 112, `discovered` 113) or Streams (`added` 759), deleting
+any a previous run left first, and deletes them at the end. `TestPhoneLifecycle`'s names are random
 per run: the agent keeps a device's fetch log by its ID after the device
 leaves the bundle, so a Phone recreated under a fixed name on a reused
 cluster would start with the last run's fetches (plan §11). A test that
@@ -65,6 +70,21 @@ for that bundle to be applied.
   registration, NOTIFY and call), both through the API server's
   `pods/proxy`, so nothing in the image is needed for it.
 
+**The fake stream sources** (`fakephone source`, the Deployment
+`fake-sources` of the tools image, behind the Services `fake-tuner` :5004
+and `fake-radio` :8000) stand in for the house's HDHomeRun and SomaFM, so no
+test leaves the cluster. Both stream a WAV tone (48 kHz stereo, the
+frequency from `?hz=`) at real time after a 4 s burst (ffmpeg's probe reads
+half a megabyte of a PCM WAV before it decodes any; a real tuner's MPEG-TS
+or an Icecast mount fills it at once). The tuner has two tuners, each open
+stream holding one, answers 503 with `X-HDHomeRun-Error: 805 All Tuners In
+Use` when none is free, and sends its first audio 1.5 s after the request
+(a tuner locking); `POST /fake/occupy?tuners=n` makes it hold n tuners as
+the DVR would. `GET /fake/status` on either port is its `SourceStatus`
+(open and opened streams by path, refusals), which the tests read through
+`services/proxy`. The test/e2e/values.yaml settings put `fake-tuner` in the
+pool `tuner` (max 1) and the stream calls' time limit at 20 s.
+
 Device status is followed with a **watch** on the Phone or Softphone
 (`tracker`): a test waits for a condition on the latest status and can ask
 for every state the device went through.
@@ -85,6 +105,9 @@ rest together.
 | `TestProvisioningOneTime` | Softphone laptop's provisioning URL, as its status shows it (the compiled token), serves its document once over the pod network (200), then 404; the agent container is killed, and after it restarts the URL is still 404 (the spend is on the persistent volume) and the served fetch, with the softphone's version, is back in the observations. The controller is scaled to 0 meanwhile, so the agent restarts while the token is still granted (once a rotated version settles the agent rightly forgets the spend); scaled back, it sees the fetch and replaces the spent token (`lastAction` rotateToken, Provisioned) and publishes no URL (only an Issued softphone shows one). A laptop with no URL (a reused cluster's) is reissued first. |
 | `TestRollback` | §9's rollback, the agent half (the controller half is the envtest `TestApplyFailedControllerHalf`). The controller is scaled to 0; a bundle whose `pjsip.conf` renames kitchen's endpoint is written as the controller writes (`install.ProjectedSecret`, then `install.ConfigMap`, with the version `Bundle.VersionWith` gives it): the agent applies it, fails verification (after its 30 s), swaps the previous version back and reloads; it reports `lastApplyVersion` and the verify error while `appliedVersion` stays the good one, and the old config still registers and echoes. Scaled back to 1, the controller writes its own version again (pbx-secrets first, with the same values: the intake keys an attempt by the values, so the refused version is not applied again and the reissue applies at once), and `patchbay softphone qr laptop --reissue` makes a new version that the agent applies cleanly, so a reused cluster starts without this test's error. No `ApplyFailed` Event was emitted and no device shows it: the broken version was never compiled. |
 | `TestPBXDown` | Design §7's "Asterisk down": the asterisk container is stopped (crictl) each time it comes back until kitchen shows `Registered=False PBXDown`, and it never shows `Ready=Unknown AgentUnreachable` meanwhile. The PBX pod is NotReady while Asterisk is down, so this holds only because the agent Service publishes not-ready addresses. Asterisk then comes back after the kubelet's restart backoff, the agent's AMI session is up again and PBXDown clears (registrations survive: astdb is on an emptyDir). |
+| `TestStreamKit` | The stream kit against itself, with no cluster: the site Streams' sources pass `streams.CheckSource`, the tuner ones are on the e2e pool's host and the radio ones on none, every tone is its own; the e2e values run the bridge image `:e2e`, never pulled, with a 20 s limit; a call's command line and media line read as fakephone writes them. |
+| `TestStreamBridgeUp` | The bridge as the chart runs it: one replica, `Recreate`, Ready, no service account token or Secret volume, no restarts; PID 1 is `patchbay` as 65532:65532 with every capability set empty, `no_new_privs` and a read-only root (from `/proc`); its observations report the `ffmpeg -version` line the image runs and the `streams.json` version the controller compiled (within 120 s), which holds every site Stream as written and the pool `tuner` (1); every site Stream is Idle (Ready True), `tunerPool` `tuner` on the tuner ones, empty on the radios. |
+| `TestStreamBridgeDown` | With `patchbay-streams` scaled to 0, a call to 750 is still answered, plays "not available" (≥ 2 s of audio, ≥ 1 s not the SIT tone) and the PBX hangs up (Asterisk's `Dial` finds no bridge: the Service has no endpoints, the connection is refused); radio-a is Unknown (`BridgeUnreachable`) within 15 s. Scaled back to 1, radio-a is Idle again with the same `lastPlayed` and `lastFailure`. |
 
 **Parallel**
 
@@ -99,6 +122,9 @@ rest together.
 | `TestTFTPAndHTTP6970` | The file server serves kitchen's `SEP<MAC>.cnf.xml` with its password resolved, byte for byte the same over TFTP and HTTP :6970; the `.sgn` and an unknown MAC's SEP file are not found. Every request is in `/v1/observations`: attributed to `phone-kitchen` (served ones with its config version) or, for the unknown MAC, in `unknownDevices` with the requesting pod's address. |
 | `TestPrompts` | `911`, the reserved `0`, `999` (`9.`) and `205` (`2XX`), and the unassigned `199` are answered with at least 2 s of non-silent audio, at least 1 s of it not the SIT tone: the prompts the agent installed from the image play. |
 | `TestResyncNotify` | `POST /v1/actions/resync` makes the agent send a registered kitchen a service-control NOTIFY whose body is the plan's, quoting its REGISTER's Call-ID; fakephone then refetches its SEP file over TFTP. |
+| `TestStreamRadio` | **Two stations at once** (no pool, no limit): calls to 750 and 751 (10 s each) hear 500 Hz and 700 Hz, each first within 5 s of the first packet (the time is logged) and in ≥ 200 packets; while both are up the bridge has both with a listener in one document, and radio-a and radio-b are Playing with 1 listener; the fake radio opened each once, and closed both within 10 s of the hang-ups; both Idle within 15 s. **The time limit**: a 40 s call to 751 is ended by the PBX at 20 s ± 2 s (the e2e `streams.callLimit`), having heard 700 Hz in ≥ 800 packets. |
+| `TestStreamTuner` | The tuner policy against the fake HDHomeRun (pool `tuner`, max 1). **shared**: two concurrent 12 s calls to 705 both hear 1100 Hz (first within 5 s, the 1.5 s lock included); while both are up the pool has one session with 2 listeners, the fake tuner exactly one open stream, and tuner-a is Playing with 2 listeners; the tuner opened `/auto/v5.1` once, is free within 10 s of the hang-ups, and the pool has no session; tuner-a Idle. **limit**: while a 16 s call to 705 plays, tuner-b is Busy (`TunerBusy`, naming `tuner-a (705)`); a call to 707 plays "not available" and the PBX hangs up; tuner-b's `lastFailure` is `TunerBusy` naming tuner-a, with a `CallRefused` Event saying so; the fake tuner never opened `/auto/v7.1`; once 705 ends tuner-b is Idle with the refusal kept. **refused**: with the fake DVR holding both tuners, a call to 705 plays "not available"; tuner-a is Failing (`SourceFailed`, the message giving ffmpeg's "5XX"), with a `SourceFailed` Event; the fake tuner's refusals grew. Freed, a call to 705 hears 1100 Hz and tuner-a is Idle with `lastPlayed` after `lastFailure`. |
+| `TestStreamAdded` | A Stream `added` (759, on the fake radio) created on the running install is Pending (`BridgePending`) first, then Idle within 150 s (the kubelet's sync of the bridge's `patchbay-streams` mount, logged), and a call hears its 600 Hz within 5 s. Deleted, it leaves `patchbay-streams` and the compiled dialplan; once the agent has applied that bundle a call to 759 plays "not available". |
 
 `TestRegister` and `TestResyncNotify` take turns (`kitchenContact`):
 kitchen's AOR keeps one contact (`remove_existing`), so one's REGISTER would
@@ -114,7 +140,7 @@ PATCHBAY_E2E_KEEP=1  nix develop -c make e2e   # ...and keep the cluster afterwa
 PATCHBAY_E2E_REUSE=1 nix develop -c make e2e   # reuse a kept cluster
 nix develop -c make e2e-up       # cluster + chart, no tests, kept (REUSE+KEEP)
 nix develop -c make e2e-down     # delete the cluster
-nix develop -c make e2e-images   # just build/pull the three images and build .e2e/bin/patchbay
+nix develop -c make e2e-images   # just build/pull the four images and build .e2e/bin/patchbay
 ```
 
 - Without `PATCHBAY_E2E_REUSE=1` an existing `patchbay-e2e` cluster is
@@ -132,13 +158,15 @@ nix develop -c make e2e-images   # just build/pull the three images and build .e
   `make e2e-down` removes it, and the next default run deletes it anyway.
   With `PATCHBAY_E2E_KEEP=1` an interrupted run keeps a possibly half-built
   cluster, so run once without `PATCHBAY_E2E_REUSE=1` afterwards.
-- A fresh run takes about nine and a half minutes once the images are
-  cached: about 40 s to create the cluster, 25 s to load the images, 10 s
-  to install and roll out, two minutes of sequential tests (TestRollback
-  alone waits 30 s, twice, for verification to give up), then six minutes
-  for the parallel group, which TestPhoneLifecycle sets: the Desk phone's
-  path waits out the driver's 3 min `.sgn` rule and then its 3 min
-  download window. TestDeskLoop and the rest finish inside it.
+- A fresh run takes about twelve minutes once the images are built (697 s
+  measured for release B): about a minute to create the cluster, a minute
+  to load the four images, 15 s to install and roll out, two and a half
+  minutes of sequential tests (TestRollback alone waits 30 s, twice, for
+  verification to give up; the two sequential stream tests about 15-35
+  s), then six and a half minutes for the parallel group, which
+  TestPhoneLifecycle sets: the Desk phone's path waits out the driver's
+  3 min `.sgn` rule and then its 3 min download window. TestDeskLoop, the
+  stream tests and the rest finish inside it.
 - Only one kind cluster, `patchbay-e2e`, is ever created.
 
 ### Kubeconfig isolation
@@ -168,6 +196,7 @@ kubectl -n patchbay-e2e get pods -o wide
 | Image | Built from | How it gets into kind |
 |---|---|---|
 | `ghcr.io/christopherjmiller/patchbay:e2e` | `Dockerfile` with **`GO_TAGS=e2e`** (`make image`, after `make sounds`) | `kind load docker-image`, `pullPolicy: Never` |
+| `ghcr.io/christopherjmiller/patchbay-stream-bridge:e2e` | the `Dockerfile`'s `stream-bridge` target (`make image-stream-bridge`, with `GO_TAGS=e2e` only to share the build stage) | same |
 | `ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e` | `test/e2e/fakephone/Dockerfile` | same |
 | `andrius/asterisk:<tag>` | the chart's `pbx.asterisk.image`, **pulled by digest** on the host and tagged | same |
 | `.e2e/bin/patchbay` (not an image) | `go build -tags e2e ./cmd/patchbay` | run on the host, against the cluster's API server only |
@@ -204,7 +233,7 @@ environment and features. Its own kind provider is not used, because it runs
    whole create is bounded at 10 minutes.
 2. Set the node's `net.ipv4.ip_unprivileged_port_start` back to 1024 (see
    below).
-3. Load the three images.
+3. Load the four images.
 4. Create the namespace (labelled `pod-security.kubernetes.io/enforce:
    privileged`, as a real install needs) and delete any fakephone pods and
    phone scripts a reused cluster still holds.
@@ -213,10 +242,13 @@ environment and features. Its own kind provider is not used, because it runs
    and InternalIP as `pbx.nodeName`/`pbx.address`, its pod CIDR as
    `allowedNetworks`, and the image IDs); wait until the API server serves
    the CRDs; write the site resources (on a reused cluster, put their specs
-   back).
-6. Wait for both Deployments to roll out, the way `kubectl rollout status`
-   does, polling for up to 5 minutes (the PBX pod waits for the agent token
-   the controller mints, then for the first bundle).
+   back) and the fake stream sources (`fake-sources`, `fake-tuner`,
+   `fake-radio`).
+6. Wait for the controller, the PBX and the stream bridge to roll out, the
+   way `kubectl rollout status` does, polling for up to 5 minutes each (the
+   PBX pod waits for the agent token the controller mints, then for the
+   first bundle; the bridge for the `patchbay-streams` it compiles), then
+   for the fake sources.
 7. Read the settings the chart rendered and the minted agent token, and
    wait until the agent has applied the controller's bundle.
 
@@ -306,8 +338,9 @@ file Asterisk itself runs on.
 1. **Read the diagnostics.** After a failed test (or a setup that never
    rolled out) the harness prints, and saves under `.e2e/diagnostics/`, the
    namespace's objects and events, `kubectl describe pods`, and every
-   container's logs (the agent's, the file server's and the fakephone pods'
-   included).
+   container's logs (the agent's, the file server's, the bridge's, the fake
+   sources' and the fakephone pods' included) and the bridge's
+   observations.
 2. **Keep the cluster** and look around:
 
    ```sh
@@ -317,6 +350,11 @@ file Asterisk itself runs on.
    kubectl -n patchbay-e2e logs deploy/patchbay-pbx -c fileserver
    kubectl -n patchbay-e2e logs deploy/patchbay-pbx -c asterisk
    kubectl -n patchbay-e2e logs deploy/patchbay-controller          # its decisions, the poller, Events sent
+   kubectl -n patchbay-e2e logs deploy/patchbay-streams             # the bridge: each call, each session start/stop/failure
+   kubectl -n patchbay-e2e logs deploy/fake-sources                 # the fake tuner and radio
+   kubectl -n patchbay-e2e get streams -o wide                      # state, listeners, pool, source
+   kubectl get --raw /api/v1/namespaces/patchbay-e2e/services/http:patchbay-streams:9093/proxy/v1/observations | jq
+   kubectl get --raw /api/v1/namespaces/patchbay-e2e/services/http:fake-tuner:5004/proxy/fake/status | jq
    kubectl -n patchbay-e2e get phones,softphones,people -o wide     # state at a glance
    kubectl -n patchbay-e2e get events.events.k8s.io                 # StateChanged, ActionSent, UnknownPhone, ...
    .e2e/bin/patchbay --kubeconfig .e2e/kubeconfig -n patchbay-e2e status
@@ -437,3 +475,25 @@ Findings from building this suite.
   becomes NeedsTrustReset by the driver's 3 min rule, not by its log
   (docs/plans/release-a.md §11). That rule, and the 3 min download window
   after it, make `TestPhoneLifecycle` the suite's longest test.
+- **Asterisk on the host network reaches a ClusterIP Service by name.**
+  The PBX pod's `ClusterFirstWithHostNet` resolves
+  `patchbay-streams.patchbay-e2e.svc` through the cluster DNS, and the
+  node's kube-proxy rules carry Asterisk's AudioSocket connection to the
+  bridge pod. With the bridge scaled to 0 the Service has no endpoints,
+  kube-proxy refuses the connection at once, `Dial` ends `CHANUNAVAIL`
+  and the caller hears "not available" about 3 s after dialling
+  (`TestStreamBridgeDown`). Talos's kubelet and kube-proxy are bench B9.
+- **The kubelet synced the bridge's ConfigMap volume within seconds** in
+  kind (`TestStreamAdded`: Idle 5 s after the Stream was created). A real
+  node updates a mounted ConfigMap on its periodic sync, usually under a
+  minute: the 150 s the test allows is for that, not for kind.
+- **ffmpeg says "5XX", not "503".** At the contract's `-loglevel error`
+  it prints "Server returned 5XX Server Error reply" for the fake tuner's
+  503 (and the real HDHomeRun's), never the code or the
+  `X-HDHomeRun-Error` header; `TestStreamTuner/refused` expects "5XX".
+- **A PCM WAV probes slowly.** ffmpeg reads half a megabyte of a WAV
+  before it decodes any, which at the fake source's real-time rate would
+  hold the first tone back 2.7 s; the fake bursts each stream's first 4 s,
+  as an Icecast mount does, so the first tone comes 0.1-0.2 s after the
+  caller's first packet on the radio, and 1.5-2.4 s on the tuner (its
+  1.5 s lock included).

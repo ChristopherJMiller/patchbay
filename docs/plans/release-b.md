@@ -1,7 +1,8 @@
 # Release B ("streams"): implementation plan
 
-**Status:** plan, 2026-10-16. **Spec:** [docs/design.md](../design.md) §9
-(release B), §11 (B's exit criteria), §4 (the Stream resource, `7XX`).
+**Status:** built, 2026-10-16 (§6.5 "as built"; the bench, §8, is
+next). **Spec:** [docs/design.md](../design.md) §9 (release B), §11 (B's
+exit criteria), §4 (the Stream resource, `7XX`).
 **Binding decisions by Chris (2026-10-16):** the house's sources, the tuner
 policy, the time limit, and that the AudioSocket sample rate is answered by
 test (§1.2). **Contracts landed with this plan:** commits `467ac09`,
@@ -25,7 +26,7 @@ Contents: [1 Goals](#1-goals-and-exit-criteria) ·
 [3 The AudioSocket check](#3-the-audiosocket-sample-rate-check) ·
 [4 Contracts](#4-contracts-landed) ·
 [5 Packages and rules](#5-package-map-ownership-and-rules) ·
-[6 Stage tasks](#6-stage-tasks) ·
+[6 Stage tasks](#6-stage-tasks) ([as built](#65-b-as-built)) ·
 [7 Interfaces](#7-interfaces-on-the-wire-and-in-the-cluster) ·
 [8 Bench](#8-bench-what-only-the-real-hdhomerun-phone-and-somafm-answer) ·
 [9 Exit criteria → tests](#9-exit-criteria--acceptance-tests) ·
@@ -1146,6 +1147,179 @@ nix develop -c make asterisk-check
 nix develop -c make image-stream-bridge image-check-stream-bridge
 nix develop -c make e2e                                          # leaves no cluster
 ```
+
+### 6.5 B as built
+
+Where release B departs from this plan (CLAUDE.md records only the
+departures from the design). The stages' own reports are summarised here,
+so the bench (§8) and release C start from what exists. Every contract of
+§4 landed as written; where one turned out wrong, the stage worked around
+it in its own files and it is listed below, unedited.
+
+**bridge** (`internal/streambridge`, 8 commits, `8b8add5`…`8bc62fa`)
+- **ffmpeg names the class of an HTTP error, not the code.** At the
+  contract's `-loglevel error`, ffmpeg 9.0.1 and Alpine's 8.1.2 print
+  "Server returned 5XX Server Error reply" for a 503 and never show the
+  HDHomeRun's `X-HDHomeRun-Error` header (the code appears only at
+  `-loglevel warning`). BR.2's `TestFFmpeg503`, e2e `TestStreamTuner/refused`
+  and docs/streams.md expect "5XX". The Stream's message reads
+  `ffmpeg exited with status 8: Server returned 5XX Server Error reply`.
+- **First PCM on an MPEG-TS is about 1.2 s, not "under 1 s"** with the
+  contract's `-analyzeduration 1000000` (measured 1.17 s at 84 KB/s, 1.09 s
+  at 1 MB/s); `TestFFmpegDecodesMPEGTS` allows 1.5 s. §2(m)'s 0.15 s was not
+  reproduced. The bench answers B1 on the real tuner.
+- **Wait's reason**: the last stderr line with ffmpeg's `[component @ 0x…]`
+  prefixes and its `Error opening input files: ` wrapper removed; when the
+  input could not be opened, the line ffmpeg logged just before
+  `Error opening input: …` (DNS, certificate and redirect failures, which
+  otherwise end as a bare "Input/output error"). "Format not on whitelist",
+  "Invalid data found when processing input" and an `Input/output error`
+  at open with no cause before it (ffmpeg 9.0 on a short web page) become
+  `the source is not an audio stream the bridge reads (…)`.
+- **ffmpeg exits 0 when its source closes or stalls past `-rw_timeout`**, so
+  status 0 without ctx ending is a failure: `ffmpeg exited with status 0:
+  the source ended`.
+- **A pool's new session waits for the pool's stopped decoders to exit**,
+  then `PreemptSettle`, after any stop (a grace stop or a failure, not only
+  a preemption), so the device has freed the tuner first.
+- **TunerBusy names the holding sessions' current callers' streams** (name
+  and number, sorted, once each), not the loaded streams with those
+  sources, so it stays right after a reload removes a stream still playing.
+- A session that fails while Draining records no `LastFailure` (nobody
+  heard it); `session_starts_total{result="failed"}` still counts one that
+  never played. A pool named `none` would share the sessions gauge's
+  `pool="none"` series with the sources in no pool.
+- `Options`: a Registerer that is also a Gatherer serves as both; a
+  Gatherer alone fails; both nil is a registry of the bridge's own with the
+  Go and process collectors. `Listen` equal to `ControlListen` is refused
+  unless the port is 0.
+- The control API's loopback exemption copies the agent's, but the bridge
+  runs in the pod network, where the kubelet's probes come from the node's
+  address: the 32/8 caps leave the probes room unless something in the
+  cluster holds all 32.
+
+**routing** (`internal/compile`, `internal/controller/{bundle,settings,bridgeclient,streamstate,numbers,metrics}`, 11 commits)
+- **The `CallRefused` note is the bridge's message alone**, as the contract
+  doc in `install/events.go` says (RT.5 said `<reason>: <message>`); the
+  `SourceFailed` note is `<reason>: <message>`.
+- **Row 5 has two messages**: `this stream is not compiled yet (compiled
+  streams <v>)` while the compiled document lacks the Stream or holds
+  another source, else the plan's "has not loaded this stream yet".
+- **No status before the first poll attempt** (release A's rule): `Decide`
+  returns Wait for any Stream rows 1-3 do not settle.
+- Settings naming a stream bridge with no Bridge given: routed Streams are
+  Unknown, `the controller does not poll it (no stream bridge URL)`; a
+  Bridge without a `streamBridge` setting is ignored. Row 4 on stale
+  observations: `its last observations are <age> old`.
+- **The fold compares times to the second** (`metav1.Time`'s precision),
+  so a failure is copied, and its Event sent, once; two failures within
+  one second count as one. A failure reason this controller does not know
+  (a newer bridge's) is never written: the CRD's enum would refuse it.
+- `Metrics.ObserveBridge(reachable bool)`, not `(Snapshot)`: streamstate
+  imports metrics, so the Snapshot type would be an import cycle.
+- `TestRealAsteriskStreams` boots the `streams` golden with `callLimit` 10 s
+  (and measured the call ending at 10.000 s by the stand-in bridge's
+  clock, 500 frames sent), hand-codes the 3-byte frames (so it never built
+  the bridge stage's code in progress), and asserts "up through the
+  bridge's 2 s of audio" (the check container has no prompts). Asterisk
+  sent the stand-in no frames: the test caller sends no RTP.
+- InvalidSource messages drop CheckSource's `streams: ` prefix; a refused
+  source's dialplan comment quotes the error through `drivers.UserText`,
+  control characters replaced, at most 200 bytes.
+- bridgeclient decodes leniently (unknown fields ignored, for version skew
+  during an upgrade), turns null lists into empty ones, and quotes at most
+  200 printable bytes of an error body. streamstate exports more than the
+  sketch, for tests (`New`, the `Poller`, `Input`, `Verdict`, the `State*`
+  names). A host listed twice in one pool is accepted; only a host in two
+  pools is refused.
+
+**packaging + harness** (Dockerfile, chart, CI, fakephone, e2e kit; 7 commits)
+- **The fake source bursts each stream's first 4 s**, then paces (the
+  contract says only "paced at real time"): ffmpeg reads 512 KiB of a PCM
+  WAV before it decodes any (it checks for S/PDIF or MP3), with both 9.0
+  and Alpine's 8.1 and FFmpegArgs' limits, which at real time held the
+  first frame 2.7 s. A real tuner's MPEG-TS and an Icecast mount (which
+  bursts on connect) fill the probe at once.
+- Fake source extras: `POST /fake/occupy` asking for tuners an open stream
+  holds answers 409 (and `occupyTuners` asks again for 20 s); other methods
+  405, a bad `hz` 400, occupy on the radio 404.
+- **§2(m)/PK.1's "-tls_verify on an http input is fatal" is not what the
+  image check can see**: with nothing listening, ffmpeg fails on the
+  connection before it checks options, so the "Connection refused" check
+  passes even with `-tls_verify` on an http source. `TestImageFFmpegDecodes`
+  covers the contract instead, decoding over http and over https (with
+  the throwaway CA, refused without it).
+- `make e2e-images` builds the bridge with `GO_TAGS=e2e`, only to share the
+  patchbay e2e image's build stage. The publish job sets the bridge's
+  licence labels explicitly (else the repository's Apache-2.0 alone would
+  replace the Dockerfile's).
+- **arm64 is built only by CI's QEMU**: this workstation's aarch64 binfmt
+  lacks the F flag, so containers cannot use the emulator. amd64 is
+  verified locally; the first CI run proves arm64.
+- Contract nit, not edited: `script/source.go` cites §6.6; the section is
+  §6.3 PK.5.
+
+**integrator** (`cmd/patchbay`, the controller root, `internal/cli`, the
+e2e tests, docs)
+- `controller.Options.StreamBridgeURL` (`--stream-bridge-url`) defaults to
+  the bridge Service on 9093 whenever it is empty; it is used, and checked
+  before anything is wired, only while the settings name a stream bridge.
+- `TestHouseStreams` (internal/controller) reads docs/streams.md's house
+  values and Streams, validates the settings they make, creates every
+  Stream in envtest (the CRD's CEL), and compiles them (TV in pool
+  `hdhomerun`, radio in none, the 2 h limit), so the manifests the lead
+  copies stay true.
+- The e2e calls are longer than I.6's sketch so each "while up" window
+  holds at least one controller poll (5 s): shared 12 s (not 8), the two
+  radio calls 10 s (not 6), limit's 705 call 16 s (not 12), Down's call 8 s;
+  the conditions that must hold while calls are up are watched together
+  (`watchFor`). After the scale-up, Down allows 60 s for Idle (I.6: 30 s).
+  The refused case asserts "5XX" (above), and the first tone is asserted
+  within 5 s, not 3 s (Measured, below).
+- streamkit_test.go's keep-quiet `var _ = []any{…}` is removed, as its
+  owner asked, now that every helper has a caller.
+- Commit `14b007f` also carried `cmd/patchbay/stubs.go`'s deletion (staged
+  with `git rm` before it), so `cmd/patchbay` does not build at that one
+  commit; `1e3e3cf` adds its replacement. History was not rewritten.
+- Contract docs that the code outgrew, not edited: `install/events.go`'s
+  ConfigWritten note now ends `, <n> streams` (RT.2); `compile.Bundle.Streams`
+  says "every Stream the dialplan sends to the stream bridge", but on an
+  install without a bridge the Streams are in it too (RT.1).
+
+**Measured** (`make e2e` from scratch on this workstation, twice on
+2026-10-16; images already built for the second):
+
+| What | Run 1 | Run 2 | Plan |
+|---|---|---|---|
+| Whole suite (`go test`, `kind create` to `kind delete`); every release A test passes beside B's | 848 s | 697 s | release A's + ~70 s |
+| `kind load` of the bridge image | 17.7 s | 17.1 s | ~15 s |
+| The bridge's rollout | done with the PBX's | done with the PBX's | overlaps the PBX's |
+| `TestStreamBridgeUp` | 3.0 s | 0.6 s | ~10 s |
+| `TestStreamBridgeDown` (scale to 0; Unknown; the prompt call, ended by the PBX; scale to 1; Idle) | 32.8 s (6 s; at once; 3.2 s; 6 s; 1 s) | 14.3 s (3 s; 1 s; 3.2 s; 4 s; 1 s) | ~45 s |
+| `TestStreamAdded`; Idle after it was created (the kubelet's sync of the mount) | 39.5 s; 5 s | 101.5 s; 85 s | ~150 s |
+| `TestStreamRadio`; first tone; the long call ended by the PBX at | 53.2 s; 0.08-0.22 s; 20.001 s | 56.3 s; 0.14-2.98 s; 20.003 s | ~50 s; 3 s; 20 s |
+| `TestStreamTuner`; first tone of a session (the 1.5 s lock included); the tuner free after the calls' pods ended | 75.5 s; 1.46-2.38 s; 1.8 s | 74.6 s; 1.58-2.05 s; 1.6 s | ~80 s; 3 s; 10 s |
+| The parallel group, set by `TestPhoneLifecycle` as in release A (the stream tests add nothing) | 394 s | 386 s | adds nothing |
+| The bridge's memory after the stream tests (cgroup `memory.current`, page cache included; up to 3 sessions at once) | (not logged) | 89-115 MiB, peak 125.6 MiB | requests 96Mi, limit 512Mi |
+| The bridge's CPU over its life (it restarts in `TestStreamBridgeDown`) | (not logged) | 2.0 s in 106 s (19m average) | requests 50m |
+
+- **The first tone is asserted within 5 s, not 3 s** (`firstToneWithin`):
+  run 2's 2.98 s was a radio call whose own fakephone ran 1.1 s late
+  (its 10.5 s call was up 11.6 s): the parallel group starting a dozen
+  pods at once. "About 3 s" is the real tuner's, at the bench (B1); e2e
+  logs every call's time and the bound catches a pipeline that stopped
+  starting promptly.
+- **The kubelet's sync varies** (5 s and 85 s): `TestStreamAdded`'s
+  150 s holds, and docs/streams.md says "usually under a minute, up to
+  about two".
+- **The bridge's memory request (96Mi) is under its working set with three
+  sessions** (126 MiB peak, page cache included), and far under the 512Mi
+  limit. Left as packaged; a house that wants the scheduler to count what
+  three sessions use sets `streamBridge.resources.requests.memory: 128Mi`.
+
+**Still open at B's close** (each a bench or CI question, §8 and §9):
+B1-B11 on the real HDHomeRun, the Desk phone and SomaFM; the arm64 image
+(CI's first run); `[real]` closes of every §9 row.
 
 ---
 
