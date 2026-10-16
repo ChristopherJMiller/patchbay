@@ -1382,6 +1382,7 @@ open.
 | B9 | Does Asterisk on `top`'s host network resolve `<fullname>-streams.telephony.svc` (ClusterFirstWithHostNet on Talos)? | settings `streamBridge` | the Service name (e2e proves it in kind) | if not, render the Service's ClusterIP (a chart value) |
 | B10 | Does Plex still record on its tuner while a phone holds the other, and what does Plex do when it wants both? | the pool's `max` (luma-homeops values) | 1 | Chris's policy; record Plex's behaviour |
 | B11 | Does the bridge pod reach `192.168.0.58:5004` from the pod network? | none | yes (pods reach the LAN through the node) | if a NetworkPolicy blocks it, allow it in luma-homeops |
+| B12 | Does a stream call the Desk phone transfers still end at the time limit? Set `streams.callLimit: 60s` for the test; transfer a 705 call to another phone (answered, and while it still rings) and to 600 | none (`streambridge.CallLimitSlack`) | Asterisk ends a blind transfer at the limit (`S()`); the bridge ends what Asterisk lost 5 s later (§13 R1) | record which ended each (the bridge logs "call ended past its time limit"); if neither does, it is a bug |
 
 ---
 
@@ -1580,7 +1581,8 @@ written, otherwise read in the code.
 
 **R1. The time limit after a transfer.** `TIMEOUT(absolute)` is the
 channel's it is set on: the caller's. A phone that blind-transfers a
-stream call (a REFER, which the 7945's Transfer key sends) leaves with that
+stream call (a REFER naming the target; a 79x5 usually consults first,
+which is an attended transfer: below, and bench B12) leaves with that
 channel, and the AudioSocket leg goes on with no limit; transferred to the
 echo test it played into `Echo()` with nobody on the line.
 
@@ -1601,8 +1603,11 @@ echo test it played into `Echo()` with nobody on the line.
   AudioSocket leg into the channel that was running `Echo()` (a
   masquerade: the log shows `Echo` exiting on `AudioSocket/…`), and that
   channel holds neither limit: the call lasted the stand-in's 40.0 s with
-  `S(10)` compiled. An attended transfer to a phone (both calls bridged)
-  moves channels between bridges, which keeps `S()`; that was not tested.
+  `S(10)` compiled. Asterisk takes that path whenever the consulted call
+  is not bridged yet, so a transfer completed while the other phone still
+  rings likely loses the limit too; an attended transfer to a phone that
+  answered (both calls bridged) moves channels between bridges and should
+  keep `S()`. Neither was tested (bench B12).
 - So the bridge has a ceiling of its own, whatever Asterisk did with the
   call and whoever dialled: `streams.json` carries `callLimitSeconds`
   (a contract change: `internal/streams.Document.CallLimitSeconds`, 0 to

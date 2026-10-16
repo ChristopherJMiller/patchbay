@@ -479,10 +479,10 @@ func TestRealAsteriskStreams(t *testing.T) {
 
 	t.Run("transferred", func(t *testing.T) {
 		// The desk phone blind-transfers its 713 call to the echo test 2 s
-		// in, by a REFER as the 7945's transfer key sends, and hangs up 2 s
-		// later. The stream's AudioSocket leg then plays into Echo() with
-		// nobody on the line, and must still end at the 10 s limit (the
-		// stand-in would play for 40 s).
+		// in (a REFER without Replaces) and hangs up 2 s later. The
+		// stream's AudioSocket leg then plays into Echo() with nobody on
+		// the line, and must still end at the 10 s limit (the stand-in
+		// would play for 40 s).
 		port += 10
 		env := streamCallEnv(t, b, s, in.Secrets, id, port, "713", 4*time.Second)
 		env["SIP_REFER_TO"], env["SIP_REFER_AFTER"] = "600", "2s"

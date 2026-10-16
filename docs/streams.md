@@ -187,21 +187,26 @@ change). Three things enforce it:
   after answering, and Asterisk hangs up at it.
 - Asterisk, on the stream's own leg: `Dial(…,,gS(<limit>))` puts the same
   limit on the AudioSocket channel, from its answer. A phone that
-  **transfers** a stream call (the 7945's Transfer key, to another phone
-  or to the echo test) leaves with its own channel and its
-  `TIMEOUT(absolute)`; the stream's leg keeps `S()`, so the transferred
-  call still ends at the limit (`make asterisk-check`,
-  `TestRealAsteriskStreams/transferred`).
+  **transfers** a stream call leaves with its own channel and its
+  `TIMEOUT(absolute)`; after a *blind* transfer (a REFER naming the
+  target) the stream's leg keeps `S()`, so the call still ends at the
+  limit (`make asterisk-check`, `TestRealAsteriskStreams/transferred`, to
+  the echo test).
 - The bridge: `streams.json` carries the limit (`callLimitSeconds`), and
   the bridge ends any call still open **5 s after it** (a hangup frame,
   then the close), however the call got there. This covers what Asterisk
-  loses track of: an *attended* transfer into an application (consult the
+  loses track of. An *attended* transfer into an application (consult the
   echo test, then complete the transfer) moves the stream's leg into a
-  channel that holds neither limit (tested against the pinned Asterisk:
-  the call ran until the source stopped), and a client in the cluster
-  that dials the bridge itself. Such an end is logged (`call ended past
-  its time limit`, with the peer's address) and counted in
-  `patchbay_stream_bridge_call_limit_ends_total`, which should stay 0.
+  channel that holds neither limit: tested against the pinned Asterisk,
+  the call ran until the source stopped. Asterisk takes the same path
+  whenever the consulted call is not yet bridged, so a transfer completed
+  while the other phone still rings likely ends here too (not tested); an
+  attended transfer to a phone that answered moves the leg between bridges
+  and should keep `S()` (not tested either). A 79x5's Transfer key
+  usually consults first, so on the bench either may end it (B12). And a
+  client in the cluster that dials the bridge itself. Such an end is
+  logged (`call ended past its time limit`, with the peer's address) and
+  counted in `patchbay_stream_bridge_call_limit_ends_total`.
 
 ## States and conditions
 
