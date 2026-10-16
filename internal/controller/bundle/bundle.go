@@ -1,7 +1,8 @@
 // Package bundle is the install's compile reconciler (docs/plans/
 // release-a.md W3.3, §6.2.5): it turns every resource in the namespace into
 // the compiled bundle the agent applies, written as pbx-secrets, then
-// pbx-config.
+// pbx-config, and the streams the stream bridge plays, written before both
+// as <fullname>-streams (release B, docs/plans/release-b.md RT.2).
 //
 // There is one reconcile key for the whole install, {namespace,
 // <fullname>-pbx-config}; every watch maps to it, and one worker runs it.
@@ -10,15 +11,20 @@
 //  1. lists Phones, Softphones, People and Streams (cache);
 //  2. secrets.Manager.Ensure: every Secret the install needs, and the
 //     values Compile reads;
-//  3. compile.Compile, then install.ProjectedSecret and install.ConfigMap;
-//  4. writes pbx-secrets, then pbx-config, each only when it differs
-//     (pbx-secrets: data, bundle-version, labels; pbx-config: data, binary
-//     data, bundle-version, labels), so the agent never sees a ConfigMap
-//     ahead of the Secret holding its values, and an edited or deleted
-//     object is written back.
+//  3. compile.Compile, then install.StreamsConfigMap, install.ProjectedSecret
+//     and install.ConfigMap;
+//  4. writes <fullname>-streams, then pbx-secrets, then pbx-config, each
+//     only when it differs (<fullname>-streams: data, streams-version,
+//     labels; pbx-secrets: data, bundle-version, labels; pbx-config: data,
+//     binary data, bundle-version, labels), so the bridge's file holds a
+//     new stream before the dialplan routes its number, the agent never
+//     sees a ConfigMap ahead of the Secret holding its values, and an
+//     edited or deleted object is written back. A change only
+//     <fullname>-streams sees (a source, a pool's max) rewrites only it,
+//     with no ConfigWritten Event: the PBX is not reloaded.
 //
 // A compile or encoding error (compile.Compile, compile.ErrBundleTooLarge,
-// the two builders), or a Secret secrets.Manager refuses
+// the three builders), or a Secret secrets.Manager refuses
 // (secrets.ErrInvalid), needs a human: the previous bundle stays, a
 // CompileFailed Warning Event goes to pbx-config (or, while it does not
 // exist, the settings ConfigMap; or only the log), the compile-failures
@@ -171,6 +177,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 	if err != nil {
 		return r.compileFailed(ctx, err)
 	}
+	streamsCM, err := install.StreamsConfigMap(r.cfg.Names, r.cfg.Namespace, b.Streams)
+	if err != nil {
+		return r.compileFailed(ctx, err)
+	}
 	sec, err := install.ProjectedSecret(r.cfg.Names, r.cfg.Namespace, b, values)
 	if err != nil {
 		return r.compileFailed(ctx, err)
@@ -180,11 +190,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		return r.compileFailed(ctx, err)
 	}
 
+	_, wroteStreams, err := r.writeConfigMap(ctx, streamsCM, install.AnnotationStreamsVersion)
+	if err != nil {
+		return r.writeFailed(err)
+	}
+	if wroteStreams {
+		r.cfg.Log.Info("streams written", "version", b.Streams.Version, "streams", len(b.Streams.Streams), "pools", len(b.Streams.Pools))
+	}
 	wroteSecret, err := r.writeSecret(ctx, sec)
 	if err != nil {
 		return r.writeFailed(err)
 	}
-	current, wroteConfigMap, err := r.writeConfigMap(ctx, cm)
+	current, wroteConfigMap, err := r.writeConfigMap(ctx, cm, install.AnnotationBundleVersion)
 	if err != nil {
 		return r.writeFailed(err)
 	}
@@ -193,9 +210,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		return ctrl.Result{}, nil
 	}
 	r.cfg.Log.Info("bundle written", "version", b.Version, "secret", wroteSecret, "configMap", wroteConfigMap,
-		"files", len(b.Files), "devices", len(b.Devices))
+		"files", len(b.Files), "devices", len(b.Devices), "streams", len(b.Streams.Streams))
 	r.cfg.Recorder.Eventf(current, nil, corev1.EventTypeNormal, install.EventReasonConfigWritten, install.EventActionCompile,
-		"version %s written: %d files, %d devices", short(b.Version), len(b.Files), len(b.Devices))
+		"version %s written: %d files, %d devices, %d streams", short(b.Version), len(b.Files), len(b.Devices), len(b.Streams.Streams))
 	return ctrl.Result{}, nil
 }
 
@@ -255,22 +272,23 @@ func (r *Reconciler) writeSecret(ctx context.Context, want *corev1.Secret) (bool
 	case err != nil:
 		return false, fmt.Errorf("bundle: reading Secret %s: %w", want.Name, err)
 	}
-	if maps.EqualFunc(cur.Data, want.Data, bytes.Equal) && len(cur.StringData) == 0 && sameMeta(&cur.ObjectMeta, &want.ObjectMeta) {
+	if maps.EqualFunc(cur.Data, want.Data, bytes.Equal) && len(cur.StringData) == 0 && sameMeta(&cur.ObjectMeta, &want.ObjectMeta, install.AnnotationBundleVersion) {
 		return false, nil
 	}
 	upd := cur.DeepCopy()
 	upd.Data, upd.StringData = want.Data, nil
-	setMeta(&upd.ObjectMeta, &want.ObjectMeta)
+	setMeta(&upd.ObjectMeta, &want.ObjectMeta, install.AnnotationBundleVersion)
 	if err := r.cfg.Client.Update(ctx, upd); err != nil {
 		return false, fmt.Errorf("bundle: updating Secret %s: %w", want.Name, err)
 	}
 	return true, nil
 }
 
-// writeConfigMap creates or updates pbx-config unless it already holds
-// exactly want's data, version and labels. It returns the object as it
-// now is.
-func (r *Reconciler) writeConfigMap(ctx context.Context, want *corev1.ConfigMap) (*corev1.ConfigMap, bool, error) {
+// writeConfigMap creates or updates a ConfigMap (pbx-config, or
+// <fullname>-streams) unless it already holds exactly want's data, binary
+// data, labels and version (the annotation named version). It returns the
+// object as it now is.
+func (r *Reconciler) writeConfigMap(ctx context.Context, want *corev1.ConfigMap, version string) (*corev1.ConfigMap, bool, error) {
 	var cur corev1.ConfigMap
 	err := r.cfg.Client.Get(ctx, client.ObjectKeyFromObject(want), &cur)
 	switch {
@@ -283,30 +301,31 @@ func (r *Reconciler) writeConfigMap(ctx context.Context, want *corev1.ConfigMap)
 		return nil, false, fmt.Errorf("bundle: reading ConfigMap %s: %w", want.Name, err)
 	}
 	if maps.Equal(cur.Data, want.Data) && maps.EqualFunc(cur.BinaryData, want.BinaryData, bytes.Equal) &&
-		sameMeta(&cur.ObjectMeta, &want.ObjectMeta) {
+		sameMeta(&cur.ObjectMeta, &want.ObjectMeta, version) {
 		return &cur, false, nil
 	}
 	upd := cur.DeepCopy()
 	upd.Data, upd.BinaryData = want.Data, want.BinaryData
-	setMeta(&upd.ObjectMeta, &want.ObjectMeta)
+	setMeta(&upd.ObjectMeta, &want.ObjectMeta, version)
 	if err := r.cfg.Client.Update(ctx, upd); err != nil {
 		return nil, false, fmt.Errorf("bundle: updating ConfigMap %s: %w", want.Name, err)
 	}
 	return upd, true, nil
 }
 
-// sameMeta reports whether cur carries want's labels and bundle version.
-func sameMeta(cur, want *metav1.ObjectMeta) bool {
+// sameMeta reports whether cur carries want's labels and its version
+// annotation (install.AnnotationBundleVersion or AnnotationStreamsVersion).
+func sameMeta(cur, want *metav1.ObjectMeta, version string) bool {
 	for k, v := range want.Labels {
 		if cur.Labels[k] != v {
 			return false
 		}
 	}
-	return cur.Annotations[install.AnnotationBundleVersion] == want.Annotations[install.AnnotationBundleVersion]
+	return cur.Annotations[version] == want.Annotations[version]
 }
 
-// setMeta gives cur want's labels and bundle version, keeping others.
-func setMeta(cur, want *metav1.ObjectMeta) {
+// setMeta gives cur want's labels and version annotation, keeping others.
+func setMeta(cur, want *metav1.ObjectMeta, version string) {
 	if cur.Labels == nil {
 		cur.Labels = map[string]string{}
 	}
@@ -314,12 +333,13 @@ func setMeta(cur, want *metav1.ObjectMeta) {
 	if cur.Annotations == nil {
 		cur.Annotations = map[string]string{}
 	}
-	cur.Annotations[install.AnnotationBundleVersion] = want.Annotations[install.AnnotationBundleVersion]
+	cur.Annotations[version] = want.Annotations[version]
 }
 
 // SetupWithManager registers the reconciler: watches on every resource
 // kind (spec changes, creates and deletes), the Secrets the bundle depends
-// on, pbx-config itself, and one request when the controller starts, so a
+// on, pbx-config and <fullname>-streams themselves, and one request when
+// the controller starts, so a
 // fresh install with no resources still gets its agent token and a bundle.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	toKey := handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
@@ -366,10 +386,13 @@ func (r *Reconciler) WatchesSecret(o client.Object) bool {
 	return false
 }
 
-// WatchesConfigMap reports whether this is pbx-config (an edit or a delete
-// is written back).
+// WatchesConfigMap reports whether this is pbx-config or <fullname>-streams
+// (an edit or a delete is written back).
 func (r *Reconciler) WatchesConfigMap(o client.Object) bool {
-	return o.GetNamespace() == r.cfg.Namespace && o.GetName() == r.cfg.Names.ConfigMap
+	if o.GetNamespace() != r.cfg.Namespace {
+		return false
+	}
+	return o.GetName() == r.cfg.Names.ConfigMap || o.GetName() == r.cfg.Names.StreamsConfigMap
 }
 
 // short is a version's first 12 digits, as Events show it.

@@ -109,6 +109,8 @@ func TestWatchPredicates(t *testing.T) {
 		want bool
 	}{
 		{cm("telephony", names.ConfigMap), true},
+		{cm("telephony", names.StreamsConfigMap), true},
+		{cm("other", names.StreamsConfigMap), false},
 		{cm("telephony", names.Settings), false},
 		{cm("other", names.ConfigMap), false},
 	} {

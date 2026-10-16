@@ -175,6 +175,12 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWith(t, settings())
+}
+
+// newFixtureWith is newFixture with other settings.
+func newFixtureWith(t *testing.T, s compile.Settings) *fixture {
+	t.Helper()
 	ctrltest.Need(t, env)
 	f := &fixture{
 		ns: ctrltest.Namespace(t, env), c: env.Client, w: &writes{}, rec: &recorder{},
@@ -221,7 +227,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.r, err = bundle.New(bundle.Config{
-		Client: c, Namespace: f.ns, Names: names, Settings: settings(), Registry: reg,
+		Client: c, Namespace: f.ns, Names: names, Settings: s, Registry: reg,
 		Secrets: f.secrets, Recorder: f.rec, Metrics: m, Log: f.log.logger(),
 	})
 	if err != nil {
@@ -418,7 +424,7 @@ func TestWritesSecretsThenConfigMap(t *testing.T) {
 	evs := f.rec.take()
 	if len(evs) != 1 || evs[0].regarding != "ConfigMap/"+names.ConfigMap || evs[0].eventType != corev1.EventTypeNormal ||
 		evs[0].reason != install.EventReasonConfigWritten || evs[0].action != install.EventActionCompile ||
-		evs[0].note != fmt.Sprintf("version %s written: %d files, %d devices", b.Version[:12], len(b.Files), len(b.Devices)) {
+		evs[0].note != fmt.Sprintf("version %s written: %d files, %d devices, 0 streams", b.Version[:12], len(b.Files), len(b.Devices)) {
 		t.Errorf("Events %+v, want one ConfigWritten on pbx-config", evs)
 	}
 	if m := f.scrape(t); !strings.Contains(m, `patchbay_config_version_info{version="`+b.Version+`"} 1`) {
