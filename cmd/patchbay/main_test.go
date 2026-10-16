@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,12 +44,6 @@ func TestVersion(t *testing.T) {
 	}
 	if !strings.HasPrefix(out, "patchbay "+version.Version) {
 		t.Fatalf("version printed %q", out)
-	}
-}
-
-func TestStreamBridgeIsAStub(t *testing.T) {
-	if _, err := run(t, context.Background(), "stream-bridge"); !errors.Is(err, errNotImplemented) {
-		t.Fatalf("error = %v, want errNotImplemented", err)
 	}
 }
 

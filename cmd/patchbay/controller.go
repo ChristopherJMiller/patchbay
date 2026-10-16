@@ -28,9 +28,12 @@ func newControllerCmd(g *globalFlags) *cobra.Command {
 With the install's settings (--settings-file, the chart's <fullname>-settings)
 it mints the install's Secrets and compiles every Phone, Softphone, Person
 and Stream into the bundle the agent applies (<fullname>-pbx-secrets, then
-<fullname>-pbx-config); polls the agent's observations (--agent-url, with the
-token it minted); runs each device's state machine, writes status and sends
-the agent's actions; and reports unknown phones as Events. Exactly one
+<fullname>-pbx-config, after <fullname>-streams, the streams.json the stream
+bridge plays); polls the agent's observations (--agent-url, with the token it
+minted) and, while the settings name a stream bridge, the bridge's
+(--stream-bridge-url); runs each device's state machine and each Stream's,
+writes status and sends the agent's actions; and reports unknown phones as
+Events. Exactly one
 replica decides at a time when --leader-elect is set.`,
 		Args: cobra.NoArgs,
 	}
@@ -43,6 +46,8 @@ replica decides at a time when --leader-elect is set.`,
 		"the install's settings.json (the chart's <fullname>-settings ConfigMap, mounted)")
 	f.StringVar(&opts.AgentURL, "agent-url", "",
 		"the agent's control API (default http://<fullname>-agent.<namespace>.svc:9440)")
+	f.StringVar(&opts.StreamBridgeURL, "stream-bridge-url", "",
+		"the stream bridge's control API, polled for the Streams' status while the settings name a stream bridge (default http://<fullname>-streams.<namespace>.svc:9093)")
 	f.StringVar(&opts.MetricsAddr, "metrics-bind-address", ":8080",
 		`Prometheus metrics address; "0" disables`)
 	f.StringVar(&opts.ProbeAddr, "health-probe-bind-address", ":8081",
@@ -93,7 +98,7 @@ replica decides at a time when --leader-elect is set.`,
 			return err
 		}
 		log.Info("starting", "version", version.String(), "namespace", opts.Namespace,
-			"fullname", opts.Fullname, "settings", opts.SettingsFile, "pbxAddress", s.PBXAddress,
+			"fullname", opts.Fullname, "settings", opts.SettingsFile, "pbxAddress", s.PBXAddress, "streamBridge", s.StreamBridge,
 			"leaderElection", opts.LeaderElection)
 		return mgr.Start(cmd.Context())
 	}

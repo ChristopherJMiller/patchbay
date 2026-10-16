@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 
@@ -13,10 +12,6 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/internal/version"
 )
-
-// errNotImplemented is what every command that is not written yet returns,
-// so it exits non-zero and says so.
-var errNotImplemented = errors.New("not implemented yet")
 
 // globalFlags are the flags every subcommand shares.
 type globalFlags struct {
@@ -34,7 +29,7 @@ Server modes (run by the Helm chart):
   controller      decides: compiles config, drives each device's state machine, writes status
   agent           the PBX pod's sidecar: applies config, watches phones, talks to Asterisk
   fileserver      the PBX pod's TFTP and HTTP :6970 server, unprivileged after binding
-  stream-bridge   plays live audio sources to callers (release B)
+  stream-bridge   plays live audio sources (TV, internet radio) to callers of a Stream
 
 Client commands need only a kubeconfig.`,
 		Version:       version.String(),

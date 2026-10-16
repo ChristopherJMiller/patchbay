@@ -14,6 +14,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/observe"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/provision"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
+	"github.com/ChristopherJMiller/patchbay/internal/streambridge"
 )
 
 // The agent's components were built in parallel against the contract
@@ -31,4 +32,8 @@ var (
 	_ agent.Actions         = (*actions.Actions)(nil)
 	_ sensor.FetchRecorder  = (*fileserver.Reporter)(nil)
 	_ http.Handler          = (*devicehttp.Server)(nil)
+
+	// The stream bridge (docs/plans/release-b.md §6.1): Run starts this
+	// Source when Options.Source is nil.
+	_ streambridge.Source = (*streambridge.FFmpegSource)(nil)
 )
