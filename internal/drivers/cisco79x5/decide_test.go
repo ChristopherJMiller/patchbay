@@ -429,7 +429,67 @@ func invalidCases() []decideCase {
 				HumanAction: claimNumber,
 			},
 		},
+		{
+			name: "a display on a model without displayPowerSave",
+			drv:  withoutDisplay(),
+			dev:  deskWith(drivers.Memory{}, withDisplay),
+			obs:  healthy(),
+			want: drivers.Decision{
+				State:       drivers.StateInvalid,
+				Conditions:  unsupportedConds(invalidConds(cisco79x5.ReasonUnsupportedFeature, noDisplay, noNumberConflict, noMACConflict)),
+				HumanAction: noDisplay,
+			},
+		},
+		{
+			name: "a display on a model with it is no rule broken → row 3",
+			dev:  deskWith(drivers.Memory{}, withDisplay),
+			obs:  healthy(),
+			want: drivers.Decision{
+				State:        drivers.StateUnseen,
+				Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faNotStaged, fcNotReported, provNone, regNone, cfgNone),
+				HumanAction:  p2,
+				RequeueAfter: 10 * time.Minute,
+			},
+		},
+		{
+			name: "no display of its own asks for nothing, whatever the house default → row 3",
+			drv:  withoutDisplay(),
+			dev:  desk(),
+			obs:  healthy(),
+			want: drivers.Decision{
+				State:        drivers.StateUnseen,
+				Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faNotStaged, fcNotReported, provNone, regNone, cfgNone),
+				HumanAction:  p2,
+				RequeueAfter: 10 * time.Minute,
+			},
+		},
 	}
+}
+
+// noDisplay is Ready's and Unsupported's message for a display on a model
+// without the feature.
+const noDisplay = "spec.display: cisco-7945 has no displayPowerSave on pjsip; remove it"
+
+// withoutDisplay is a driver whose profiles lack displayPowerSave.
+func withoutDisplay() *cisco79x5.Driver {
+	return cisco79x5.New().WithTweak(func(p *drivers.Profile) {
+		p.Features[drivers.SignallingPJSIP][drivers.FeatureDisplayPowerSave] = drivers.Unsupported
+	})
+}
+
+func withDisplay(d *drivers.Device) {
+	yes := true
+	d.Display = &v1alpha1.PhoneDisplay{WakeOnCall: &yes}
+}
+
+// unsupportedConds is cs with Unsupported True for a display.
+func unsupportedConds(cs []metav1.Condition) []metav1.Condition {
+	for i := range cs {
+		if cs[i].Type == v1alpha1.ConditionUnsupported {
+			cs[i] = cond(v1alpha1.ConditionUnsupported, cT, cisco79x5.ReasonUnsupportedFeature, noDisplay)
+		}
+	}
+	return cs
 }
 
 func unknownCases() []decideCase {

@@ -15,7 +15,7 @@ driver cisco79x5
                     force_rport no, rewrite_contact no, rtp_symmetric no, direct_media no
                     send_rpid yes, send_pai no, trust_id_outbound yes
     pjsip features  supported: callerIDUpdate, distinctiveRing, hold, rfc4733DTMF, wideband
-                    untested: customRingtones, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
+                    untested: customRingtones, displayPowerSave, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
                     unsupported: blf, callForwardSync, conference, dndSync, intercom, park, secondLine, and every feature not listed
 
   model cisco-7965
@@ -33,7 +33,7 @@ driver cisco79x5
                     force_rport no, rewrite_contact no, rtp_symmetric no, direct_media no
                     send_rpid yes, send_pai no, trust_id_outbound yes
     pjsip features  supported: callerIDUpdate, distinctiveRing, hold, rfc4733DTMF, wideband
-                    untested: customRingtones, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
+                    untested: customRingtones, displayPowerSave, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
                     unsupported: blf, callForwardSync, conference, dndSync, intercom, park, secondLine, and every feature not listed
 
   model cisco-7975
@@ -51,7 +51,7 @@ driver cisco79x5
                     force_rport no, rewrite_contact no, rtp_symmetric no, direct_media no
                     send_rpid yes, send_pai no, trust_id_outbound yes
     pjsip features  supported: callerIDUpdate, distinctiveRing, hold, rfc4733DTMF, wideband
-                    untested: customRingtones, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
+                    untested: customRingtones, displayPowerSave, meetMe, pickup, pushNotification, rtpRx, serviceURL, speedDial, transfer, wallpaper, xmlServices
                     unsupported: blf, callForwardSync, conference, dndSync, intercom, park, secondLine, and every feature not listed
 
   firmware load SIP45.9-4-2SR4-3S

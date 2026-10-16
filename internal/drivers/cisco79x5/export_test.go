@@ -53,3 +53,10 @@ func (d *Driver) MatchingRows(dev drivers.Device, obs drivers.Observations, s dr
 	}
 	return out
 }
+
+// The display conversions (display.go).
+var (
+	HHMM          = hhmm
+	CiscoDay      = ciscoDay
+	DaysNotActive = daysNotActive
+)

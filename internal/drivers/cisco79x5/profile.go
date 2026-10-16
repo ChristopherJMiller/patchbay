@@ -51,6 +51,9 @@ const (
 	ReasonShortened       = "Shortened"
 	ReasonAsWritten       = "AsWritten"
 	ReasonInvalid         = "Invalid"
+	// ReasonUnsupportedFeature is Unsupported True, and Ready False, when
+	// the spec asks for a feature the profile lacks on the backend.
+	ReasonUnsupportedFeature = "UnsupportedFeature"
 
 	// ReasonNumberConflict and ReasonMACConflict are the reasons of a
 	// NumberConflict or MACConflict condition that is True, and of Ready
@@ -180,5 +183,8 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		// Bench (§8.6): RTPRx push on SIP 9.4(2); a 2008 report says early
 		// 79x5 firmware ignored it.
 		drivers.FeatureRTPRx: drivers.Untested,
+		// Phone.spec.display: vendorConfig elements usecallmanager.nz documents
+		// for the 79x5 (display.go); not on the bench yet (plan §8).
+		drivers.FeatureDisplayPowerSave: drivers.Untested,
 	}
 }

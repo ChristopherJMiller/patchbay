@@ -209,6 +209,7 @@ type sepVendorConfig struct {
 	WebProtocol                    int  `xml:"webProtocol"`
 	SSHAccess                      int  `xml:"sshAccess"`
 	DisplayRefreshRate             int  `xml:"displayRefreshRate"`
+	sepDisplay                          // the screen's power saving (display.go)
 	MoreKeyReversionTimer          int  `xml:"moreKeyReversionTimer"`
 	AutoSelectLineEnable           int  `xml:"autoSelectLineEnable"`
 	AutoCallSelect                 int  `xml:"autoCallSelect"`

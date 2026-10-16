@@ -106,6 +106,7 @@ func TestProfiles(t *testing.T) {
 			drivers.FeatureTransfer, drivers.FeaturePickup, drivers.FeatureMeetMe, drivers.FeatureSpeedDial,
 			drivers.FeatureServiceURL, drivers.FeatureWallpaper, drivers.FeatureCustomRingtones,
 			drivers.FeatureXMLServices, drivers.FeaturePushNotification, drivers.FeatureRTPRx,
+			drivers.FeatureDisplayPowerSave,
 		},
 		drivers.Unsupported: {
 			drivers.FeatureBLF, drivers.FeaturePark, drivers.FeatureConference, drivers.FeatureDNDSync,

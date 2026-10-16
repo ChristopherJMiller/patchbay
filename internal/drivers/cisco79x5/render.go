@@ -51,12 +51,17 @@ func (d *Driver) Render(dev drivers.Device, ctx drivers.RenderContext) (drivers.
 	if err := checkRender(dev, ctx); err != nil {
 		return nil, err
 	}
+	display, err := displayFor(dev, ctx, p)
+	if err != nil {
+		return nil, err
+	}
 
 	stamp := dev.ConfigVersion
 	if len(stamp) > versionStampLength {
 		stamp = stamp[:versionStampLength]
 	}
 	doc := sep(dev, ctx, p, load.Name, tz, stamp)
+	doc.VendorConfig.setDisplay(display)
 	body, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("cisco79x5: marshal SEP file: %w", err)

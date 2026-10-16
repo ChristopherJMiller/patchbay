@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
@@ -36,6 +37,15 @@ func goldenCases() []renderCase {
 	ny.Timezone = "America/New_York"
 	explicit := desk()
 	explicit.Firmware = cisco79x5.DefaultLoad
+	// The screen's power saving: the house default alone (no day has an
+	// on-window), a Phone's own window over it, and every day all day.
+	yes, no := true, false
+	displayHouse := houseCtx()
+	displayHouse.DisplayDefaults = &v1alpha1.PhoneDisplay{IdleTimeout: minutes(time.Minute), WakeOnCall: &yes}
+	windowed := desk()
+	windowed.Display = &v1alpha1.PhoneDisplay{OnWindow: onWindow("07:30", 10*time.Hour+30*time.Minute, monToFri...)}
+	everyDay := desk()
+	everyDay.Display = &v1alpha1.PhoneDisplay{WakeOnCall: &no, OnWindow: onWindow("00:00", 24*time.Hour, v1alpha1.Weekdays()...)}
 	return []renderCase{
 		{"desk", desk(), houseCtx()},
 		{"lab-7965", lab, labCtx},
@@ -43,6 +53,9 @@ func goldenCases() []renderCase {
 		{"long-label", withLabel("Upstairs Office Phone"), houseCtx()},
 		{"new-york", desk(), ny},
 		{"explicit-firmware", explicit, houseCtx()},
+		{"display-house", desk(), displayHouse},
+		{"display-window", windowed, displayHouse},
+		{"display-every-day", everyDay, houseCtx()},
 	}
 }
 
@@ -86,10 +99,14 @@ func goldenCases() []renderCase {
 //     the 79x5 does not have.
 //   - tls12Only: the 79x5 speaks TLS 1.0 only (research §7).
 //   - daysDisplayNotActive, displayOnTime, displayOnDuration,
-//     displayIdleTimeout, displayOnWhenIncomingCall, daysBacklightNotActive,
-//     backlightOnTime, backlightOnDuration, backlightIdleTimeout,
-//     backlightOnWhenIncomingCall: office-hours power saving; a house phone
-//     keeps its own default.
+//     displayIdleTimeout, displayOnWhenIncomingCall: only with a display
+//     (the Phone's spec.display or the house default; the display-*
+//     cases). Without one the phone keeps its own schedule, and the file
+//     is byte for byte what it was before the feature.
+//   - daysBacklightNotActive, backlightOnTime, backlightOnDuration,
+//     backlightIdleTimeout, backlightOnWhenIncomingCall: the same schedule
+//     for the backlight alone; patchbay sets only the display's, and the
+//     phone keeps its own default for the backlight.
 //   - minimumRingVolume, adminConfigurableRinger, disableTLSCiphers,
 //     loadServer, userId, ownerId: empty or placeholder in the sample, with
 //     nothing to set (patchbay serves firmware itself).
@@ -394,11 +411,33 @@ func TestRenderDecideAgree(t *testing.T) {
 		mutate(&dev)
 		devices[name] = dev
 	}
+	yes := true
+	withDisplay := desk()
+	withDisplay.Display = &v1alpha1.PhoneDisplay{WakeOnCall: &yes}
+	devices["display"] = withDisplay
+	on7975 := withDisplay
+	on7975.Model = string(v1alpha1.PhoneModelCisco7975)
+	devices["display on a 7975"] = on7975
 	for name, dev := range devices {
 		_, err := d.Render(dev, houseCtx())
 		dec := d.Decide(dev, healthy(), settings, t0)
 		if errors.Is(err, drivers.ErrInvalidSpec) != (dec.State == drivers.StateInvalid) {
 			t.Errorf("%s: Render error %v, Decide state %s", name, err, dec.State)
+		}
+	}
+
+	// A model without the feature: a display of its own is Invalid; the house
+	// default alone is not.
+	without := d.WithTweak(func(p *drivers.Profile) {
+		p.Features[drivers.SignallingPJSIP][drivers.FeatureDisplayPowerSave] = drivers.Unsupported
+	})
+	house := houseCtx()
+	house.DisplayDefaults = &v1alpha1.PhoneDisplay{WakeOnCall: &yes}
+	for name, dev := range map[string]drivers.Device{"own display": withDisplay, "house default only": desk()} {
+		_, err := without.Render(dev, house)
+		dec := without.Decide(dev, healthy(), settings, t0)
+		if errors.Is(err, drivers.ErrInvalidSpec) != (dec.State == drivers.StateInvalid) || (name == "own display") != (err != nil) {
+			t.Errorf("without the feature, %s: Render error %v, Decide state %s", name, err, dec.State)
 		}
 	}
 }

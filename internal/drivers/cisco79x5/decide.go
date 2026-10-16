@@ -272,6 +272,8 @@ func (in *input) invalidReason() (reason, message string) {
 		return v1alpha1.ReasonNumberNotInPlan, claim("number " + in.dev.Number + " is not in the number plan's device range")
 	case !in.loadOK:
 		return ReasonUnknownFirmware, textP1(in.target, in.dev.Model)
+	case in.noDisplay():
+		return ReasonUnsupportedFeature, textNoDisplay(in.dev.Model, in.s.Signalling)
 	}
 	return "", ""
 }
@@ -714,8 +716,19 @@ func (in *input) configCurrent(m drivers.Memory, waiting bool) metav1.Condition 
 	return drivers.Condition(t, metav1.ConditionFalse, ReasonStale, msg)
 }
 
+// noDisplay: the Phone's own display asks for a feature its model lacks on
+// the backend. (The house default is not the Phone's ask: Render leaves it
+// out on such a model.)
+func (in *input) noDisplay() bool {
+	return in.served && in.dev.Display != nil && !hasDisplay(in.p, in.s.Signalling)
+}
+
 func (in *input) unsupported() metav1.Condition {
-	return drivers.Condition(v1alpha1.ConditionUnsupported, metav1.ConditionFalse, ReasonAllSupported, "")
+	const t = v1alpha1.ConditionUnsupported
+	if in.noDisplay() {
+		return drivers.Condition(t, metav1.ConditionTrue, ReasonUnsupportedFeature, textNoDisplay(in.dev.Model, in.s.Signalling))
+	}
+	return drivers.Condition(t, metav1.ConditionFalse, ReasonAllSupported, "")
 }
 
 func (in *input) labelShortened() metav1.Condition {
