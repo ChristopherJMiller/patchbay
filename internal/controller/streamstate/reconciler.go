@@ -49,10 +49,11 @@ type Config struct {
 	// Settings are the install's settings (the number plan, the stream
 	// bridge).
 	Settings compile.Settings
-	// Bridge fetches the bridge's observations; nil when
-	// Settings.StreamBridge is "" (no poller). Without a Bridge while
-	// Settings name a stream bridge, every routed Stream is Unknown,
-	// saying so.
+	// Bridge fetches the bridge's observations (bridgeclient.Client); nil
+	// when Settings.StreamBridge is "". There is a poller only with both: a
+	// Bridge is ignored when the settings name no stream bridge, and
+	// without a Bridge while they name one, every routed Stream is Unknown,
+	// saying the controller does not poll it.
 	Bridge Source
 	// Interval is the time between polls. 0: install.PollInterval.
 	Interval time.Duration
