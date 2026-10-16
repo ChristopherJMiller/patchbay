@@ -58,11 +58,11 @@ func (g gen) request() (req, handled string) {
 func (g gen) driver() *cisco79x5.Driver {
 	switch g.r.IntN(5) {
 	case 0:
-		return pinned()
+		return pendingDriver()
 	case 1:
 		return cisco79x5.New().WithTweak(func(p *drivers.Profile) { p.Provisioning.ResyncByNotify = false })
 	case 2:
-		return pinned().WithTweak(func(p *drivers.Profile) { p.Endpoint.QualifyFrequency = time.Minute })
+		return cisco79x5.New().WithTweak(func(p *drivers.Profile) { p.Endpoint.QualifyFrequency = time.Minute })
 	default:
 		return cisco79x5.New()
 	}

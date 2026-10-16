@@ -108,13 +108,13 @@ func desk() drivers.Device {
 	return d
 }
 
-// pinnedLoads is Cisco's manifest with made-up digests instead of pending
-// ones, so tests can stage the load.
-func pinnedLoads() []drivers.FirmwareLoad {
+// pendingLoads is Cisco's manifest with every digest drivers.SHA256Pending,
+// as a load is before anyone has taken its files' SHA-256s.
+func pendingLoads() []drivers.FirmwareLoad {
 	loads := cisco79x5.New().Firmware()
 	for i := range loads {
 		for j := range loads[i].Files {
-			loads[i].Files[j].SHA256 = version(loads[i].Files[j].Name)
+			loads[i].Files[j].SHA256 = drivers.SHA256Pending
 		}
 	}
 	return loads

@@ -2,6 +2,7 @@ package cisco79x5_test
 
 import (
 	"bytes"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -41,30 +42,34 @@ func TestManifest(t *testing.T) {
 		{"term45.default.loads", 673, true},
 		{"term65.default.loads", 673, true},
 	}
+	// Every digest is pinned (2026-10-15): 64 lower-case hex digits, none
+	// drivers.SHA256Pending.
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
 	var got []file
 	for _, f := range l.Files {
 		got = append(got, file{f.Name, f.Size, f.Shared})
-		if !f.Pending() {
-			t.Errorf("%s has digest %q; no genuine digest is known yet, so it must be pending", f.Name, f.SHA256)
+		if f.Pending() || !hex64.MatchString(f.SHA256) {
+			t.Errorf("%s has digest %q, want 64 lower-case hex digits", f.Name, f.SHA256)
 		}
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("files = %v, want %v", got, want)
 	}
-	if !slices.Equal(l.PendingFiles(), ciscoFiles) {
-		t.Errorf("pending = %v", l.PendingFiles())
+	if pending := l.PendingFiles(); len(pending) != 0 {
+		t.Errorf("pending = %v, want none", pending)
 	}
 
 	// Firmware returns a copy.
-	loads[0].Files[0].SHA256 = strings.Repeat("0", 64)
+	digest := loads[0].Files[0].SHA256
+	loads[0].Files[0].SHA256 = drivers.SHA256Pending
 	loads[0].Models[0] = "changed"
-	if again := cisco79x5.New().Firmware(); !again[0].Files[0].Pending() || again[0].Models[0] != "cisco-7945" {
+	if again := cisco79x5.New().Firmware(); again[0].Files[0].SHA256 != digest || again[0].Models[0] != "cisco-7945" {
 		t.Error("Firmware returns shared data")
 	}
 	d := cisco79x5.New()
 	fw := d.Firmware()
-	fw[0].Files[0].SHA256 = strings.Repeat("0", 64)
-	if !d.Firmware()[0].Files[0].Pending() {
+	fw[0].Files[0].SHA256 = drivers.SHA256Pending
+	if d.Firmware()[0].Files[0].SHA256 != digest {
 		t.Error("Firmware returns the driver's own manifest")
 	}
 }

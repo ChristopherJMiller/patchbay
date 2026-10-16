@@ -46,8 +46,11 @@ func short(v string) string { return v[:12] }
 
 // Expected conditions of the desk phone.
 var (
+	// faPending is a load with no digest yet (pendingDriver), faNotStaged
+	// Cisco's load with nothing in the store.
 	faPending = cond(v1alpha1.ConditionFirmwareAvailable, cF, cisco79x5.ReasonManifestPending,
 		"the manifest has no SHA-256 yet for "+strings.Join(ciscoFiles, ", "))
+	faNotStaged   = faMissing(ciscoFiles...)
 	faStaged      = cond(v1alpha1.ConditionFirmwareAvailable, cT, cisco79x5.ReasonStaged, cisco79x5.DefaultLoad)
 	fcNotReported = cond(v1alpha1.ConditionFirmwareCurrent, cU, cisco79x5.ReasonNotReported, "it has not reported its load yet")
 	fcRunning     = cond(v1alpha1.ConditionFirmwareCurrent, cT, cisco79x5.ReasonRunning, cisco79x5.DefaultLoad)
@@ -171,8 +174,10 @@ type decideCase struct {
 	want drivers.Decision
 }
 
-// pinned is a driver whose manifest has digests, so the load can be staged.
-func pinned() *cisco79x5.Driver { return cisco79x5.NewWithLoads(pinnedLoads()) }
+// pendingDriver is a driver whose manifest has no digest yet, as a load is
+// before anyone has taken its files' SHA-256s: never staged, whatever the
+// store holds.
+func pendingDriver() *cisco79x5.Driver { return cisco79x5.NewWithLoads(pendingLoads()) }
 
 // deskWith is the desk phone with memory m (and the changes in mods).
 func deskWith(m drivers.Memory, mods ...func(*drivers.Device)) drivers.Device {
@@ -445,7 +450,7 @@ func unknownCases() []decideCase {
 			obs:  obsWith(nil, func(o *drivers.Observations) { o.PolledAt = ago(30 * time.Second) }),
 			want: drivers.Decision{
 				State:        drivers.StateUnseen,
-				Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faPending, fcNotReported, provNone, regNone, cfgNone),
+				Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faNotStaged, fcNotReported, provNone, regNone, cfgNone),
 				HumanAction:  p2,
 				RequeueAfter: 10 * time.Minute,
 			},
@@ -497,14 +502,14 @@ func unknownCases() []decideCase {
 func unseenCases() []decideCase {
 	unseen := drivers.Decision{
 		State:        drivers.StateUnseen,
-		Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faPending, fcNotReported, provNone, regNone, cfgNone),
+		Conditions:   conds(ready(cF, cisco79x5.ReasonUnseen, p2), faNotStaged, fcNotReported, provNone, regNone, cfgNone),
 		HumanAction:  p2,
 		RequeueAfter: 10 * time.Minute,
 	}
 	agentRestarted := unseen
 	agentRestarted.State = drivers.StateRegistering
 	agentRestarted.Conditions = conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
-		faPending, fcNotReported, provNone, regNone, cfgNone)
+		faNotStaged, fcNotReported, provNone, regNone, cfgNone)
 	agentRestarted.StatusPatch = drivers.Memory{FirstSeen: mt(ago(2 * time.Minute))}
 	agentRestarted.HumanAction = ""
 	agentRestarted.RequeueAfter = 3 * time.Minute
@@ -544,6 +549,7 @@ func needsFirmwareCases() []decideCase {
 	return []decideCase{
 		{
 			name: "SCCP versionID, manifest pending",
+			drv:  pendingDriver(),
 			dev:  desk(),
 			obs:  obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sccp45, "jar45sccp.9-4-2SR4-3.sbn")}),
 			want: drivers.Decision{
@@ -554,8 +560,20 @@ func needsFirmwareCases() []decideCase {
 			},
 		},
 		{
+			name: "manifest pending: every file in the store does not stage it",
+			drv:  pendingDriver(),
+			dev:  desk(),
+			obs: obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sccp45, "")},
+				withStore(staged())),
+			want: drivers.Decision{
+				State:       drivers.StateNeedsFirmware,
+				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p4), faPending, fcOther(sccp45), provNow, regNone, cfgNow),
+				StatusPatch: withFirmware(sccp45),
+				HumanAction: p4,
+			},
+		},
+		{
 			name: "SCCP appLoadID, store empty: lists all 8 files",
-			drv:  pinned(),
 			dev:  desk(),
 			obs:  obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web("", "jar45sccp.9-4-2SR4-3.sbn")}),
 			want: drivers.Decision{
@@ -572,9 +590,9 @@ func needsFirmwareCases() []decideCase {
 			obs:  obsWith(seen(sepFetch(ago(10*time.Minute), vNow), notFound("SIP45.9-4-2SR4-3S.loads", ago(9*time.Minute)))),
 			want: drivers.Decision{
 				State:       drivers.StateNeedsFirmware,
-				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p4), faPending, fcNotReported, provNow, regNone, cfgNow),
+				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p3(ciscoFiles...)), faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 				StatusPatch: fetchedConfig(),
-				HumanAction: p4,
+				HumanAction: p3(ciscoFiles...),
 			},
 		},
 		{
@@ -583,9 +601,9 @@ func needsFirmwareCases() []decideCase {
 			obs:  obsWith(seen(sepFetch(ago(10*time.Minute), vNow), notFound("SIP45.9-4-2SR4-3S.loads", ago(10*time.Minute)))),
 			want: drivers.Decision{
 				State:       drivers.StateNeedsFirmware,
-				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p4), faPending, fcNotReported, provNow, regNone, cfgNow),
+				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p3(ciscoFiles...)), faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 				StatusPatch: fetchedConfig(),
-				HumanAction: p4,
+				HumanAction: p3(ciscoFiles...),
 			},
 		},
 		{
@@ -595,7 +613,7 @@ func needsFirmwareCases() []decideCase {
 			want: drivers.Decision{
 				State: drivers.StateRegistering,
 				Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, p12(10, "its web page has not been read yet")),
-					faPending, fcNotReported, provNow, regNone, cfgNow),
+					faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 				StatusPatch: drivers.Memory{
 					FirstSeen: mt(ago(11 * time.Minute)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(10*time.Minute)),
 				},
@@ -608,14 +626,13 @@ func needsFirmwareCases() []decideCase {
 			obs:  obsWith(seen(sepFetch(ago(10*time.Minute), vNow), notFound("term45.default.loads", ago(5*time.Minute)))),
 			want: drivers.Decision{
 				State:       drivers.StateNeedsFirmware,
-				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p4), faPending, fcNotReported, provNow, regNone, cfgNow),
+				Conditions:  conds(ready(cF, cisco79x5.ReasonNeedsFirmware, p3(ciscoFiles...)), faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 				StatusPatch: fetchedConfig(),
-				HumanAction: p4,
+				HumanAction: p3(ciscoFiles...),
 			},
 		},
 		{
 			name: "partially staged: lists the rest",
-			drv:  pinned(),
 			dev:  desk(),
 			obs: obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sccp45, "")},
 				withStore(staged(ciscoFiles[:3]...))),
@@ -629,7 +646,6 @@ func needsFirmwareCases() []decideCase {
 		},
 		{
 			name: "staged: not this row → row 7",
-			drv:  pinned(),
 			dev:  desk(),
 			obs: obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sccp45, "")},
 				withStore(staged())),
@@ -647,7 +663,7 @@ func needsFirmwareCases() []decideCase {
 			want: drivers.Decision{
 				State: drivers.StateRegistering,
 				Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, p12(10, "its log is empty")),
-					faPending, fcRunning, provNow, regNone, cfgNow),
+					faNotStaged, fcRunning, provNow, regNone, cfgNow),
 				StatusPatch: withFirmware(jarSIP),
 				HumanAction: p12(10, "its log is empty"),
 			},
@@ -677,7 +693,7 @@ func needsTrustResetCases() []decideCase {
 		want: drivers.Decision{
 			State: drivers.StateRegistering,
 			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
-				faPending, fcNotReported, provNone, regNone, cfgNone),
+				faNotStaged, fcNotReported, provNone, regNone, cfgNone),
 			StatusPatch:  m,
 			RequeueAfter: time.Second,
 		},
@@ -686,14 +702,20 @@ func needsTrustResetCases() []decideCase {
 		dev, obs, m := sgnOnly(ago(d))
 		cases = append(cases, decideCase{
 			name: fmt.Sprintf("sgn %s ago, default load not staged", d), dev: dev, obs: obs,
-			want: trust(p6, m, provNone, cfgNone, faPending),
+			want: trust(p6, m, provNone, cfgNone, faNotStaged),
 		})
 	}
 	dev, obs, m = sgnOnly(ago(3 * time.Minute))
 	obs.Firmware = staged()
 	cases = append(cases, decideCase{
-		name: "default load staged", drv: pinned(), dev: dev, obs: obs,
+		name: "default load staged", dev: dev, obs: obs,
 		want: trust(p5, m, provNone, cfgNone, faStaged),
+	})
+	dev, obs, m = sgnOnly(ago(3 * time.Minute))
+	obs.Firmware = staged()
+	cases = append(cases, decideCase{
+		name: "manifest pending: stage firmware first, whatever the store holds", drv: pendingDriver(), dev: dev, obs: obs,
+		want: trust(p6, m, provNone, cfgNone, faPending),
 	})
 
 	served := obsWith(seen(sgn(ago(10*time.Minute)), sepFetch(ago(9*time.Minute), vNow)))
@@ -702,7 +724,7 @@ func needsTrustResetCases() []decideCase {
 		want: drivers.Decision{
 			State: drivers.StateRegistering,
 			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, p12(9, "its web page has not been read yet")),
-				faPending, fcNotReported, provNow, regNone, cfgNow),
+				faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 			StatusPatch: drivers.Memory{
 				FirstSeen: mt(ago(10 * time.Minute)), Address: deskIP, LastConfigFetch: cfgFetch(vNow, ago(9*time.Minute)),
 			},
@@ -718,7 +740,7 @@ func needsTrustResetCases() []decideCase {
 		name: "a live contact → row 9", dev: desk(), obs: withContact,
 		want: drivers.Decision{
 			State:      drivers.StateRegistered,
-			Conditions: conds(ready(cT, cisco79x5.ReasonRegistered, ""), faPending, fcNotReported, provNow, regLive, cfgNow),
+			Conditions: conds(ready(cT, cisco79x5.ReasonRegistered, ""), faNotStaged, fcNotReported, provNow, regLive, cfgNow),
 			StatusPatch: drivers.Memory{
 				FirstSeen: mt(ago(20 * time.Minute)), Address: deskIP,
 				LastConfigFetch: cfgFetch(vNow, ago(20*time.Minute)), LastRegistered: mt(t0),
@@ -737,12 +759,12 @@ func needsTrustResetCases() []decideCase {
 		decideCase{
 			name: "trust error in the log: at once", dev: desk(),
 			obs:  logged("SEPD0C78915E8C8.cnf.xml.sgn not found", "Trust List Update Failed"),
-			want: trust(p6, oneMinute, provNow, cfgNow, faPending),
+			want: trust(p6, oneMinute, provNow, cfgNow, faNotStaged),
 		},
 		decideCase{
 			name: "config verification error in the log", dev: desk(),
 			obs:  logged("Config file verification failed"),
-			want: trust(p6, oneMinute, provNow, cfgNow, faPending),
+			want: trust(p6, oneMinute, provNow, cfgNow, faNotStaged),
 		},
 		decideCase{
 			name: "Load Authentication Failed is not a trust error → row 7", dev: desk(),
@@ -750,7 +772,7 @@ func needsTrustResetCases() []decideCase {
 			want: drivers.Decision{
 				State: drivers.StateRegistering,
 				Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
-					faPending, fcNotReported, provNow, regNone, cfgNow),
+					faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 				StatusPatch:  oneMinute,
 				RequeueAfter: 4 * time.Minute,
 			},
@@ -765,7 +787,7 @@ func needsTrustResetCases() []decideCase {
 		return drivers.Decision{
 			State: drivers.StateRegistering,
 			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
-				faPending, fcNotReported, provNow, regNone, cfgNow),
+				faNotStaged, fcNotReported, provNow, regNone, cfgNow),
 			StatusPatch:  m,
 			RequeueAfter: requeue,
 		}
@@ -814,12 +836,12 @@ func needsTrustResetCases() []decideCase {
 	}
 	cases = append(cases,
 		decideCase{
-			name: "factory reset: the download after old .sgn requests → row 6", drv: pinned(), dev: deskWith(resetMem),
+			name: "factory reset: the download after old .sgn requests → row 6", dev: deskWith(resetMem),
 			obs:  downloading(nil, sgn(ago(20*time.Minute)), sgn(ago(10*time.Minute))),
 			want: afterReset(),
 		},
 		decideCase{
-			name: "factory reset: the download while the old trust error is all the agent has → row 6", drv: pinned(), dev: deskWith(resetMem),
+			name: "factory reset: the download while the old trust error is all the agent has → row 6", dev: deskWith(resetMem),
 			obs: downloading(&agentapi.WebScrape{
 				At: ago(10 * time.Second), Address: deskIP, Error: "connection refused",
 				DeviceInformation:    &agentapi.DeviceInformation{VersionID: sccp45},
@@ -829,7 +851,7 @@ func needsTrustResetCases() []decideCase {
 			want: afterReset(),
 		},
 		decideCase{
-			name: "factory reset: a trust error read before the download → row 6", drv: pinned(), dev: deskWith(resetMem),
+			name: "factory reset: a trust error read before the download → row 6", dev: deskWith(resetMem),
 			obs: downloading(&agentapi.WebScrape{
 				At: ago(2 * time.Minute), Address: deskIP,
 				DeviceInformation:    &agentapi.DeviceInformation{VersionID: sccp45},
@@ -851,7 +873,7 @@ func needsTrustResetCases() []decideCase {
 	}
 	dev, obs = stillSigned(3*time.Minute - time.Second)
 	cases = append(cases, decideCase{
-		name: "a .sgn 3m-1s after the download → row 6", drv: pinned(), dev: dev, obs: obs,
+		name: "a .sgn 3m-1s after the download → row 6", dev: dev, obs: obs,
 		want: drivers.Decision{
 			State:        drivers.StateUpgrading,
 			Conditions:   conds(ready(cF, cisco79x5.ReasonUpgrading, p7), faStaged, fcOther(sccp45), provNone, regNone, cfgNone),
@@ -862,7 +884,7 @@ func needsTrustResetCases() []decideCase {
 	})
 	dev, obs = stillSigned(3 * time.Minute)
 	cases = append(cases, decideCase{
-		name: "a .sgn 3m after the download", drv: pinned(), dev: dev, obs: obs,
+		name: "a .sgn 3m after the download", dev: dev, obs: obs,
 		want: trust(p5, resetMem, provNone, cfgNone, faStaged),
 	})
 	cases[len(cases)-1].want.Conditions[2] = fcOther(sccp45)
@@ -904,20 +926,20 @@ func upgradingCases() []decideCase {
 	cases = append(cases,
 		decideCase{
 			name: "firmware fetched 3m-1s ago; first sight sets UpgradeStartedAt",
-			drv:  pinned(), dev: deskWith(base()),
+			dev:  deskWith(base()),
 			obs:  obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(3*time.Minute-time.Second))),
 			want: upgrading(p7, started(ago(5*time.Minute)), time.Second),
 		},
 		decideCase{
 			name: "firmware fetched 3m ago, upgrade in progress",
-			drv:  pinned(), dev: deskWith(started(ago(5 * time.Minute))),
+			dev:  deskWith(started(ago(5 * time.Minute))),
 			obs:  obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(3*time.Minute))),
 			want: upgrading(p7, started(ago(5*time.Minute)), 15*time.Minute),
 		},
 		decideCase{
 			name: "firmware fetched 3m ago, no upgrade recorded → row 7",
-			drv:  pinned(), dev: deskWith(base()),
-			obs: obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(3*time.Minute))),
+			dev:  deskWith(base()),
+			obs:  obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(3*time.Minute))),
 			want: drivers.Decision{
 				State:       drivers.StateRegistering,
 				Conditions:  conds(ready(cF, cisco79x5.ReasonRegistering, p10), faStaged, fcOther(sccp45), provNow, regNone, cfgNow),
@@ -927,8 +949,8 @@ func upgradingCases() []decideCase {
 		},
 		decideCase{
 			name: "config served after the last firmware fetch: the upgrade ended → row 7",
-			drv:  pinned(), dev: deskWith(started(ago(5 * time.Minute))),
-			obs: obs(fwFetch("apps45.9-4-2SR4-3.sbn", ago(4*time.Minute)), sepFetch(ago(2*time.Minute), vNow)),
+			dev:  deskWith(started(ago(5 * time.Minute))),
+			obs:  obs(fwFetch("apps45.9-4-2SR4-3.sbn", ago(4*time.Minute)), sepFetch(ago(2*time.Minute), vNow)),
 			want: drivers.Decision{
 				State: drivers.StateRegistering,
 				Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, "waiting for it to register"),
@@ -943,15 +965,15 @@ func upgradingCases() []decideCase {
 		},
 		decideCase{
 			name: "first sight: the earliest firmware fetch of the last 20 min",
-			drv:  pinned(), dev: deskWith(base()),
+			dev:  deskWith(base()),
 			obs: obs(fwFetch("SIP45.9-4-2SR4-3S.loads", ago(25*time.Minute)), fwFetch("apps45.9-4-2SR4-3.sbn", ago(2*time.Minute)),
 				fwFetch("cnu45.9-4-2SR4-3.sbn", ago(time.Minute))),
 			want: upgrading(p7, started(ago(2*time.Minute)), 2*time.Minute),
 		},
 		decideCase{
 			name: "a request is dropped",
-			drv:  pinned(), dev: deskWith(started(ago(5*time.Minute)), withRequest(req1)),
-			obs: obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(time.Minute))),
+			dev:  deskWith(started(ago(5*time.Minute)), withRequest(req1)),
+			obs:  obs(loads, fwFetch("apps45.9-4-2SR4-3.sbn", ago(time.Minute))),
 			want: func() drivers.Decision {
 				m := started(ago(5 * time.Minute))
 				m.HandledRequest = req1
@@ -960,7 +982,7 @@ func upgradingCases() []decideCase {
 		},
 		decideCase{
 			name: "agent restarted mid-upgrade: no fetches, a config fetch from before",
-			drv:  pinned(), dev: deskWith(started(ago(8 * time.Minute))),
+			dev:  deskWith(started(ago(8 * time.Minute))),
 			obs:  obsWith(nil, withStore(staged())),
 			want: upgrading(p7, started(ago(8*time.Minute)), 12*time.Minute),
 		},
@@ -979,7 +1001,7 @@ func upgradingCases() []decideCase {
 		m.LastConfigFetch = cfgFetch(vNow, ago(25*time.Minute))
 		cases = append(cases, decideCase{
 			name: fmt.Sprintf("upgrade started %s ago", c.age),
-			drv:  pinned(), dev: deskWith(m),
+			dev:  deskWith(m),
 			obs: obsWith(&agentapi.DeviceObservations{
 				Fetches: []agentapi.Fetch{sepFetch(ago(25*time.Minute), vNow), fwFetch("apps45.9-4-2SR4-3.sbn", ago(19*time.Minute))},
 				Web:     web(sccp45, ""),
@@ -1025,26 +1047,26 @@ func registeringCases() []decideCase {
 
 	dev, obs, m := at(5*time.Minute-time.Second, logs)
 	cases = append(cases, decideCase{name: "fetched 5m-1s ago", dev: dev, obs: obs,
-		want: registering("", m, faPending, fcRunning, time.Second)})
+		want: registering("", m, faNotStaged, fcRunning, time.Second)})
 	dev, obs, m = at(5*time.Minute, logs)
 	cases = append(cases, decideCase{name: "fetched 5m ago: its log", dev: dev, obs: obs,
-		want: registering(p12(5, saying), m, faPending, fcRunning, 0)})
+		want: registering(p12(5, saying), m, faNotStaged, fcRunning, 0)})
 	dev, obs, m = at(5*time.Minute+time.Second, logs)
 	cases = append(cases, decideCase{name: "fetched 5m+1s ago", dev: dev, obs: obs,
-		want: registering(p12(5, saying), m, faPending, fcRunning, 0)})
+		want: registering(p12(5, saying), m, faNotStaged, fcRunning, 0)})
 	dev, obs, m = at(12*time.Minute, web(sip45, "", "only line"))
 	cases = append(cases, decideCase{name: "fewer than three log lines", dev: dev, obs: obs,
-		want: registering(p12(12, "its log says: only line"), m, faPending, fcRunning, 0)})
+		want: registering(p12(12, "its log says: only line"), m, faNotStaged, fcRunning, 0)})
 	dev, obs, m = at(6*time.Minute, web(sip45, ""))
 	cases = append(cases, decideCase{name: "an empty log", dev: dev, obs: obs,
-		want: registering(p12(6, "its log is empty"), m, faPending, fcRunning, 0)})
+		want: registering(p12(6, "its log is empty"), m, faNotStaged, fcRunning, 0)})
 	failed := &agentapi.WebScrape{At: t0, Address: deskIP, Error: "context deadline exceeded"}
 	dev, obs, m = at(6*time.Minute, failed)
 	cases = append(cases, decideCase{name: "web page could not be read", dev: dev, obs: obs,
-		want: registering(p12(6, "its web page could not be read: context deadline exceeded"), m, faPending, fcNotReported, 0)})
+		want: registering(p12(6, "its web page could not be read: context deadline exceeded"), m, faNotStaged, fcNotReported, 0)})
 	dev, obs, m = at(6*time.Minute, nil)
 	cases = append(cases, decideCase{name: "web page not read yet", dev: dev, obs: obs,
-		want: registering(p12(6, "its web page has not been read yet"), m, faPending, fcNotReported, 0)})
+		want: registering(p12(6, "its web page has not been read yet"), m, faNotStaged, fcNotReported, 0)})
 
 	vlan := func(w *agentapi.WebScrape) *agentapi.WebScrape {
 		w.NetworkConfiguration.AdminVLAN = "20"
@@ -1052,14 +1074,14 @@ func registeringCases() []decideCase {
 	}
 	dev, obs, m = at(6*time.Minute, vlan(web(sip45, "", "line 1")))
 	obs.Firmware = staged()
-	cases = append(cases, decideCase{name: "Admin VLAN, default load staged", drv: pinned(), dev: dev, obs: obs,
+	cases = append(cases, decideCase{name: "Admin VLAN, default load staged", dev: dev, obs: obs,
 		want: registering(p9, m, faStaged, fcRunning, 0)})
 	dev, obs, m = at(6*time.Minute, vlan(web(sip45, "", "line 1")))
 	cases = append(cases, decideCase{name: "Admin VLAN, default load not staged", dev: dev, obs: obs,
-		want: registering(p9b, m, faPending, fcRunning, 0)})
+		want: registering(p9b, m, faNotStaged, fcRunning, 0)})
 	dev, obs, m = at(6*time.Minute, vlan(web(sccp45, "", "line 1")))
 	obs.Firmware = staged()
-	cases = append(cases, decideCase{name: "wrong firmware before Admin VLAN", drv: pinned(), dev: dev, obs: obs,
+	cases = append(cases, decideCase{name: "wrong firmware before Admin VLAN", dev: dev, obs: obs,
 		want: registering(p10, m, faStaged, fcOther(sccp45), 0)})
 
 	// Never fetched its config: it was first seen asking for its trust list
@@ -1071,7 +1093,7 @@ func registeringCases() []decideCase {
 	cases = append(cases, decideCase{name: "never fetched its config, Admin VLAN set", dev: desk(), obs: neverObs,
 		want: drivers.Decision{
 			State: drivers.StateRegistering,
-			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, p11), faPending, fcRunning, provNone, regNone,
+			Conditions: conds(ready(cF, cisco79x5.ReasonRegistering, p11), faNotStaged, fcRunning, provNone, regNone,
 				cfgNone),
 			StatusPatch: drivers.Memory{FirstSeen: mt(ago(6 * time.Minute)), Address: deskIP, Firmware: sip45},
 			HumanAction: p11,
@@ -1084,14 +1106,14 @@ func registeringCases() []decideCase {
 	}
 	cases = append(cases, decideCase{name: "registered before the last config fetch (rebooted)", dev: deskWith(rebooted),
 		obs:  obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sip45, "", "line 1")}),
-		want: registering(p12(10, "its log says: line 1"), rebooted, faPending, fcRunning, 0)})
+		want: registering(p12(10, "its log says: line 1"), rebooted, faNotStaged, fcRunning, 0)})
 
 	// An upgrade that ended is cleared.
 	ended := rebooted
 	ended.UpgradeStartedAt = mt(ago(15 * time.Minute))
 	cases = append(cases, decideCase{name: "clears an ended upgrade", dev: deskWith(ended),
 		obs:  obsWith(&agentapi.DeviceObservations{Fetches: []agentapi.Fetch{sepFetch(ago(10*time.Minute), vNow)}, Web: web(sip45, "", "line 1")}),
-		want: registering(p12(10, "its log says: line 1"), rebooted, faPending, fcRunning, 0)})
+		want: registering(p12(10, "its log says: line 1"), rebooted, faNotStaged, fcRunning, 0)})
 	return cases
 }
 
@@ -1118,7 +1140,7 @@ func configStaleCases() []decideCase {
 	stale := func(m drivers.Memory, readyMsg, human string, cfg metav1.Condition, actions []drivers.Action, requeue time.Duration) drivers.Decision {
 		return drivers.Decision{
 			State:        drivers.StateConfigStale,
-			Conditions:   conds(ready(cF, cisco79x5.ReasonConfigStale, readyMsg), faPending, fcRunning, provOld, regLive, cfg),
+			Conditions:   conds(ready(cF, cisco79x5.ReasonConfigStale, readyMsg), faNotStaged, fcRunning, provOld, regLive, cfg),
 			Actions:      actions,
 			StatusPatch:  m,
 			HumanAction:  human,
@@ -1264,7 +1286,6 @@ func configStaleCases() []decideCase {
 	otherObs.Device.Web = web("", "jar45sip.9-4-2ES26.sbn")
 	cases = append(cases, decideCase{
 		name: "config current, another load, target staged",
-		drv:  pinned(),
 		dev:  deskWith(other),
 		obs:  otherObs,
 		want: drivers.Decision{
@@ -1284,7 +1305,7 @@ func registeredCases() []decideCase {
 	registered := func(m drivers.Memory, fc, cfg metav1.Condition, actions []drivers.Action, label ...metav1.Condition) drivers.Decision {
 		return drivers.Decision{
 			State:        drivers.StateRegistered,
-			Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faPending, fc, provNow, regLive, cfg, label...),
+			Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faNotStaged, fc, provNow, regLive, cfg, label...),
 			Actions:      actions,
 			StatusPatch:  m,
 			RequeueAfter: 10 * time.Minute,
@@ -1405,19 +1426,19 @@ func upgradedCases() []decideCase {
 	sccpLiveObs.Device.Web = nil
 	return []decideCase{
 		{
-			name: "upgraded, web page not read since", drv: pinned(), dev: deskWith(before),
+			name: "upgraded, web page not read since", dev: deskWith(before),
 			obs: obs(nil), want: registered("", fcNotReported),
 		},
 		{
-			name: "upgraded, the scrape fails (the agent holds the SCCP success)", drv: pinned(), dev: deskWith(before),
+			name: "upgraded, the scrape fails (the agent holds the SCCP success)", dev: deskWith(before),
 			obs: obs(scrape(ago(5*time.Second), sccp45, "timeout")), want: registered("", fcNotReported),
 		},
 		{
-			name: "upgraded, read between the download and the reboot", drv: pinned(), dev: deskWith(before),
+			name: "upgraded, read between the download and the reboot", dev: deskWith(before),
 			obs: obs(scrape(ago(5*time.Minute), sccp45, "")), want: registered("", fcNotReported),
 		},
 		{
-			name: "upgraded, read since", drv: pinned(), dev: deskWith(before),
+			name: "upgraded, read since", dev: deskWith(before),
 			obs: obs(scrape(ago(5*time.Second), sip45, "")), want: registered(sip45, fcRunning),
 		},
 		{
@@ -1425,7 +1446,7 @@ func upgradedCases() []decideCase {
 			obs: sccpLiveObs,
 			want: drivers.Decision{
 				State:        drivers.StateRegistered,
-				Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faPending, fcNotReported, provNow, regLive, cfgNow),
+				Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faNotStaged, fcNotReported, provNow, regLive, cfgNow),
 				StatusPatch:  sccpLiveWant,
 				RequeueAfter: 10 * time.Minute,
 			},
@@ -1446,7 +1467,7 @@ func unreachableCases() []decideCase {
 	unreachable := func(m drivers.Memory, readyMsg, human string, reg metav1.Condition, requeue time.Duration) drivers.Decision {
 		return drivers.Decision{
 			State:        drivers.StateUnreachable,
-			Conditions:   conds(ready(cF, cisco79x5.ReasonUnreachable, readyMsg), faPending, fcRunning, provNow, reg, cfgNow),
+			Conditions:   conds(ready(cF, cisco79x5.ReasonUnreachable, readyMsg), faNotStaged, fcRunning, provNow, reg, cfgNow),
 			StatusPatch:  m,
 			HumanAction:  human,
 			RequeueAfter: requeue,

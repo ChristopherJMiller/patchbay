@@ -68,7 +68,7 @@ func utcMemory(m drivers.Memory) drivers.Memory {
 // sub-second, as on a real PBX. No step may tell the person to reset it
 // again, restart it, or resync it.
 func TestLifecycle(t *testing.T) {
-	drv := pinned()
+	drv := cisco79x5.New()
 	dev := desk()
 	var state drivers.State
 	ring := &agentapi.DeviceObservations{Device: "phone-desk", MAC: deskMAC}

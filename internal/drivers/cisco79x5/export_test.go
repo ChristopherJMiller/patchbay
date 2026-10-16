@@ -21,7 +21,8 @@ const (
 )
 
 // NewWithLoads is a driver with another manifest, e.g. the Cisco load with
-// digests filled in, so a test can stage it.
+// every digest pending, so a test can decide for a load whose digests are
+// not known yet.
 func NewWithLoads(loads []drivers.FirmwareLoad) *Driver {
 	return &Driver{loads: cloneLoads(loads)}
 }
