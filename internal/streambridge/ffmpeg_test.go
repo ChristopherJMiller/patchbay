@@ -88,7 +88,8 @@ func TestExitMessage(t *testing.T) {
 	}{
 		{8, "", "Server returned 5XX Server Error reply", "ffmpeg exited with status 8: Server returned 5XX Server Error reply"},
 		{0, "", "", "ffmpeg exited with status 0: the source ended"},
-		{0, "", "Error during demuxing: Connection timed out", "ffmpeg exited with status 0: Error during demuxing: Connection timed out"},
+		{0, "", "Error during demuxing: Connection timed out", "ffmpeg exited with status 0: the source ended (Error during demuxing: Connection timed out)"},
+		{0, "", "Error during demuxing: Input/output error", "ffmpeg exited with status 0: the source ended (Error during demuxing: Input/output error)"},
 		{-1, "killed", "", "ffmpeg was killed by killed"},
 		{-1, "segmentation fault", "x", "ffmpeg was killed by segmentation fault: x"},
 	} {
@@ -215,6 +216,42 @@ func TestFFmpegDecodesMPEGTS(t *testing.T) {
 	_ = dec.Wait()
 	if r := toneRatio(samples(rest), 1000); r < 0.8 {
 		t.Errorf("1 kHz carries %.2f of the AC-3 track's power, want >= 0.8", r)
+	}
+}
+
+// TestFFmpegLiveSourceEnds: a live source that ends while ffmpeg plays
+// it, sent as an HDHomeRun or an Icecast server sends one (chunked, or an
+// HTTP/1.0 answer with no length, then the close). ffmpeg 9.0.1 exits 0
+// and logs "Error during demuxing: Input/output error"; Wait's reason
+// starts "the source ended", with ffmpeg's line after it, so it reads as
+// the SourceEnded it is (docs/streams.md's troubleshooting), not as a
+// source that is not audio.
+func TestFFmpegLiveSourceEnds(t *testing.T) {
+	ffmpeg := needFFmpeg(t)
+	ts := mpegTS(t, ffmpeg, 2, 1000)
+	for name, h := range map[string]http.HandlerFunc{
+		"chunked": realTime(ts, len(ts)/2, "video/mp2t"),
+		"closed": func(w http.ResponseWriter, _ *http.Request) {
+			conn, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+			_, _ = buf.WriteString("HTTP/1.0 200 OK\r\nContent-Type: video/mp2t\r\n\r\n")
+			_, _ = buf.Write(ts)
+			_ = buf.Flush()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(h)
+			defer srv.Close()
+			dec := startFFmpeg(t, t.Context(), srv.URL+"/auto/v5.1")
+			err := waitDecoder(t, dec, 10*time.Second)
+			t.Logf("Wait: %v", err)
+			if err == nil || !strings.HasPrefix(err.Error(), "ffmpeg exited with status 0: the source ended") {
+				t.Errorf("Wait = %v, want the source ended", err)
+			}
+		})
 	}
 }
 

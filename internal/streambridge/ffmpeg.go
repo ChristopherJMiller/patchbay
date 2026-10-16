@@ -126,14 +126,20 @@ func (d *ffmpegDecoder) Wait() error {
 // 8: Server returned 5XX Server Error reply", or "ffmpeg was killed by
 // <signal>". ffmpeg exits with status 0 when its source closes (an Icecast
 // server going away, a stall past -rw_timeout), so status 0 is a failure
-// too; without a reason it reads "the source ended". At most
+// too, and reads "the source ended", with ffmpeg's last line after it in
+// parentheses: a live source (chunked, or no length) that closes makes
+// ffmpeg 9.0 log "Error during demuxing: Input/output error", which would
+// otherwise read like a source that is not audio. At most
 // api.MaxMessageBytes.
 func exitMessage(code int, signal, reason string) string {
 	msg := "ffmpeg exited with status " + strconv.Itoa(code)
-	if signal != "" {
+	switch {
+	case signal != "":
 		msg = "ffmpeg was killed by " + signal
-	} else if code == 0 && reason == "" {
+	case code == 0 && reason == "":
 		reason = "the source ended"
+	case code == 0:
+		reason = "the source ended (" + reason + ")"
 	}
 	if reason != "" {
 		msg += ": " + reason

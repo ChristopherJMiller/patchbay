@@ -38,6 +38,10 @@ import (
 //     "transferred"; docs/plans/release-b.md §13). The leg's limit starts
 //     a moment after the caller's, so an untransferred call is still
 //     ended by the caller's and never falls through to "not available".
+//     An attended transfer into an application (the echo test) moves the
+//     leg into a channel that holds neither limit; streams.json's
+//     callLimitSeconds is for those: the bridge ends any call still open
+//     streambridge.CallLimitSlack past it.
 //
 // Only the stream's UUID (streams.UUID of its resource name) and number
 // reach the dialplan, never its display name or its source, so a source
