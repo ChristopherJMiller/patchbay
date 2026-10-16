@@ -121,7 +121,7 @@ use it answers 503 (`X-HDHomeRun-Error: 805 All Tuners In Use`).
 **SomaFM** lists its channels at `https://api.somafm.com/channels.json`;
 each channel's `playlists` are `.pls` files whose entries are direct
 Icecast mounts such as `https://ice2.somafm.com/groovesalad-128-mp3`
-(`ice1`…`ice6` serve the same mount). Use that mount, not the `.pls`.
+(the `.pls` lists several `ice*` hosts serving the same mount). Use that mount, not the `.pls`.
 
 ## Tuner pools
 
