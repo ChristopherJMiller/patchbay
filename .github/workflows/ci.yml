@@ -59,7 +59,10 @@ jobs:
 
       # The dev shell closure (~2.3 GiB) is keyed on the flake. Only an exact
       # key match is restored, and there is no GC, so a saved cache holds only
-      # the current closure. This job saves the cache and e2e only restores it.
+      # the current closure, plus what `make sounds` builds below (the
+      # flake's piper, ~1 GiB, and piper-voices, ~250 MB), which the image
+      # and publish jobs then restore with it. This job saves the cache and
+      # the others only restore it.
       - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7.0.2
         with:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
@@ -106,10 +109,14 @@ jobs:
       - name: Lint and test (unit + envtest)
         run: nix develop -c make lint test
 
-      # The 911 and "not available" prompts the image carries: espeak-ng and
-      # ffmpeg from the flake, rendered twice and compared (hack/gen-sounds.sh
-      # fails if the two differ). make image, and so the e2e job, renders them
-      # again before the build.
+      # The 911 and "not available" prompts the image carries, in every
+      # voice: espeak-ng and ffmpeg from the dev shell, Piper and its voices
+      # from the flake's piper and piper-voices packages, which gen-sounds
+      # builds (the voices are fixed-output fetches from Hugging Face, ~60 MB
+      # each, pinned by sha256; the nix cache above keeps both). Each voice
+      # is rendered twice and compared (hack/gen-sounds.sh fails if the two
+      # differ). make image, and so the e2e job, renders them again before
+      # the build.
       - name: Sound prompts (reproducible)
         run: nix develop -c make sounds
 
@@ -220,8 +227,9 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
           save: false
 
-      # The image copies build/sounds/; the check job already proved the
-      # render is reproducible.
+      # The image copies build/sounds/ (every voice); the check job already
+      # proved the render is reproducible, and its nix cache brings Piper
+      # and the voices.
       - name: Sound prompts
         run: nix develop -c make sounds
 
