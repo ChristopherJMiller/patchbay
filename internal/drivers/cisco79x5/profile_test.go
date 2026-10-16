@@ -101,12 +101,13 @@ func TestProfiles(t *testing.T) {
 		drivers.Supported: {
 			drivers.FeatureHold, drivers.FeatureWideband, drivers.FeatureRFC4733DTMF,
 			drivers.FeatureCallerIDUpdate, drivers.FeatureDistinctiveRing,
+			// Bench 2026-10-15.
+			drivers.FeatureTransfer, drivers.FeatureDisplayPowerSave,
 		},
 		drivers.Untested: {
-			drivers.FeatureTransfer, drivers.FeaturePickup, drivers.FeatureMeetMe, drivers.FeatureSpeedDial,
+			drivers.FeaturePickup, drivers.FeatureMeetMe, drivers.FeatureSpeedDial,
 			drivers.FeatureServiceURL, drivers.FeatureWallpaper, drivers.FeatureCustomRingtones,
 			drivers.FeatureXMLServices, drivers.FeaturePushNotification, drivers.FeatureRTPRx,
-			drivers.FeatureDisplayPowerSave,
 		},
 		drivers.Unsupported: {
 			drivers.FeatureBLF, drivers.FeaturePark, drivers.FeatureConference, drivers.FeatureDNDSync,

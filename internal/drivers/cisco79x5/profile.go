@@ -166,8 +166,9 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		drivers.FeatureRFC4733DTMF:     drivers.Supported,
 		drivers.FeatureCallerIDUpdate:  drivers.Supported,
 		drivers.FeatureDistinctiveRing: drivers.Supported,
-		// Bench (§8.6): blind and attended transfer on stock PJSIP.
-		drivers.FeatureTransfer: drivers.Untested,
+		// Bench 2026-10-15 (§8.6): transfer works on stock PJSIP, a CP-7945G
+		// on SIP 9.4(2)SR4-3, with two calls up and the held one recalled.
+		drivers.FeatureTransfer: drivers.Supported,
 		// Pickup and MeetMe are x-cisco-serviceuri-* INVITEs the dialplan
 		// must answer; nothing has dialled one yet.
 		drivers.FeaturePickup: drivers.Untested,
@@ -183,8 +184,9 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		// Bench (§8.6): RTPRx push on SIP 9.4(2); a 2008 report says early
 		// 79x5 firmware ignored it.
 		drivers.FeatureRTPRx: drivers.Untested,
-		// Phone.spec.display: vendorConfig elements usecallmanager.nz documents
-		// for the 79x5 (display.go); not on the bench yet (plan §8).
-		drivers.FeatureDisplayPowerSave: drivers.Untested,
+		// Phone.spec.display (display.go). Bench 2026-10-15 (plan §8): with
+		// every day inactive and a 1 min idle timeout the 7945's screen goes
+		// dark a minute after the last key press. Wake-on-ring not yet seen.
+		drivers.FeatureDisplayPowerSave: drivers.Supported,
 	}
 }
