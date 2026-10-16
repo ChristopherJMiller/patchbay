@@ -5,8 +5,8 @@ next). **Spec:** [docs/design.md](../design.md) §9 (release B), §11 (B's
 exit criteria), §4 (the Stream resource, `7XX`).
 **Binding decisions by Chris (2026-10-16):** the house's sources, the tuner
 policy, the time limit, and that the AudioSocket sample rate is answered by
-test (§1.2). **Contracts landed with this plan:** commits `467ac09`,
-`b60841b`, `9a07b6b`, `1b802ef`, `c011896`, `f0ddfbc`, `838541e` (§4).
+test (§1.2). **Contracts landed with this plan:** commits `01e814c`,
+`396412a`, `36e301c`, `b137a96`, `98750bd`, `2bed477`, `861e25e` (§4).
 Read [CLAUDE.md](../../CLAUDE.md) first; release A's plan,
 [docs/plans/release-a.md](release-a.md), is the model this one follows.
 
@@ -118,7 +118,7 @@ Each: the decision, why, and what it costs if it is wrong.
 
 ### (a) Streams reach the bridge through AudioSocket's channel driver, at 16 kHz
 
-**Decision (landed in `1b802ef` and `467ac09`):** a Stream's number runs
+**Decision (landed in `b137a96` and `01e814c`):** a Stream's number runs
 `Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,g)`, not design §9's
 `AudioSocket(<uuid>, <bridge>)` application. Audio is 16 kHz signed
 linear both ways (AudioSocket kind `0x12`, 640 bytes per 20 ms).
@@ -141,7 +141,7 @@ the application also takes).
 
 ### (b) streams.json is its own ConfigMap, mounted into the bridge
 
-**Decision (landed in `c011896`):** compile puts the sealed
+**Decision (landed in `98750bd`):** compile puts the sealed
 `streams.Document` in `Bundle.Streams` (not in `Files`, not in `Version`);
 the bundle reconciler writes it as `<fullname>-streams` (key
 `streams.json`) **before** pbx-secrets and pbx-config; the bridge mounts it
@@ -159,7 +159,7 @@ needs a token of its own. Both are later options with no API change.
 
 ### (c) Tuner pools are settings, matched by a source's host
 
-**Decision (landed in `1b802ef`, `f0ddfbc`):** settings
+**Decision (landed in `b137a96`, `2bed477`):** settings
 `streams.tunerPools: [{name, hosts, max}]`. A Stream whose source URL's
 host (any port, case-insensitive) is one of a pool's hosts counts against
 that pool; the bridge runs at most `max` of the pool's **sources** at once
@@ -175,7 +175,7 @@ docs/streams.md make it visible; listing both forms fixes it.
 
 ### (d) A source is a direct http(s) stream URL; playlists are refused
 
-**Decision (landed in `b60841b`, `467ac09`):** `streams.CheckSource`, and
+**Decision (landed in `396412a`, `01e814c`):** `streams.CheckSource`, and
 the same rules as CEL on `spec.source`: http or https only, a host, no
 white space or control characters, no credentials (`user@`), and not a
 playlist (a path ending `.pls` or `.m3u`, any case; HLS `.m3u8` is a
@@ -244,7 +244,7 @@ redistributable).
 
 ### (g) The bridge's observations: a read-only control API, no token
 
-**Decision (landed in `9a07b6b`):** `GET :9093/v1/observations`
+**Decision (landed in `36e301c`):** `GET :9093/v1/observations`
 (`streambridge/api.Observations`), polled by the controller every 5 s
 through `<fullname>-streams.<ns>.svc:9093`. No token.
 
@@ -397,20 +397,20 @@ wideband sound: that is bench B5.
 
 Types, helpers and docs only, each pinned by a test; `make generate
 check-generated fmt vet lint test`, `go mod tidy -diff`, `make
-check-hygiene` and `make asterisk-check` are green at `838541e`. **The
+check-hygiene` and `make asterisk-check` are green at `861e25e`. **The
 contract code is authoritative;** this section summarises it.
 
 | Commit | Package | Added or changed |
 |---|---|---|
-| `467ac09` | `internal/streams` (new) | `NamespaceName`, `Namespace`, `UUID(name)`, `NameUUID`, `FormatUUID`, `ParseUUID`; `Codec`, `SampleRate`, `FrameDuration`, `FrameSamples`, `FrameBytes`; `FileName`, `MaxSourceLength`, `MaxPoolMax`, `MaxStreams`; `Document{Version, Pools, Streams map[uuid]Stream}`, `Pool{Name, Max}`, `Stream{Name, Number, Source, Pool}`; `CheckSource`; `Document.Validate`, `.Sealed`, `.Encode`; `Decode` (strict) |
-| `b60841b` | `api/v1alpha1` | `StreamStatus.{Listeners, TunerPool, LastPlayed, LastFailure}`, `StreamFailure{At, Reason, Message}`, `StreamFailureReason` (`SourceFailed`, `SourceEnded`, `TunerBusy`, an enum); reasons `ReasonIdle`, `ReasonPlaying`, `ReasonTunerBusy`, `ReasonSourceFailed`, `ReasonInvalidSource`, `ReasonBridgePending`, `ReasonBridgeUnreachable` (and `ReasonNoStreamBridge` re-documented); `spec.source` CEL: http(s), no credentials, not a playlist, no white space; columns Listeners, Ready, Reason, Pool (wide); the CRD regenerated; envtest `TestSchemaRejects` cases and `TestSchemaStreamSources` |
-| `9a07b6b` | `internal/streambridge/audiosocket` (new, `frame.go`) | `Kind` and every kind byte, `KindAudio` (= `KindSlin16`), `HeaderSize`, `MaxPayload`, `UUIDSize`, `Frame{Kind, Payload}`, `Kind.IsAudio`, `.SampleRate`, `.String`, `AudioKind(rate)`; the package doc records §3's facts |
-| `9a07b6b` | `internal/streambridge/api` (new) | ports, paths, `MaxMessageBytes`; `Observations{GeneratedAt, Bridge, Streams, Pools}`, `BridgeStatus`, `StreamObservations`, `SessionState`, `SessionObservations`, `FailureReason` (= the v1alpha1 strings, pinned), `Failure`, `PoolObservations`, `PoolSession` |
-| `9a07b6b` | `internal/streambridge` (`doc.go`, `options.go`, `source.go`) | `Options`, `Flag*`, `Default*`, the timing and bounds (`Grace` … `StopTimeout`), `Source`, `Decoder`, `FFmpegArgs` |
-| `1b802ef` | `internal/compile` | `Settings.Streams` (`StreamSettings{CallLimit, TunerPools}`, `TunerPool{Name, Hosts, Max}`), `DefaultCallLimit`/`MinCallLimit`/`MaxCallLimit`, `StreamSettings.Limit`; `Bundle.Streams`; modules: `chan_audiosocket`, `codec_resample`, `func_timeout` in, `app_audiosocket` out (the chart's list too); goldens' `modules.conf` and versions; `streams_contract_test.go` |
-| `c011896` | `internal/controller/install` | `Names.StreamsConfigMap`, `Names.StreamBridge` (both `<fullname>-streams`), `StreamsKey`, `StreamBridgeAddress`, `StreamBridgeURL`, `AnnotationStreamsVersion`, `ErrStreamsNotCompiled`, `StreamsConfigMap`, `StreamsFromConfigMap`, `ReadStreams`; `EventReasonSourceFailed`, `EventReasonCallRefused`, `EventActionPlay` |
-| `f0ddfbc` | chart, `internal/controller/settings` | values `streamBridge.enabled` (true), `streamBridge.ports.{audioSocket, control}`, `streams.callLimit` (`2h`), `streams.tunerPools` (`[]`); `patchbay.settingsJSON` renders `streamBridge` (while enabled) and `streams` (pools only when set; a pool missing a field fails `helm template`); the shared fixture `chart-defaults.json` and `TestParseChartDefaults` |
-| `838541e` | `test/e2e/fakephone/script` (`source.go`) | the fake stream source: paths, parameters, ports, the HDHomeRun 503 header, `SourceStatus{Tuners, Occupied, Open, Opened, Refused}`, `OpenTotal` |
+| `01e814c` | `internal/streams` (new) | `NamespaceName`, `Namespace`, `UUID(name)`, `NameUUID`, `FormatUUID`, `ParseUUID`; `Codec`, `SampleRate`, `FrameDuration`, `FrameSamples`, `FrameBytes`; `FileName`, `MaxSourceLength`, `MaxPoolMax`, `MaxStreams`; `Document{Version, Pools, Streams map[uuid]Stream}`, `Pool{Name, Max}`, `Stream{Name, Number, Source, Pool}`; `CheckSource`; `Document.Validate`, `.Sealed`, `.Encode`; `Decode` (strict) |
+| `396412a` | `api/v1alpha1` | `StreamStatus.{Listeners, TunerPool, LastPlayed, LastFailure}`, `StreamFailure{At, Reason, Message}`, `StreamFailureReason` (`SourceFailed`, `SourceEnded`, `TunerBusy`, an enum); reasons `ReasonIdle`, `ReasonPlaying`, `ReasonTunerBusy`, `ReasonSourceFailed`, `ReasonInvalidSource`, `ReasonBridgePending`, `ReasonBridgeUnreachable` (and `ReasonNoStreamBridge` re-documented); `spec.source` CEL: http(s), no credentials, not a playlist, no white space; columns Listeners, Ready, Reason, Pool (wide); the CRD regenerated; envtest `TestSchemaRejects` cases and `TestSchemaStreamSources` |
+| `36e301c` | `internal/streambridge/audiosocket` (new, `frame.go`) | `Kind` and every kind byte, `KindAudio` (= `KindSlin16`), `HeaderSize`, `MaxPayload`, `UUIDSize`, `Frame{Kind, Payload}`, `Kind.IsAudio`, `.SampleRate`, `.String`, `AudioKind(rate)`; the package doc records §3's facts |
+| `36e301c` | `internal/streambridge/api` (new) | ports, paths, `MaxMessageBytes`; `Observations{GeneratedAt, Bridge, Streams, Pools}`, `BridgeStatus`, `StreamObservations`, `SessionState`, `SessionObservations`, `FailureReason` (= the v1alpha1 strings, pinned), `Failure`, `PoolObservations`, `PoolSession` |
+| `36e301c` | `internal/streambridge` (`doc.go`, `options.go`, `source.go`) | `Options`, `Flag*`, `Default*`, the timing and bounds (`Grace` … `StopTimeout`), `Source`, `Decoder`, `FFmpegArgs` |
+| `b137a96` | `internal/compile` | `Settings.Streams` (`StreamSettings{CallLimit, TunerPools}`, `TunerPool{Name, Hosts, Max}`), `DefaultCallLimit`/`MinCallLimit`/`MaxCallLimit`, `StreamSettings.Limit`; `Bundle.Streams`; modules: `chan_audiosocket`, `codec_resample`, `func_timeout` in, `app_audiosocket` out (the chart's list too); goldens' `modules.conf` and versions; `streams_contract_test.go` |
+| `98750bd` | `internal/controller/install` | `Names.StreamsConfigMap`, `Names.StreamBridge` (both `<fullname>-streams`), `StreamsKey`, `StreamBridgeAddress`, `StreamBridgeURL`, `AnnotationStreamsVersion`, `ErrStreamsNotCompiled`, `StreamsConfigMap`, `StreamsFromConfigMap`, `ReadStreams`; `EventReasonSourceFailed`, `EventReasonCallRefused`, `EventActionPlay` |
+| `2bed477` | chart, `internal/controller/settings` | values `streamBridge.enabled` (true), `streamBridge.ports.{audioSocket, control}`, `streams.callLimit` (`2h`), `streams.tunerPools` (`[]`); `patchbay.settingsJSON` renders `streamBridge` (while enabled) and `streams` (pools only when set; a pool missing a field fails `helm template`); the shared fixture `chart-defaults.json` and `TestParseChartDefaults` |
+| `861e25e` | `test/e2e/fakephone/script` (`source.go`) | the fake stream source: paths, parameters, ports, the HDHomeRun 503 header, `SourceStatus{Tuners, Occupied, Open, Opened, Refused}`, `OpenTotal` |
 
 ```go
 // internal/streams
@@ -466,22 +466,22 @@ const EventReasonSourceFailed = "SourceFailed"; EventReasonCallRefused = "CallRe
 ## 5. Package map, ownership and rules
 
 ```text
-internal/streams/                                         contract (467ac09)          nobody
-internal/streambridge/{doc,options,source,contract_test}.go contract (9a07b6b)        nobody
-internal/streambridge/audiosocket/frame{,_contract_test}.go contract (9a07b6b)        nobody
-internal/streambridge/api/                                contract (9a07b6b)          nobody
+internal/streams/                                         contract (01e814c)          nobody
+internal/streambridge/{doc,options,source,contract_test}.go contract (36e301c)        nobody
+internal/streambridge/audiosocket/frame{,_contract_test}.go contract (36e301c)        nobody
+internal/streambridge/api/                                contract (36e301c)          nobody
 internal/streambridge/ (every other file and subpackage)  BR.1-BR.8                   bridge
-api/v1alpha1/, charts/patchbay/templates/crds/            contract (b60841b)          nobody
-internal/compile/streams_contract_test.go                 contract (1b802ef)          nobody
+api/v1alpha1/, charts/patchbay/templates/crds/            contract (396412a)          nobody
+internal/compile/streams_contract_test.go                 contract (b137a96)          nobody
 internal/compile/ (every other file, testdata/)           RT.1                        routing
-internal/controller/install/                              contract (A, c011896)       nobody
-internal/controller/settings/                             RT.3 (fixture: f0ddfbc)     routing
+internal/controller/install/                              contract (A, 98750bd)       nobody
+internal/controller/settings/                             RT.3 (fixture: 2bed477)     routing
 internal/controller/bundle/                               RT.2                        routing
 internal/controller/bridgeclient/ (new)                   RT.4                        routing
 internal/controller/streamstate/ (new)                    RT.5                        routing
 internal/controller/numbers/                              RT.5 (loses Streams)        routing
 internal/controller/metrics/                              RT.6                        routing
-test/e2e/fakephone/script/                                contract (A, 838541e)       nobody
+test/e2e/fakephone/script/                                contract (A, 861e25e)       nobody
 test/e2e/fakephone/ (every other file, Dockerfile)        PK.5                        packaging
 test/e2e/streamkit_test.go (new), test/e2e/values.yaml    PK.6                        packaging
 Dockerfile, .dockerignore, Makefile, .github/, renovate.json, hack/,
@@ -1156,7 +1156,7 @@ so the bench (§8) and release C start from what exists. Every contract of
 §4 landed as written; where one turned out wrong, the stage worked around
 it in its own files and it is listed below, unedited.
 
-**bridge** (`internal/streambridge`, 8 commits, `8b8add5`…`8bc62fa`)
+**bridge** (`internal/streambridge`, 8 commits, `cf1f98f`…`2853929`)
 - **ffmpeg names the class of an HTTP error, not the code.** At the
   contract's `-loglevel error`, ffmpeg 9.0.1 and Alpine's 8.1.2 print
   "Server returned 5XX Server Error reply" for a 503 and never show the
@@ -1282,16 +1282,16 @@ e2e tests, docs)
   the refusal landed in the second the test took its start time, and the
   fold (like an Event's `creationTimestamp`) keeps whole seconds, so
   21:15:24 read as before 21:15:24.6. The limit and refused cases now
-  take their start truncated to the second (`sinceNow`, `77442e0`).
+  take their start truncated to the second (`sinceNow`, `544cc79`).
   Everything else in that run passed, and a fourth run from scratch on the
   final code passed whole (652 s; first tones 0.10-0.25 s on the radio,
   1.60-1.62 s for a tuner session; the limit at 20.001 s; the added Stream
   Idle 71 s after it was created; the bridge's memory peak 105.7 MiB).
 - streamkit_test.go's keep-quiet `var _ = []any{…}` is removed, as its
   owner asked, now that every helper has a caller.
-- Commit `14b007f` also carried `cmd/patchbay/stubs.go`'s deletion (staged
+- Commit `255ba45` also carried `cmd/patchbay/stubs.go`'s deletion (staged
   with `git rm` before it), so `cmd/patchbay` does not build at that one
-  commit; `1e3e3cf` adds its replacement. History was not rewritten.
+  commit; `9ab3091` adds its replacement. History was not rewritten.
 - Contract docs that the code outgrew, not edited: `install/events.go`'s
   ConfigWritten note now ends `, <n> streams` (RT.2); `compile.Bundle.Streams`
   says "every Stream the dialplan sends to the stream bridge", but on an
@@ -1565,19 +1565,19 @@ listeners on 2026-10-16 they rank 1, 2, 3, 7, 8 and 12 of SomaFM's.
 
 ## 13. Review fixes
 
-The review of B as built (2026-10-16, at `981de2a`) made seven findings;
+The review of B as built (2026-10-16, at `67ca4c5`) made seven findings;
 three were one problem (the transfer), so six are listed. Each was checked
 here before anything changed: reproduced by a test where one could be
 written, otherwise read in the code.
 
 | # | Finding (severity) | Checked | Done |
 |---|---|---|---|
-| R1 | A transferred stream call escapes the time limit (major) | reproduced: asterisk-check, a blind REFER of a 713 call to 600 ran the stand-in bridge's 40 s against a 10 s limit | Dial's `S()` on the AudioSocket leg (`e46222c`); the bridge's own ceiling (`400cbc1`) |
+| R1 | A transferred stream call escapes the time limit (major) | reproduced: asterisk-check, a blind REFER of a 713 call to 600 ran the stand-in bridge's 40 s against a 10 s limit | Dial's `S()` on the AudioSocket leg (`141d898`); the bridge's own ceiling (`b94df62`) |
 | R2 | Any pod can reach both bridge ports: hold the tuner, fill the calls, shut out the probes (minor) | read: true | accepted and recorded (§11, docs/streams.md "Who can reach the bridge", CLAUDE.md); the ceiling bounds one direct call |
-| R3 | A TunerBusy refusal hides a source failure, so a broken stream reads Idle (minor) | reproduced: tests in the bridge and in Decide | fixed in both (`3a44a6f`) |
-| R4 | No metric counts a session that ends after it played (minor) | read: true | `patchbay_stream_bridge_session_ends_total{reason}` (`6f2f068`) |
-| R5 | A live source that closes reads "Error during demuxing: Input/output error", which no troubleshooting row matches (nit) | reproduced: ffmpeg 9.0.1, chunked and HTTP/1.0 answers | the message (`44f39b4`), docs/streams.md's row |
-| R6 | `TestReporter` (release A) flakes under load (nit) | the mechanism reproduced: a 200 µs write deadline fails it the same way in 4 of 10 runs | test only (`df709e7`) |
+| R3 | A TunerBusy refusal hides a source failure, so a broken stream reads Idle (minor) | reproduced: tests in the bridge and in Decide | fixed in both (`f847cac`) |
+| R4 | No metric counts a session that ends after it played (minor) | read: true | `patchbay_stream_bridge_session_ends_total{reason}` (`7ddf2ea`) |
+| R5 | A live source that closes reads "Error during demuxing: Input/output error", which no troubleshooting row matches (nit) | reproduced: ffmpeg 9.0.1, chunked and HTTP/1.0 answers | the message (`fe7063a`), docs/streams.md's row |
+| R6 | `TestReporter` (release A) flakes under load (nit) | the mechanism reproduced: a 200 µs write deadline fails it the same way in 4 of 10 runs | test only (`09b4c4c`) |
 
 **R1. The time limit after a transfer.** `TIMEOUT(absolute)` is the
 channel's it is set on: the caller's. A phone that blind-transfers a
@@ -1675,7 +1675,7 @@ unchanged). The test is about order and overflow, not timeouts
 (`TestReporterNeverBlocks` covers those), so it writes with a 1 min
 deadline.
 
-**Verification after the fixes** (on `695931a`, this workstation,
+**Verification after the fixes** (on `2456026`, this workstation,
 2026-10-16):
 
 - `make generate`: no diff. `make check-generated fmt vet lint test
@@ -1699,7 +1699,7 @@ deadline.
 - Each new test fails with its fix taken out (`TestServeCallLimit`,
   `TestTunerBusyKeepsSourceFailure`, `TestSessionEnds`,
   `TestRefusalKeepsSourceFailure`, `TestFFmpegLiveSourceEnds`, and
-  `TestRealAsteriskStreams/transferred` before `e46222c`).
+  `TestRealAsteriskStreams/transferred` before `141d898`).
 - No e2e test for a transfer: the fakephone's one-shot call has no
   transfer, and the asterisk-check case runs the real REFER through
   res_pjsip_refer in the pinned image, where the behaviour lives. The
