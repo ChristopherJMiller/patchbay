@@ -43,11 +43,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 // Bundle is the compiled configuration of one install.
@@ -76,6 +79,14 @@ type Bundle struct {
 	// AMI is the account the compiled manager.conf defines, which the agent
 	// logs in with.
 	AMI AMIAccount
+
+	// Streams is streams.json (release B): every Stream the dialplan sends
+	// to the stream bridge, by UUID, with the tuner pools, sealed
+	// (streams.Document.Sealed). It is not one of Files and not part of
+	// Version: the PBX never reads it, so a source URL change rewrites only
+	// the <fullname>-streams ConfigMap the bridge mounts
+	// (install.StreamsConfigMap), never pbx-config.
+	Streams streams.Document
 }
 
 // BundleDevice is one device in the bundle's index: what the agent needs to
@@ -176,8 +187,15 @@ type Settings struct {
 	AllowedNetworks []string `json:"allowedNetworks"`
 
 	// StreamBridge is the stream bridge's AudioSocket address, host:port
-	// (release B, design §9). Empty disables streams.
+	// (release B, design §9): the chart renders
+	// <fullname>-streams.<namespace>.svc:9092 (install.StreamBridgeAddress)
+	// while streamBridge.enabled. Empty disables streams: every Stream's
+	// number plays "not available".
 	StreamBridge string `json:"streamBridge,omitempty"`
+
+	// Streams are the stream settings (release B): the per-call time
+	// limit and the tuner pools.
+	Streams StreamSettings `json:"streams,omitzero"`
 
 	// AMISecret is the Secret key holding the generated AMI password. The
 	// controller generates it; the compiler only references it.
@@ -199,6 +217,60 @@ type PhoneDefaults struct {
 	// screen's power saving (drivers.FeatureDisplayPowerSave), and nil means
 	// none: a Phone without a display then renders no display settings.
 	Display *v1alpha1.PhoneDisplay `json:"display,omitempty"`
+}
+
+// StreamSettings are the install's stream settings (settings.json
+// "streams", from the chart's streams values; docs/plans/release-b.md
+// §2(c), §2(e)).
+type StreamSettings struct {
+	// CallLimit is how long one call to a stream may last: the dialplan
+	// sets TIMEOUT(absolute) to it, so Asterisk hangs up at it and a
+	// phone left off the hook cannot hold a tuner for ever. Whole seconds,
+	// MinCallLimit to MaxCallLimit; zero is DefaultCallLimit. It applies to
+	// every stream, tuner or not.
+	CallLimit metav1.Duration `json:"callLimit,omitzero"`
+
+	// TunerPools are the tuner devices whose tuners a stream holds while
+	// it plays. A stream whose source's host (its URL's host name, any
+	// port) is one of a pool's Hosts counts against that pool: the bridge
+	// plays at most Max of the pool's sources at once (one decoder per
+	// source, shared by all its callers), and refuses a call that would
+	// need one more. A source on no pool's host needs no tuner (internet
+	// radio) and has no limit. Names are DNS labels, each once; a host is
+	// in one pool at most; Max is 1 to streams.MaxPoolMax.
+	TunerPools []TunerPool `json:"tunerPools,omitempty"`
+}
+
+// TunerPool is one tuner device, or several that share a limit.
+type TunerPool struct {
+	// Name names the pool in status (Stream.status.tunerPool) and
+	// messages, e.g. "hdhomerun".
+	Name string `json:"name"`
+	// Hosts are the hosts its sources are on, as the Streams' URLs write
+	// them: an IP address or a DNS name, without scheme, port or path
+	// ("192.168.0.58"), compared case-insensitively. A Stream that names
+	// the same device by another host (a name for the IP) is not in the
+	// pool: list every form the Streams use.
+	Hosts []string `json:"hosts"`
+	// Max is how many of the pool's sources may play at once: for the
+	// house's HDHomeRun, 1 of its 2 tuners, so the DVR always keeps one.
+	Max int `json:"max"`
+}
+
+// The per-call time limit's bounds (StreamSettings.CallLimit).
+const (
+	DefaultCallLimit = 2 * time.Hour
+	MinCallLimit     = 10 * time.Second
+	MaxCallLimit     = 24 * time.Hour
+)
+
+// Limit is the call limit in effect: CallLimit, or DefaultCallLimit when it
+// is zero.
+func (s StreamSettings) Limit() time.Duration {
+	if s.CallLimit.Duration == 0 {
+		return DefaultCallLimit
+	}
+	return s.CallLimit.Duration
 }
 
 // PortRange is an inclusive range of ports.

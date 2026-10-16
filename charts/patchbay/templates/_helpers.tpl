@@ -214,6 +214,7 @@ loaded, not even over AMI or by a relative path.
 - codec_ulaw.so
 - codec_alaw.so
 - codec_g722.so
+- codec_resample.so
 - format_pcm.so
 - format_wav.so
 - format_gsm.so
@@ -226,7 +227,8 @@ loaded, not even over AMI or by a relative path.
 - bridge_simple.so
 - bridge_native_rtp.so
 - res_audiosocket.so
-- app_audiosocket.so
+- chan_audiosocket.so
+- func_timeout.so
 {{- end -}}
 
 {{/* Asterisk's config through the live directory's current symlink (compile.AsteriskConfigDir). */}}

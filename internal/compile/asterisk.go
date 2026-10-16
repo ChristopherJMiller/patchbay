@@ -87,15 +87,15 @@ var modules = []struct {
 		"res_pjsip_nat.so", "res_pjsip_acl.so", "res_pjsip_caller_id.so", "res_pjsip_rfc3326.so",
 		"res_pjsip_pubsub.so", "res_pjsip_notify.so", "res_pjsip_logger.so", "res_pjsip_refer.so",
 	}},
-	{"Codecs and file formats (format_pcm plays .ulaw, .alaw and .g722)", []string{
-		"codec_ulaw.so", "codec_alaw.so", "codec_g722.so", "format_pcm.so", "format_wav.so", "format_gsm.so",
+	{"Codecs and file formats (format_pcm plays .ulaw, .alaw and .g722; codec_resample resamples a stream's 16 kHz for G.711 callers, who would otherwise get it through G.722)", []string{
+		"codec_ulaw.so", "codec_alaw.so", "codec_g722.so", "codec_resample.so", "format_pcm.so", "format_wav.so", "format_gsm.so",
 	}},
 	{"Dialplan and applications (app_playtones: the SIT tone)", []string{
 		"pbx_config.so", "app_echo.so", "app_dial.so", "app_playback.so", "app_playtones.so",
 		"func_callerid.so", "bridge_simple.so", "bridge_native_rtp.so",
 	}},
-	{"Release B: AudioSocket (loaded now to prove the image carries it)", []string{
-		"res_audiosocket.so", "app_audiosocket.so",
+	{"Streams: AudioSocket's channel driver carries 16 kHz (its application only 8 kHz); func_timeout ends a stream call at the time limit", []string{
+		"res_audiosocket.so", "chan_audiosocket.so", "func_timeout.so",
 	}},
 }
 
