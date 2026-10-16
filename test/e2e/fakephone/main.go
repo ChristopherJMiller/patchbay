@@ -3,8 +3,9 @@
 // digest auth over TCP, G.711 µ-law calls, TFTP config fetches, and the
 // service-control NOTIFY that asks it to re-read its config. It also carries
 // the suite's other in-cluster tools: HTTP requests to the agent from the
-// pod network (as the controller makes them), an AMI client, and two
-// probes of the node (process credentials and file access).
+// pod network (as the controller makes them), an AMI client, two probes
+// of the node (process credentials and file access), and the stream
+// bridge's fake sources (source: a tuner and a radio station).
 //
 // It runs as an ordinary Pod in the kind cluster, so every exchange crosses
 // the pod network to the PBX on the node's host network, as a phone on the
@@ -81,7 +82,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().DurationVar(&rf.timeout, "timeout", 30*time.Second,
 		"give up after this long")
 	root.AddCommand(newRegisterCmd(rf), newCallCmd(rf), newTFTPCmd(rf), newHTTPCmd(rf),
-		newAMICmd(rf), newProcCmd(), newReadCmd(), newRunCmd(rf))
+		newAMICmd(rf), newProcCmd(), newReadCmd(), newRunCmd(rf), newSourceCmd(rf))
 	return root
 }
 
@@ -252,6 +253,8 @@ func newCallCmd(rf *rootFlags) *cobra.Command {
 		minToneFrames  int
 		expectAudio    time.Duration
 		minVoice       time.Duration
+		firstToneIn    time.Duration
+		expectEndedBy  string
 		rtpPort        int
 		hangupDeadline = 5 * time.Second
 	)
@@ -265,9 +268,21 @@ tone (default: --tone-hz, the echo) in the audio that comes back
 least --min-tone-frames 20 ms packets carried it. With --expect-audio (an
 announcement) it passes only if at least that much of what came back was
 not silence, and at least --min-voice of it was not the SIT tone either
-(the prompt itself). Then BYE, unless the PBX hung up first.`,
+(the prompt itself). Then BYE, unless the PBX hung up first: its BYE stops
+the tone at once.
+
+The media line ends with how long the call was up and which side ended it
+(answered=<duration> endedBy=local|remote). --expect-ended-by fails the
+call unless that side ended it; --expect-first-tone-within fails it unless
+a packet carrying the --expect-hz tone came within that long of the first
+packet sent (how soon a stream is heard).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			switch expectEndedBy {
+			case endedByAny, endedByLocal, endedByRemote:
+			default:
+				return fmt.Errorf("--expect-ended-by must be %s, %s or %s, not %q", endedByAny, endedByLocal, endedByRemote, expectEndedBy)
+			}
 			log := rf.sipLogger()
 			ctx, cancel := context.WithTimeout(cmd.Context(), rf.timeout)
 			defer cancel()
@@ -290,24 +305,48 @@ not silence, and at least --min-voice of it was not the SIT tone either
 			if err != nil {
 				return err
 			}
+			answeredAt := time.Now()
 			log.Info("call answered", "number", args[0], "remoteRTP", c.remote.Addr.String(),
 				"payloadTypes", c.remote.PayloadTypes, "localRTP", localRTP)
 
+			// The dialog's context ends when the PBX's BYE arrives (or once
+			// the phone's own BYE is answered, after the media).
+			remoteEnd := make(chan time.Time, 1)
+			go func() {
+				select {
+				case <-c.dialog.Context().Done():
+					remoteEnd <- time.Now()
+				case <-ctx.Done():
+				}
+			}()
+			mo.Ended = c.dialog.Context().Done()
 			res, mediaErr := runMedia(ctx, rtpConn, c.remote.Addr, mo)
 
+			end := callEnd{By: endedByLocal, At: time.Now()}
+			if c.dialog.Context().Err() != nil { // the PBX hung up first
+				end = callEnd{By: endedByRemote, At: <-remoteEnd}
+			}
 			byeCtx, byeCancel := context.WithTimeout(context.WithoutCancel(ctx), hangupDeadline)
 			defer byeCancel()
 			byeErr := c.hangup(byeCtx)
+			if byeErr != nil && end.By == endedByLocal && c.dialog.Context().Err() != nil {
+				// The PBX's BYE crossed ours: it hung up first.
+				end, byeErr = callEnd{By: endedByRemote, At: <-remoteEnd}, nil
+			}
+			line := fmt.Sprintf("%s answered=%s endedBy=%s", res, end.At.Sub(answeredAt).Round(time.Millisecond), end.By)
 
-			log.Info("media", "result", res.String())
-			fmt.Fprintf(cmd.OutOrStdout(), "call %s: %s\n", args[0], res)
+			log.Info("media", "result", line)
+			fmt.Fprintf(cmd.OutOrStdout(), "call %s: %s\n", args[0], line)
 			if mediaErr != nil {
 				return mediaErr
 			}
 			if byeErr != nil {
 				return fmt.Errorf("BYE: %w", byeErr)
 			}
-			return checkMedia(res, mo, expectTone, minToneFrames, expectAudio, minVoice)
+			if err := checkMedia(res, mo, expectTone, minToneFrames, expectAudio, minVoice); err != nil {
+				return err
+			}
+			return checkCallEnd(res, mo, end.By, expectEndedBy, firstToneIn)
 		},
 	}
 	bindSIPFlags(cmd, &o)
@@ -321,8 +360,39 @@ not silence, and at least --min-voice of it was not the SIT tone either
 	f.IntVar(&minToneFrames, "min-tone-frames", 50, "with --expect-tone: packets that must carry the tone")
 	f.DurationVar(&expectAudio, "expect-audio", 0, "fail unless at least this much non-silent audio comes back")
 	f.DurationVar(&minVoice, "min-voice", 0, "with --expect-audio: of it, at least this much that is not the SIT tone")
+	f.DurationVar(&firstToneIn, "expect-first-tone-within", 0,
+		"fail unless the --expect-hz tone first came within this long of the first packet sent; 0: no limit")
+	f.StringVar(&expectEndedBy, "expect-ended-by", endedByAny,
+		"fail unless this side ended the call: remote (the PBX's BYE), local (the phone's) or any")
 	f.IntVar(&rtpPort, "rtp-port", 0, "local RTP port; 0 picks one")
 	return cmd
+}
+
+// Which side of a one-shot call ended it (the media line's endedBy).
+const (
+	endedByLocal  = "local"
+	endedByRemote = "remote"
+	// endedByAny is --expect-ended-by's "either".
+	endedByAny = "any"
+)
+
+// callEnd is how a one-shot call ended: by whom, and when.
+type callEnd struct {
+	By string
+	At time.Time
+}
+
+// checkCallEnd is the verdict on how soon the tone came and who hung up.
+func checkCallEnd(res mediaResult, mo mediaOptions, endedBy, expectEndedBy string, firstToneIn time.Duration) error {
+	switch {
+	case firstToneIn > 0 && res.FirstTone == 0:
+		return fmt.Errorf("the %.0f Hz tone never came, want it within %s", mo.expectHz(), firstToneIn)
+	case firstToneIn > 0 && res.FirstTone > firstToneIn:
+		return fmt.Errorf("the %.0f Hz tone first came after %s, want it within %s", mo.expectHz(), res.FirstTone, firstToneIn)
+	case expectEndedBy != endedByAny && endedBy != expectEndedBy:
+		return fmt.Errorf("the call was ended by %s, want %s", endedBy, expectEndedBy)
+	}
+	return nil
 }
 
 // checkMedia is the call's verdict on what came back.

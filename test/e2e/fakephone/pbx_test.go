@@ -32,12 +32,14 @@ type fakePBX struct {
 	passwords      map[string]string // digest username -> password
 	maxGrant       int               // grant at most this expiry; 0: what was asked
 	answerHz       float64           // the tone the PBX's RTP peer sends back; 0 echoes
+	hangupAfter    time.Duration     // BYE the phone's calls this long after answering; 0: never
 	challengeRefer bool
 	registers      []pbxRegister
 	contacts       map[string]sip.Uri // SIP user -> the contact of its last 200
 	invites        []pbxInvite
 	refers         []pbxRefer
 	byes           int
+	byesSent       int // BYEs the PBX sent (hangupAfter)
 }
 
 type pbxRegister struct {
@@ -228,7 +230,7 @@ func (pbx *fakePBX) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	pbx.mu.Lock()
 	pbx.invites = append(pbx.invites, pbxInvite{Number: req.Recipient.User, From: req.From().Address.User, AuthUser: user})
-	hz := pbx.answerHz
+	hz, hangupAfter := pbx.answerHz, pbx.hangupAfter
 	pbx.mu.Unlock()
 	d, err := pbx.uas.ReadInvite(req, tx)
 	if err != nil {
@@ -241,6 +243,22 @@ func (pbx *fakePBX) onInvite(req *sip.Request, tx sip.ServerTransaction) {
 	if err := d.RespondSDP(answer); err != nil {
 		pbx.t.Logf("fake PBX: answering: %v", err)
 		return
+	}
+	if hangupAfter > 0 {
+		select {
+		case <-d.Context().Done():
+			return
+		case <-time.After(hangupAfter):
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.Bye(ctx); err != nil {
+			pbx.t.Logf("fake PBX: BYE: %v", err)
+			return
+		}
+		pbx.mu.Lock()
+		pbx.byesSent++
+		pbx.mu.Unlock()
 	}
 	<-d.Context().Done()
 }

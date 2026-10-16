@@ -91,11 +91,17 @@ func analyseULaw(payload []byte, freq float64) toneAnalysis {
 }
 
 func analyse(samples []float64, freq float64) toneAnalysis {
+	return analyseAt(samples, freq, sampleRate)
+}
+
+// analyseAt is analyse for samples taken rate times a second (the fake
+// stream source's 48 kHz).
+func analyseAt(samples []float64, freq, rate float64) toneAnalysis {
 	n := len(samples)
 	if n == 0 {
 		return toneAnalysis{}
 	}
-	k := math.Round(float64(n) * freq / sampleRate)
+	k := math.Round(float64(n) * freq / rate)
 	coeff := 2 * math.Cos(2*math.Pi*k/float64(n))
 	var s1, s2, energy float64
 	for _, x := range samples {

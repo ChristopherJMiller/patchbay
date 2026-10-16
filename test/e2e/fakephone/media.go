@@ -27,6 +27,9 @@ type mediaOptions struct {
 	// Tail is how long to keep listening after the last packet is sent, for
 	// echoed audio still in flight.
 	Tail time.Duration
+	// Ended, when set, closes once the far end has hung up (its BYE):
+	// sending stops and runMedia returns at once, without error.
+	Ended <-chan struct{}
 }
 
 // mediaResult is what one call's audio did.
@@ -110,6 +113,8 @@ func runMedia(ctx context.Context, conn *net.UDPConn, remote netip.AddrPort, opt
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case <-opts.Ended:
+				return nil
 			case <-ticker.C:
 			}
 		}
@@ -117,6 +122,8 @@ func runMedia(ctx context.Context, conn *net.UDPConn, remote netip.AddrPort, opt
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-opts.Ended:
+			return nil
 		case <-time.After(opts.Tail):
 			return nil
 		}
