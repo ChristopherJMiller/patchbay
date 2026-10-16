@@ -477,13 +477,14 @@ func TestStreamRadio(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("the PBX ends a call at the time limit", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		Assess("the PBX ends a call at the time limit", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			long := streamCall{Number: radioBNumber, Duration: 2 * e2eCallLimit, ExpectHz: radioBHz,
 				MinToneFrames: int((e2eCallLimit - 4*time.Second) / (20 * time.Millisecond)), FirstToneWithin: 3 * time.Second, EndedBy: "remote"}
 			answered, by := logCall(t, radioBNumber, callStream(ctx, t, "call-751-long", long))
 			if by != "remote" || answered < e2eCallLimit-2*time.Second || answered > e2eCallLimit+2*time.Second {
 				t.Errorf("the call was up %s and ended by %s, want the PBX to end it at %s ± 2 s", answered, by, e2eCallLimit)
 			}
+			logBridgeResources(ctx, t, cfg, "after the radio tests")
 			return ctx
 		}).
 		Feature()
@@ -590,7 +591,7 @@ func TestStreamTuner(t *testing.T) {
 			}
 			return ctx
 		}).
-		Assess("refused: with the DVR on both tuners, 705 is Failing until it plays again", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		Assess("refused: with the DVR on both tuners, 705 is Failing until it plays again", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			before := occupyTuners(ctx, t, 2)
 			freed := false
 			defer func() {
@@ -628,6 +629,7 @@ func TestStreamTuner(t *testing.T) {
 				lp, lf := s.Status.LastPlayed, s.Status.LastFailure
 				return lp != nil && lf != nil && lf.At.Before(lp), "lastPlayed is not later than lastFailure"
 			})
+			logBridgeResources(ctx, t, cfg, "after the tuner tests")
 			return ctx
 		}).
 		Feature()
@@ -661,7 +663,7 @@ func TestStreamAdded(t *testing.T) {
 			logCall(t, addedNumber, callStream(ctx, t, "call-759", c))
 			return ctx
 		}).
-		Assess("deleted: gone from streams.json, then not available", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+		Assess("deleted: gone from streams.json, then not available", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			h.deleteAndWait(ctx, t, added.DeepCopy())
 			why := ""
 			err := wait.PollUntilContextTimeout(ctx, time.Second, time.Minute, true, func(ctx context.Context) (bool, error) {
@@ -689,6 +691,7 @@ func TestStreamAdded(t *testing.T) {
 			}
 			c := streamCall{Number: addedNumber, Duration: 10 * time.Second, ExpectPrompt: true, EndedBy: "remote"}
 			logCall(t, addedNumber, callStream(ctx, t, "call-759-gone", c))
+			logBridgeResources(ctx, t, cfg, "after the added Stream")
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
@@ -697,4 +700,52 @@ func TestStreamAdded(t *testing.T) {
 		}).
 		Feature()
 	testenv.Test(t, f)
+}
+
+// logBridgeResources logs the bridge container's memory (now and its
+// peak) and the CPU it has used, from its cgroup, beside the chart's
+// requests (plan PK.4: 50m and 96Mi, a 512Mi limit). It never fails the
+// test.
+func logBridgeResources(ctx context.Context, t *testing.T, cfg *envconf.Config, when string) {
+	t.Helper()
+	list, err := h.cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: streamBridgeSelector})
+	if err != nil || len(list.Items) != 1 {
+		t.Logf("bridge resources %s: no single bridge pod (%v)", when, err)
+		return
+	}
+	pod := list.Items[0]
+	r, err := resources.New(cfg.Client().RESTConfig())
+	if err != nil {
+		t.Logf("bridge resources %s: %v", when, err)
+		return
+	}
+	var stdout, stderr bytes.Buffer
+	cmd := []string{"cat", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/cpu.stat"}
+	if err := r.ExecInPod(ctx, namespace, pod.Name, "stream-bridge", cmd, &stdout, &stderr); err != nil {
+		t.Logf("bridge resources %s: %v: %s", when, err, stderr.String())
+		return
+	}
+	lines := strings.Fields(stdout.String())
+	if len(lines) < 4 {
+		t.Logf("bridge resources %s: %q", when, stdout.String())
+		return
+	}
+	mib := func(s string) string {
+		var n float64
+		if _, err := fmt.Sscan(s, &n); err != nil {
+			return s
+		}
+		return fmt.Sprintf("%.1f MiB", n/(1<<20))
+	}
+	cpu := "?"
+	for i := 2; i+1 < len(lines); i++ {
+		if lines[i] == "usage_usec" {
+			var us float64
+			if _, err := fmt.Sscan(lines[i+1], &us); err == nil {
+				up := time.Since(pod.CreationTimestamp.Time)
+				cpu = fmt.Sprintf("%.1f s over %s (%.0fm average)", us/1e6, up.Round(time.Second), us/1e3/up.Seconds())
+			}
+		}
+	}
+	t.Logf("bridge resources %s: memory %s now, %s peak; CPU %s", when, mib(lines[0]), mib(lines[1]), cpu)
 }
