@@ -56,6 +56,32 @@ type PhoneSpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]*$`
 	Firmware string `json:"firmware,omitempty"`
+
+	// Display is when the phone's screen is on: its power saving. The model
+	// must support it (displayPowerSave in `patchbay models`); setting it on
+	// a model without it makes the Phone Invalid, with Unsupported=True.
+	//
+	// On a Cisco 79x5 the screen follows a weekly schedule. On each day of
+	// onWindow.days it turns on at onWindow.start and stays on for
+	// onWindow.duration. Outside that window it is off: a key press (or
+	// lifting the handset) turns it on, and it turns off again once the
+	// phone has been idle for idleTimeout. With wakeOnCall, a ringing call
+	// turns it on too. Without onWindow no day has an on-window, so the
+	// screen is off but for idleTimeout after a key press (or a call, with
+	// wakeOnCall): that is how to turn the screen off soon after use.
+	//
+	// The install may set a house default display (settings.json
+	// phoneDefaults.display, the chart's values). Each field a Phone leaves
+	// unset takes the default's, field by field, so a Phone without display
+	// gets the whole default. onWindow is one field: a Phone's onWindow
+	// replaces the default's, and a Phone cannot remove a default's. The
+	// default applies only to models that support the feature. A field unset
+	// in both is not rendered, and the phone keeps its own value (on the
+	// 79x5, idleTimeout 1h and wakeOnCall off). With neither a display nor a
+	// default nothing is rendered, and the 79x5 keeps Cisco's schedule (on
+	// at 07:30 for 10h30m, Monday to Friday).
+	// +optional
+	Display *PhoneDisplay `json:"display,omitempty"`
 }
 
 // PhoneObserved is what patchbay has seen the phone do. The agent's memory is

@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,4 +222,117 @@ func bareNumberPhone(ns string) *unstructured.Unstructured {
 	u.SetNamespace(ns)
 	u.SetName("bare-number")
 	return u
+}
+
+// TestSchemaDisplay: the API server takes a Phone's display exactly when
+// v1alpha1.PhoneDisplay.Validate does (the house default in the settings is
+// checked by Validate alone), and its rules refuse what the 79x5 could not
+// be given: anything but whole minutes within the bounds, a start that is
+// not HH:MM, no day or a day twice.
+func TestSchemaDisplay(t *testing.T) {
+	needEnvtest(t)
+	ctx := context.Background()
+	ns := newNamespace(t)
+	yes, no := true, false
+	d := func(x time.Duration) *metav1.Duration { return &metav1.Duration{Duration: x} }
+	win := func(start string, x time.Duration, days ...v1alpha1.Weekday) *v1alpha1.DisplayOnWindow {
+		return &v1alpha1.DisplayOnWindow{Start: start, Duration: metav1.Duration{Duration: x}, Days: days}
+	}
+	for i, tc := range []struct {
+		name    string
+		display v1alpha1.PhoneDisplay
+		wantMsg string // "" = accepted
+	}{
+		{"empty", v1alpha1.PhoneDisplay{}, ""},
+		{"idle 1m and wake", v1alpha1.PhoneDisplay{IdleTimeout: d(time.Minute), WakeOnCall: &yes}, ""},
+		{"idle 23h59m", v1alpha1.PhoneDisplay{IdleTimeout: d(23*time.Hour + 59*time.Minute), WakeOnCall: &no}, ""},
+		{"Mon-Fri 07:30 for 10h30m", v1alpha1.PhoneDisplay{OnWindow: win("07:30", 10*time.Hour+30*time.Minute,
+			v1alpha1.Monday, v1alpha1.Tuesday, v1alpha1.Wednesday, v1alpha1.Thursday, v1alpha1.Friday)}, ""},
+		{"00:00 for 24h every day", v1alpha1.PhoneDisplay{OnWindow: win("00:00", 24*time.Hour, v1alpha1.Weekdays()...)}, ""},
+		{"23:59 for 1m on Sunday", v1alpha1.PhoneDisplay{OnWindow: win("23:59", time.Minute, v1alpha1.Sunday)}, ""},
+
+		{"idle 0", v1alpha1.PhoneDisplay{IdleTimeout: d(0)}, "idleTimeout must be whole minutes from 1m to 23h59m"},
+		{"idle 59s", v1alpha1.PhoneDisplay{IdleTimeout: d(59 * time.Second)}, "idleTimeout must be whole minutes"},
+		{"idle 90s", v1alpha1.PhoneDisplay{IdleTimeout: d(90 * time.Second)}, "idleTimeout must be whole minutes"},
+		{"idle 24h", v1alpha1.PhoneDisplay{IdleTimeout: d(24 * time.Hour)}, "idleTimeout must be whole minutes"},
+		{"idle 500ms", v1alpha1.PhoneDisplay{IdleTimeout: d(500 * time.Millisecond)}, "spec.display.idleTimeout"},
+		{"start 7:30", v1alpha1.PhoneDisplay{OnWindow: win("7:30", time.Hour, v1alpha1.Monday)}, "spec.display.onWindow.start"},
+		{"start 24:00", v1alpha1.PhoneDisplay{OnWindow: win("24:00", time.Hour, v1alpha1.Monday)}, "spec.display.onWindow.start"},
+		{"start 07:60", v1alpha1.PhoneDisplay{OnWindow: win("07:60", time.Hour, v1alpha1.Monday)}, "spec.display.onWindow.start"},
+		{"duration 0", v1alpha1.PhoneDisplay{OnWindow: win("07:30", 0, v1alpha1.Monday)}, "duration must be whole minutes from 1m to 24h"},
+		{"duration 24h1m", v1alpha1.PhoneDisplay{OnWindow: win("07:30", 24*time.Hour+time.Minute, v1alpha1.Monday)}, "duration must be whole minutes"},
+		{"duration 61s", v1alpha1.PhoneDisplay{OnWindow: win("07:30", 61*time.Second, v1alpha1.Monday)}, "duration must be whole minutes"},
+		{"no days", v1alpha1.PhoneDisplay{OnWindow: win("07:30", time.Hour)}, "spec.display.onWindow.days"},
+		{"a day twice", v1alpha1.PhoneDisplay{OnWindow: win("07:30", time.Hour, v1alpha1.Monday, v1alpha1.Monday)}, "spec.display.onWindow.days"},
+		{"not a day", v1alpha1.PhoneDisplay{OnWindow: win("07:30", time.Hour, "monday")}, "spec.display.onWindow.days"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &v1alpha1.Phone{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("display-%d", i), Namespace: ns},
+				Spec: v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "D0C78915E8C8", Number: "100",
+					Display: tc.display.DeepCopy()},
+			}
+			err := testClient.Create(ctx, p)
+			if valid := tc.display.Validate() == nil; valid != (tc.wantMsg == "") {
+				t.Errorf("Validate() = %v, but the API server should %s it", tc.display.Validate(),
+					map[bool]string{true: "take", false: "refuse"}[tc.wantMsg == ""])
+			}
+			if tc.wantMsg == "" {
+				if err != nil {
+					t.Fatalf("create: %v", err)
+				}
+				var got v1alpha1.Phone
+				if err := testClient.Get(ctx, client.ObjectKeyFromObject(p), &got); err != nil {
+					t.Fatal(err)
+				}
+				if !equality.Semantic.DeepEqual(got.Spec.Display, p.Spec.Display) {
+					t.Errorf("display read back as %+v, want %+v", got.Spec.Display, p.Spec.Display)
+				}
+				return
+			}
+			if !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("create = %v; want Invalid mentioning %q", err, tc.wantMsg)
+			}
+		})
+	}
+
+	// Durations as a person writes them: what Go's time.ParseDuration takes
+	// but the schema does not (fractions, other units, a sign), and the
+	// shortest forms it does.
+	for i, tc := range []struct {
+		idle, duration string
+		ok             bool
+	}{
+		{"1m", "10h30m", true},
+		{"90m", "1440m", true},
+		{"120s", "86400s", true},
+		{"1h1m", "24h0m0s", true},
+		{"1.5m", "1h", false},
+		{"1m", "0.5h", false},
+		{"-1m", "1h", false},
+		{"1d", "1h", false},
+		{"1m", "1h ", false},
+		{"", "1h", false},
+		{"1m", "100000h", false},
+	} {
+		t.Run("written "+tc.idle+" "+tc.duration, func(t *testing.T) {
+			u := &unstructured.Unstructured{Object: map[string]any{
+				"spec": map[string]any{"model": "cisco-7945", "mac": "D0C78915E8C8", "number": "100",
+					"display": map[string]any{
+						"idleTimeout": tc.idle,
+						"onWindow":    map[string]any{"start": "07:30", "duration": tc.duration, "days": []any{"Monday"}},
+					}},
+			}}
+			u.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("Phone"))
+			u.SetNamespace(ns)
+			u.SetName(fmt.Sprintf("written-%d", i))
+			err := testClient.Create(ctx, u)
+			switch {
+			case tc.ok && err != nil:
+				t.Errorf("create: %v", err)
+			case !tc.ok && !apierrors.IsInvalid(err):
+				t.Errorf("create = %v; want Invalid", err)
+			}
+		})
+	}
 }

@@ -76,6 +76,76 @@ spec:
             spec:
               description: PhoneSpec is the intended state of a hardware desk phone.
               properties:
+                display:
+                  description: |-
+                    Display is when the phone's screen is on (power saving); see
+                    PhoneDisplay. Fields left unset take the install's house default,
+                    field by field. Unset, with no house default, the phone keeps its own
+                    schedule.
+                  properties:
+                    idleTimeout:
+                      description: |-
+                        IdleTimeout is how long the screen stays on, outside the on-window,
+                        after the last key press: whole minutes from 1m to 23h59m, written as
+                        a duration ("1m", "90m", "1h30m"). The 79x5's displayIdleTimeout.
+                      maxLength: 24
+                      pattern: ^([0-9]{1,5}h([0-9]{1,5}m)?([0-9]{1,5}s)?|[0-9]{1,5}m([0-9]{1,5}s)?|[0-9]{1,5}s)$
+                      type: string
+                      x-kubernetes-validations:
+                        - message: idleTimeout must be whole minutes from 1m to 23h59m
+                          rule: '!self.matches(''^([0-9]{1,5}h([0-9]{1,5}m)?([0-9]{1,5}s)?|[0-9]{1,5}m([0-9]{1,5}s)?|[0-9]{1,5}s)$'') || (duration(self) >= duration(''1m'') && duration(self) <= duration(''23h59m'') && duration(self).getSeconds() % 60 == 0)'
+                    onWindow:
+                      description: |-
+                        OnWindow is the daily window the screen stays on. Unset means no day
+                        has one.
+                      properties:
+                        days:
+                          description: |-
+                            Days are the days with an on-window, each at most once. On every
+                            other day the screen is off but for idleTimeout after a key press.
+                            The 79x5 takes the days without one (daysDisplayNotActive).
+                          items:
+                            description: Weekday is a day of the week, in English with a capital letter.
+                            enum:
+                              - Monday
+                              - Tuesday
+                              - Wednesday
+                              - Thursday
+                              - Friday
+                              - Saturday
+                              - Sunday
+                            type: string
+                          maxItems: 7
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        duration:
+                          description: |-
+                            Duration is how long it stays on: whole minutes from 1m to 24h,
+                            written as a duration ("10h30m"). The 79x5's displayOnDuration.
+                          maxLength: 24
+                          pattern: ^([0-9]{1,5}h([0-9]{1,5}m)?([0-9]{1,5}s)?|[0-9]{1,5}m([0-9]{1,5}s)?|[0-9]{1,5}s)$
+                          type: string
+                          x-kubernetes-validations:
+                            - message: duration must be whole minutes from 1m to 24h
+                              rule: '!self.matches(''^([0-9]{1,5}h([0-9]{1,5}m)?([0-9]{1,5}s)?|[0-9]{1,5}m([0-9]{1,5}s)?|[0-9]{1,5}s)$'') || (duration(self) >= duration(''1m'') && duration(self) <= duration(''24h'') && duration(self).getSeconds() % 60 == 0)'
+                        start:
+                          description: |-
+                            Start is when the screen turns on, as HH:MM on a 24-hour clock in the
+                            install's time zone ("07:30"). The 79x5's displayOnTime.
+                          pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
+                          type: string
+                      required:
+                        - days
+                        - duration
+                        - start
+                      type: object
+                    wakeOnCall:
+                      description: |-
+                        WakeOnCall turns the screen on when a call rings while it is off.
+                        The 79x5's displayOnWhenIncomingCall.
+                      type: boolean
+                  type: object
                 firmware:
                   description: |-
                     Firmware is the load the phone should run, by the name the phone
