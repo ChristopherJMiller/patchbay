@@ -48,6 +48,7 @@ func (g gen) timeIf(p int) *metav1.Time {
 	return nil
 }
 func (g gen) version() string { return pick(g, vNow, vOld) }
+
 // firmware is a reported load or image; a real 7945 wraps its versionID in
 // asterisks.
 func (g gen) firmware() string {
