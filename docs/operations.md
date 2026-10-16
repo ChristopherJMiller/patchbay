@@ -103,8 +103,11 @@ held while the phone is on a call).
 
 - **A label, number, `spec.display` or new device**: compiled and applied
   by reload, no call drops. Phones are resynced when idle.
-- **The house default display** (`phoneDefaults.display` in the settings)
-  rolls the controller only; every phone that takes it is resynced.
+- **The house default display** (the chart value `phoneDefaults.display`,
+  documented in values.yaml) rolls the controller only, never the PBX pod;
+  every phone that takes it is resynced. A value the controller refuses
+  (not whole minutes, a bad start or day) stops the new controller at
+  start, naming the field: `kubectl logs` it, fix the value.
 - **A chart or image upgrade** recreates the PBX pod: calls drop, phones
   register again within 600 s.
 - **`pbx.address`, `pbx.ports.sip`, or a release that changes the module

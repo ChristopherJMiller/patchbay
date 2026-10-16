@@ -114,8 +114,10 @@ departs from it, the departure is recorded here (and in the code's docs).
   (`idleTimeout`, `wakeOnCall`, `onWindow{start, duration, days}`, whole
   minutes, validated by the CRD) and a house default in the settings
   (`compile.Settings.PhoneDefaults.Display`, settings.json
-  `phoneDefaults.display`) that fills each field a Phone leaves unset
-  (`onWindow` whole; `drivers.DisplayWithDefaults`). The 79x5 renders
+  `phoneDefaults.display`, from the chart value of that name) that fills
+  each field a Phone leaves unset (`onWindow` whole;
+  `drivers.DisplayWithDefaults`); a change rolls only the controller. The
+  chart checks its shape, the controller its values. The 79x5 renders
   vendorConfig's display elements (cisco79x5/display.go), and nothing
   without either, so a phone keeps Cisco's schedule. `displayPowerSave` is
   `Untested` until the bench answers (plan §8). On a model whose profile
