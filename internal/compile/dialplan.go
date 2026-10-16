@@ -27,14 +27,18 @@ type dialTarget struct {
 	number  string
 	comment string
 	// ring are the device IDs Dial rings at once, in order; empty means
-	// the number plays "not available".
+	// the number plays "not available" (unless steps are set).
 	ring []string
+	// steps, when set, are the extension's own steps (a stream's), in
+	// place of ringing.
+	steps []string
 }
 
-// extensionsConf renders the dialplan. devices and people are sorted by
-// number; reserved numbers, unrouted numbers and streams (no bridge in
-// release A) play "not available". Labels and person names never appear:
-// only numbers, device IDs and resource names.
+// extensionsConf renders the dialplan. devices, people and streams are
+// sorted by number; reserved numbers and unrouted numbers play "not
+// available", and a stream goes to the stream bridge (streamTargets).
+// Labels, person names and stream display names never appear: only
+// numbers, device IDs, stream UUIDs and resource names.
 func extensionsConf(plan NumberPlan, devices, people, streams []dialTarget) []byte {
 	w := newConf()
 	w.section("general")
@@ -60,6 +64,10 @@ func extensionsConf(plan NumberPlan, devices, people, streams []dialTarget) []by
 		for _, t := range group {
 			w.b.WriteString("\n")
 			w.comment(t.comment)
+			if len(t.steps) > 0 {
+				exten(w, t.number, t.steps...)
+				continue
+			}
 			if len(t.ring) == 0 {
 				exten(w, t.number, unavailable)
 				continue

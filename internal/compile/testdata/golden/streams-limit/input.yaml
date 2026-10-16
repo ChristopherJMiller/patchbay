@@ -1,0 +1,24 @@
+# A 90 minute call limit, the stream bridge by IP address, and two tuner
+# pools: the living room's tuner by IP and by name (both forms its
+# Streams use), and the attic's, two at a time. A stream on a host in no
+# pool (the radio) needs no tuner.
+settings:
+  streamBridge: 10.96.0.12:9092
+  streams:
+    callLimit: 90m
+    tunerPools:
+      - {name: living-room, hosts: ["192.168.0.58", "hdhomerun.lan"], max: 1}
+      - {name: attic, hosts: ["192.168.0.59"], max: 2}
+streams:
+  - metadata: {name: king5, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "705", name: KING 5, source: "http://hdhomerun.lan:5004/auto/v5.1"}
+  - metadata: {name: kiro7, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "707", name: KIRO 7, source: "http://192.168.0.58:5004/auto/v7.1"}
+  - metadata: {name: attic-kcts9, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "709", name: KCTS 9, source: "http://192.168.0.59:5004/auto/v9.1"}
+  - metadata: {name: attic-kcpq13, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "713", name: FOX 13, source: "http://192.168.0.59:5004/auto/v13.1"}
+  - metadata: {name: secretagent, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "753", name: Secret Agent, source: "https://ice2.somafm.com/secretagent-128-mp3"}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}

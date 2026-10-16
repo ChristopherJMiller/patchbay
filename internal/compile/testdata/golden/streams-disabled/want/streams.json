@@ -1,0 +1,11 @@
+{
+  "version": "9ffec8f1a43c0bb4bf084720ddba05bc0c4189373f1b95f319b2c787e465810c",
+  "pools": [],
+  "streams": {
+    "89fb6719-3e3d-5ef3-881a-b9f423a8a432": {
+      "name": "king5",
+      "number": "705",
+      "source": "http://192.0.2.58:5004/auto/v5.1"
+    }
+  }
+}

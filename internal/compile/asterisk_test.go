@@ -151,7 +151,7 @@ func TestDialplanTargets(t *testing.T) {
 	ext := string(b.Files["asterisk/extensions.conf"])
 	for _, want := range []string{
 		"exten => 302,1,Dial(PJSIP/softphone-laptop&PJSIP/phone-desk,30)\n",
-		"; Stream king5: no stream bridge in this release\nexten => 705,1,Goto(patchbay-unavailable,s,1)\n",
+		"; Stream king5: streams are disabled (no stream bridge)\nexten => 705,1,Goto(patchbay-unavailable,s,1)\n",
 	} {
 		if !strings.Contains(ext, want) {
 			t.Errorf("extensions.conf lacks %q:\n%s", want, ext)

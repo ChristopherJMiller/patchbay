@@ -1,0 +1,15 @@
+# Streams written before release B's source rules (the CRD refuses these
+# now): an rtsp:// source and SomaFM's .pls playlist. Each is left out of
+# streams.json and plays "not available", with a comment saying why; the
+# compile does not fail, and the stream with a good source is routed.
+settings:
+  streamBridge: patchbay-streams.telephony.svc:9092
+streams:
+  - metadata: {name: king5, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "705", name: KING 5, source: "rtsp://192.168.0.58/auto/v5.1"}
+  - metadata: {name: groovesalad, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "750", name: Groove Salad, source: "https://somafm.com/groovesalad130.pls"}
+  - metadata: {name: dronezone, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {number: "751", name: Drone Zone, source: "https://ice2.somafm.com/dronezone-128-mp3"}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}

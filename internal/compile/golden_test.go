@@ -22,6 +22,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 // update rewrites the golden files: go test ./internal/compile -run Golden -update
@@ -121,16 +122,22 @@ func TestGolden(t *testing.T) {
 	}
 }
 
-// goldenFiles is the bundle as golden files: every file at its path, and
-// bundle.json.
+// goldenFiles is the bundle as golden files: every file at its path,
+// bundle.json, and streams.json (Bundle.Streams, as the controller writes
+// it into <fullname>-streams).
 func goldenFiles(t *testing.T, b compile.Bundle) map[string][]byte {
 	t.Helper()
 	index, err := json.MarshalIndent(compile.Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
+	doc, err := b.Streams.Encode()
+	if err != nil {
+		t.Fatalf("streams.json: %v", err)
+	}
 	out := maps.Clone(b.Files)
 	out["bundle.json"] = append(index, '\n')
+	out[streams.FileName] = doc
 	return out
 }
 
@@ -247,8 +254,14 @@ func crossCheck(t *testing.T, name string, in compile.Inputs, b compile.Bundle) 
 	if err != nil {
 		t.Fatalf("BundleFromConfigMap: %v", err)
 	}
-	if !reflect.DeepEqual(back, b) {
+	// streams.json is not in pbx-config: the bridge's ConfigMap carries it.
+	withoutStreams := b
+	withoutStreams.Streams = streams.Document{}
+	if !reflect.DeepEqual(back, withoutStreams) {
 		t.Errorf("the ConfigMap round trip changed the bundle")
+	}
+	if err := b.Streams.Validate(); err != nil {
+		t.Errorf("streams.json: %v", err)
 	}
 	if name == "house" {
 		size := 0

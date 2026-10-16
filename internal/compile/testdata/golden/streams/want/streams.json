@@ -1,0 +1,45 @@
+{
+  "version": "3172911ad72bd70efb671fbeaa871a428e26b09e8ed5df26932074e4ae3223b7",
+  "pools": [
+    {
+      "name": "hdhomerun",
+      "max": 1
+    }
+  ],
+  "streams": {
+    "17654a6b-99f3-561e-92b4-7264ce1ca339": {
+      "name": "dronezone",
+      "number": "751",
+      "source": "https://ice2.somafm.com/dronezone-128-mp3"
+    },
+    "2ef6c04e-511f-5ce2-9724-e455904b6aa8": {
+      "name": "kiro7",
+      "number": "707",
+      "source": "http://192.168.0.58:5004/auto/v7.1",
+      "pool": "hdhomerun"
+    },
+    "36041e3b-3136-5048-b34a-6f6d404cff12": {
+      "name": "komo4",
+      "number": "704",
+      "source": "http://192.168.0.58:5004/auto/v4.1",
+      "pool": "hdhomerun"
+    },
+    "89fb6719-3e3d-5ef3-881a-b9f423a8a432": {
+      "name": "king5",
+      "number": "705",
+      "source": "http://192.168.0.58:5004/auto/v5.1",
+      "pool": "hdhomerun"
+    },
+    "8dc7863f-f236-50a0-84d6-09ef73438c48": {
+      "name": "fox13",
+      "number": "713",
+      "source": "http://192.168.0.58:5004/auto/v13.1",
+      "pool": "hdhomerun"
+    },
+    "ede9025b-dc3f-5292-b3da-0092e7e1be22": {
+      "name": "groovesalad",
+      "number": "750",
+      "source": "https://ice2.somafm.com/groovesalad-128-mp3"
+    }
+  }
+}

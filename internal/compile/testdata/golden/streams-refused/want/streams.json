@@ -1,0 +1,11 @@
+{
+  "version": "23987748c4d948abde7bc1e81c6448b1c92da3449fc3a473293726e7adcd212c",
+  "pools": [],
+  "streams": {
+    "17654a6b-99f3-561e-92b4-7264ce1ca339": {
+      "name": "dronezone",
+      "number": "751",
+      "source": "https://ice2.somafm.com/dronezone-128-mp3"
+    }
+  }
+}

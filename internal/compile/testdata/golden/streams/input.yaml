@@ -1,0 +1,38 @@
+# The house with release B's streams (docs/plans/release-b.md §12): TV from
+# the HDHomeRun FLEX DUO on 7 + the major channel, at most one of its two
+# tuners for phones (pool hdhomerun), and SomaFM radio, which needs no
+# tuner. The stream bridge is the chart's default for release patchbay in
+# namespace telephony; the call limit is the default 2 h.
+settings:
+  streamBridge: patchbay-streams.telephony.svc:9092
+  streams:
+    callLimit: 2h
+    tunerPools:
+      - {name: hdhomerun, hosts: ["192.168.0.58"], max: 1}
+phones:
+  - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915E8C8, number: "100", label: Desk}
+softphones:
+  - metadata: {name: chris-laptop, creationTimestamp: "2026-10-01T12:05:00Z"}
+    spec: {number: "150", label: "Chris (laptop)"}
+people:
+  - metadata: {name: chris, creationTimestamp: "2026-10-01T12:10:00Z"}
+    spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
+streams:
+  - metadata: {name: komo4, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "704", name: KOMO 4, source: "http://192.168.0.58:5004/auto/v4.1"}
+  - metadata: {name: king5, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "705", name: KING 5, source: "http://192.168.0.58:5004/auto/v5.1"}
+  - metadata: {name: kiro7, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "707", name: KIRO 7, source: "http://192.168.0.58:5004/auto/v7.1"}
+  - metadata: {name: fox13, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "713", name: FOX 13, source: "http://192.168.0.58:5004/auto/v13.1"}
+  - metadata: {name: groovesalad, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "750", name: Groove Salad, source: "https://ice2.somafm.com/groovesalad-128-mp3"}
+  - metadata: {name: dronezone, creationTimestamp: "2026-10-16T12:00:00Z"}
+    spec: {number: "751", name: Drone Zone, source: "https://ice2.somafm.com/dronezone-128-mp3"}
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
+  - {name: patchbay-softphone-chris-laptop, key: sip-password, value: not-a-secret-laptop-0001}
+  - {name: patchbay-softphone-chris-laptop, key: provisioning-token, value: not-a-secret-token-0001}

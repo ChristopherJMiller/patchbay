@@ -1,0 +1,38 @@
+{
+  "version": "6c07f6b6f895b75d6082603cc7ea17bae20731e697f567bd79d93c4f87e770bb",
+  "devices": {
+    "phone-desk": {
+      "kind": "Phone",
+      "name": "desk",
+      "number": "100",
+      "mac": "D0C78915E8C8",
+      "version": "bd2729d817f5d71e924766852b0536e34b7433d21fb074166274c8cf50c9ab95",
+      "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
+      "files": [
+        "tftp/SEPD0C78915E8C8.cnf.xml",
+        "tftp/dialplan.xml"
+      ]
+    },
+    "softphone-chris-laptop": {
+      "kind": "Softphone",
+      "name": "chris-laptop",
+      "number": "150",
+      "version": "da5cabefbd1795fadd089b46b3db169afabb7315ef94f4bb3c050bb001d853cd",
+      "configFile": "provisioning/softphone-chris-laptop.xml",
+      "files": [
+        "provisioning/softphone-chris-laptop.xml"
+      ],
+      "provisioningToken": {
+        "name": "patchbay-softphone-chris-laptop",
+        "key": "provisioning-token"
+      }
+    }
+  },
+  "ami": {
+    "username": "patchbay-agent",
+    "password": {
+      "name": "patchbay-ami",
+      "key": "password"
+    }
+  }
+}

@@ -375,7 +375,9 @@ func ProvisioningTokenRef(deviceID string) SecretRef {
 //     two devices render must be byte-identical (the 79x5's shared
 //     dialplan.xml).
 //  4. Asterisk's files, the dialplan and the directory, from the routed
-//     devices (rendered, holding their number), people and streams.
+//     devices (rendered, holding their number), people and streams; and
+//     streams.json (Bundle.Streams, sealed), from the streams that hold
+//     their number and have an acceptable source (streamTargets).
 //  5. The device index (every Phone and Softphone, rendered or not), the
 //     AMI account, the bundle version, and Validate.
 //
@@ -441,9 +443,12 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 	people, peopleDirectory := personTargets(in.People, claims, routedID)
 	directory = append(directory, peopleDirectory...)
 
+	streamDial, doc := streamTargets(in.Streams, claims, s)
+	if b.Streams, err = doc.Sealed(); err != nil {
+		return Bundle{}, fmt.Errorf("compile: streams.json: %w", err)
+	}
 	maps.Copy(b.Files, asteriskFiles(s, endpoints))
-	b.Files[TreeAsterisk+"/extensions.conf"] = extensionsConf(s.NumberPlan,
-		byNumber(deviceTargets), people, streamTargets(in.Streams, claims))
+	b.Files[TreeAsterisk+"/extensions.conf"] = extensionsConf(s.NumberPlan, byNumber(deviceTargets), people, streamDial)
 	if b.Files[DirectoryFile], err = directoryXML(directory); err != nil {
 		return Bundle{}, err
 	}
@@ -737,20 +742,6 @@ func personTargets(people []v1alpha1.Person, claims Claims, routedID map[Resourc
 		targets = append(targets, t)
 	}
 	return byNumber(targets), directory
-}
-
-// streamTargets is each Stream holding its number, sorted by number. In
-// release A there is no stream bridge, so each plays "not available".
-func streamTargets(streams []v1alpha1.Stream, claims Claims) []dialTarget {
-	var targets []dialTarget
-	for i := range streams {
-		s := &streams[i]
-		ref := ResourceRef{ResourceStream, s.Name}
-		if claims.Holds(ref) {
-			targets = append(targets, dialTarget{number: string(s.Spec.Number), comment: ref.String() + ": no stream bridge in this release"})
-		}
-	}
-	return byNumber(targets)
 }
 
 // byNumber sorts targets by number (shorter first, so 99 before 100).

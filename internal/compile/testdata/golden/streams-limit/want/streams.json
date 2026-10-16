@@ -1,0 +1,44 @@
+{
+  "version": "a539dadfac0604b97b6a55f07fee1a086dfebe2c94c9932a9fad0403f00d6828",
+  "pools": [
+    {
+      "name": "attic",
+      "max": 2
+    },
+    {
+      "name": "living-room",
+      "max": 1
+    }
+  ],
+  "streams": {
+    "2ef6c04e-511f-5ce2-9724-e455904b6aa8": {
+      "name": "kiro7",
+      "number": "707",
+      "source": "http://192.168.0.58:5004/auto/v7.1",
+      "pool": "living-room"
+    },
+    "89fb6719-3e3d-5ef3-881a-b9f423a8a432": {
+      "name": "king5",
+      "number": "705",
+      "source": "http://hdhomerun.lan:5004/auto/v5.1",
+      "pool": "living-room"
+    },
+    "936adb18-5c96-508a-a4ad-b036954dd389": {
+      "name": "attic-kcts9",
+      "number": "709",
+      "source": "http://192.168.0.59:5004/auto/v9.1",
+      "pool": "attic"
+    },
+    "e8e08980-3bf7-5760-8b87-13de88c6d822": {
+      "name": "secretagent",
+      "number": "753",
+      "source": "https://ice2.somafm.com/secretagent-128-mp3"
+    },
+    "e8ed7bcb-af6e-5bf9-9af2-1555354452f5": {
+      "name": "attic-kcpq13",
+      "number": "713",
+      "source": "http://192.168.0.59:5004/auto/v13.1",
+      "pool": "attic"
+    }
+  }
+}
