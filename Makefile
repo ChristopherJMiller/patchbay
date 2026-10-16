@@ -112,7 +112,7 @@ lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
 # load, which the kind suite relies on), so the unit tests run under it too.
 # -short skips envtest, which already ran untagged.
 E2E_TAGGED_TESTS = go test $(GO_TEST_FLAGS) -short -tags e2e ./internal/...
-# The one envtest that needs the e2e load (the only stageable one):
+# The one envtest that walks the e2e load (only e2e builds carry it):
 # controller-devices' TestPhoneLifecycleFirmware.
 E2E_TAGGED_ENVTEST = go test $(GO_TEST_FLAGS) -tags e2e -run '^TestPhoneLifecycleFirmware$$' ./internal/controller/devices/
 

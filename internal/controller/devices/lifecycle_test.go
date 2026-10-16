@@ -66,12 +66,12 @@ func walk(t *testing.T, f *fixture, s step, dev ...agentapi.DeviceObservations) 
 // through the reconciler and a real API server: status is stored between
 // polls, so everything the state machine remembers must survive the round
 // trip. The phone boots with its old CUCM's trust list and asks only for
-// its signed config; the default load is not staged (its digests are
-// pending in this build), so the human action is P6, not P5 (6.2.2). The
-// factory reset downloads the default load while its web page is down;
-// from then on it is never NeedsTrustReset again, even when the agent
-// restarts mid-upgrade and its fetch log empties; then it fetches its config
-// and registers, with FirmwareCurrent Unknown and no resync.
+// its signed config; the default load is not staged (the firmware store is
+// empty), so the human action is P6, not P5 (6.2.2). The factory reset
+// downloads the default load while its web page is down; from then on it is
+// never NeedsTrustReset again, even when the agent restarts mid-upgrade and
+// its fetch log empties; then it fetches its config and registers, with
+// FirmwareCurrent Unknown and no resync.
 //
 // The firmware fetches are scripted: the controller hands the fetch log to
 // the driver as the agent reports it, served or not.
@@ -88,7 +88,7 @@ func TestPhoneLifecycleDeskReset(t *testing.T) {
 		conditions: map[string][2]string{
 			v1alpha1.ConditionReady:             {"False", cisco79x5.ReasonUnseen},
 			v1alpha1.ConditionFirmwareCurrent:   {"Unknown", cisco79x5.ReasonNotReported},
-			v1alpha1.ConditionFirmwareAvailable: {"False", cisco79x5.ReasonManifestPending},
+			v1alpha1.ConditionFirmwareAvailable: {"False", cisco79x5.ReasonNotStaged},
 		}})
 
 	// It boots with its old trust list: CTL, ITL, then only the signed SEP.
@@ -161,8 +161,9 @@ func TestPhoneLifecycleDeskReset(t *testing.T) {
 }
 
 // TestPhoneNeedsFirmware: a phone that asks for a file of its load that is
-// not staged needs firmware; with the default load's digests pending, the
-// human action says to fill them in (P4).
+// not staged needs firmware; the human action says to stage it (P3) and names
+// the missing files. A load whose digests are pending (P4, ManifestPending)
+// is the driver's to decide: cisco79x5's TestDecide.
 func TestPhoneNeedsFirmware(t *testing.T) {
 	f := newFixture(t)
 	f.newPhone("desk", deskMAC, "100", "Desk")
@@ -171,9 +172,9 @@ func TestPhoneNeedsFirmware(t *testing.T) {
 		notFound(cisco79x5.DefaultLoad+".loads", t0.Add(5*time.Second)),
 	}}
 	walk(t, f, step{name: "asked for its load", at: 10 * time.Second, state: drivers.StateNeedsFirmware,
-		human: "the cisco79x5 firmware manifest has no SHA-256 yet",
+		human: "run `patchbay firmware load <zip>` with Cisco's cmterm-7945_7965-sip.9-4-2SR4-3.zip; missing: SIP45.9-4-2SR4-3S.loads",
 		conditions: map[string][2]string{
 			v1alpha1.ConditionReady:             {"False", cisco79x5.ReasonNeedsFirmware},
-			v1alpha1.ConditionFirmwareAvailable: {"False", cisco79x5.ReasonManifestPending},
+			v1alpha1.ConditionFirmwareAvailable: {"False", cisco79x5.ReasonNotStaged},
 		}}, ring)
 }

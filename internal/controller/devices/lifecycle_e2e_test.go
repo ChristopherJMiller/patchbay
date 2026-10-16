@@ -12,8 +12,8 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
 
-// e2eLoad is the cisco79x5 load only e2e builds carry: the one load whose
-// digests are genuine, so it can be staged.
+// e2eLoad is the cisco79x5 load only e2e builds carry (generated, not
+// Cisco's).
 func e2eLoad(t *testing.T) drivers.FirmwareLoad {
 	t.Helper()
 	for _, l := range cisco79x5.New().Firmware() {
@@ -30,9 +30,9 @@ func e2eLoad(t *testing.T) drivers.FirmwareLoad {
 // Registered"): Unseen, NeedsFirmware until its load is staged, Upgrading
 // (also once the download window has passed, from the stored
 // upgradeStartedAt), Registering on its first config fetch after the
-// upgrade, Registered with every condition True. Only the e2e build's
-// manifest has a load that can be staged, so `make test` (envtest untagged)
-// does not run it: `go test -tags e2e ./internal/controller/devices/` does.
+// upgrade, Registered with every condition True. It walks the e2e load,
+// which only the e2e build's manifest has, so envtest untagged does not run
+// it: `go test -tags e2e ./internal/controller/devices/` does.
 func TestPhoneLifecycleFirmware(t *testing.T) {
 	load := e2eLoad(t)
 	f := newFixture(t)
