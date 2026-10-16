@@ -42,7 +42,14 @@ const DefaultVoice = "espeak"
 //   - espeak: espeak-ng's own en-us voice, never an mbrola mb-* voice
 //     (whose data has a licence of its own). espeak-ng's GPL-3.0 covers the
 //     program, which runs only at build time, not its output.
-var Voices = []string{DefaultVoice}
+//   - ljspeech, kristin, norman, john: Piper's en_US-<voice>-medium (the
+//     flake's piper-voices, pinned by sha256). Piper's GPL-3.0 covers the
+//     program, which also runs only at build time. Each voice was trained
+//     on a public domain dataset (LJ Speech; LibriVox recordings), from
+//     scratch or, john, fine-tuned from kristin. Never lessac, nor any
+//     voice fine-tuned from it (as many of Piper's English voices are): the
+//     lessac dataset's licence allows research use only.
+var Voices = []string{DefaultVoice, "ljspeech", "kristin", "norman", "john"}
 
 // CheckVoice reports an error, listing Voices, unless voice is one of them.
 func CheckVoice(voice string) error {

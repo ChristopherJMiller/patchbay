@@ -3,7 +3,11 @@
 # docs/sounds.md) in every voice the image carries, or in the voices named,
 # into <out>/<voice>/ (default build/sounds), each prompt as <name>.ulaw
 # (G.711 µ-law, 8 kHz) and <name>.g722 (G.722, 16 kHz). `make sounds` runs
-# it inside the flake, which pins espeak-ng and ffmpeg.
+# it inside the flake, which pins espeak-ng and ffmpeg (the dev shell) and
+# Piper and its voices (the flake's piper and piper-voices packages, which
+# this script builds with `nix build`, so `nix develop` never fetches them;
+# or set PIPER to a piper binary and PIPER_VOICES to a directory of
+# en_US-<voice>-medium.onnx and .onnx.json).
 #
 #   hack/gen-sounds.sh [<out> [<voice>...]]
 #   hack/gen-sounds.sh --list       the voices, one per line
@@ -27,7 +31,23 @@ set -euo pipefail
 #   espeak  espeak-ng's own en-us voice, never an mbrola mb-* voice (whose
 #           data has a licence of its own). espeak-ng's GPL-3.0 covers the
 #           program, not its output.
-voices=(espeak)
+#   ljspeech, kristin, norman, john
+#           Piper's en_US-<voice>-medium. Piper's GPL-3.0 covers the
+#           program, which runs only here. Each voice was trained on a
+#           public domain dataset (LJ Speech; LibriVox recordings), from
+#           scratch or, john, fine-tuned from kristin. Never lessac or a
+#           voice fine-tuned from it: the lessac dataset's licence allows
+#           research use only.
+voices=(espeak ljspeech kristin norman john)
+
+# Piper's voices draw random noise on every run (onnxruntime's random ops,
+# unseeded; piper 1.8 has no seed option), so one text would render a
+# little differently each time. With both noise scales at 0 the render is
+# a function of the text and the model: two runs give the same bytes.
+# Piper normalises each sentence to full scale; 0.7 of that puts its peaks
+# near -3 dBFS, like espeak's, with headroom for the resampler. And 0.2 s
+# between sentences, which Piper otherwise runs together.
+piper_args=(--noise-scale 0 --noise-w-scale 0 --volume 0.7 --sentence-silence 0.2)
 
 declare -A texts=(
 	[no-emergency]="This phone cannot call emergency services. Hang up and use a mobile phone."
@@ -63,6 +83,31 @@ for tool in espeak-ng ffmpeg; do
 	command -v "$tool" >/dev/null || die "$tool is not on PATH: run inside 'nix develop'"
 done
 
+# Piper and its voices, from the flake unless given, if any voice needs it.
+piper_voices=()
+for v in "${want[@]}"; do
+	[[ $v == espeak ]] || piper_voices+=("$v")
+done
+if ((${#piper_voices[@]} > 0)); then
+	if [[ -z ${PIPER:-} || -z ${PIPER_VOICES:-} ]]; then
+		command -v nix >/dev/null ||
+			die "nix is not on PATH: Piper and its voices are the flake's piper and piper-voices packages (or set PIPER and PIPER_VOICES)"
+		flake=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+	fi
+	if [[ -z ${PIPER:-} ]]; then
+		PIPER=$(nix build --no-link --print-out-paths "$flake#piper")/bin/piper
+	fi
+	if [[ -z ${PIPER_VOICES:-} ]]; then
+		PIPER_VOICES=$(nix build --no-link --print-out-paths "$flake#piper-voices")
+	fi
+	[[ -x $PIPER ]] || die "PIPER=$PIPER is not an executable"
+	for v in "${piper_voices[@]}"; do
+		for f in "$PIPER_VOICES/en_US-$v-medium.onnx" "$PIPER_VOICES/en_US-$v-medium.onnx.json"; do
+			[[ -f $f ]] || die "voice $v: no $f (the flake's piper-voices must carry every Piper voice)"
+		done
+	done
+fi
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -72,7 +117,10 @@ render() {
 	local wav=$work/$voice-$name.wav
 	case $voice in
 	espeak) espeak-ng -v en-us -s 150 -w "$wav" "${texts[$name]}" ;;
-	*) die "no renderer for voice $voice" ;;
+	*)
+		printf '%s\n' "${texts[$name]}" |
+			"$PIPER" --model "$PIPER_VOICES/en_US-$voice-medium.onnx" "${piper_args[@]}" --output-file "$wav"
+		;;
 	esac
 	ffmpeg -hide_banner -loglevel error -nostdin -y -i "$wav" \
 		-ar 8000 -ac 1 -acodec pcm_mulaw -f mulaw "$dir/$name.ulaw"
