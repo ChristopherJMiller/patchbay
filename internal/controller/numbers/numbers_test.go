@@ -91,7 +91,6 @@ type fixture struct {
 	client       client.Client
 	rec          *recorder
 	people       *numbers.PersonReconciler
-	streams      *numbers.StreamReconciler
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -114,9 +113,6 @@ func newFixture(t *testing.T) *fixture {
 	})
 	cfg := f.config()
 	if f.people, err = numbers.NewPersonReconciler(cfg); err != nil {
-		t.Fatal(err)
-	}
-	if f.streams, err = numbers.NewStreamReconciler(cfg); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -161,11 +157,6 @@ func (f *fixture) newPerson(name, number string, targets ...string) {
 		}
 	}
 	f.create(p)
-}
-
-func (f *fixture) newStream(name, number string) {
-	f.create(&v1alpha1.Stream{ObjectMeta: meta_(name),
-		Spec: v1alpha1.StreamSpec{Number: v1alpha1.Number(number), Name: "Radio", Source: "http://192.168.0.58:5004/auto/v5.1"}})
 }
 
 // compile compiles the namespace and writes pbx-secrets then pbx-config,
@@ -258,18 +249,6 @@ func (f *fixture) person(name string) v1alpha1.Person {
 		f.t.Fatal(err)
 	}
 	return p
-}
-
-func (f *fixture) stream(name string) v1alpha1.Stream {
-	f.t.Helper()
-	if _, err := f.streams.Reconcile(f.ctx, req(f, name)); err != nil {
-		f.t.Fatalf("reconciling Stream %s: %v", name, err)
-	}
-	var s v1alpha1.Stream
-	if err := env.Client.Get(f.ctx, client.ObjectKey{Namespace: f.ns, Name: name}, &s); err != nil {
-		f.t.Fatal(err)
-	}
-	return s
 }
 
 // want checks the state and both conditions, in order Ready then
@@ -404,57 +383,21 @@ func TestPersonNotInPlan(t *testing.T) {
 		noConflict)
 }
 
-// TestStreamNoBridge: release A has no stream bridge.
-func TestStreamNoBridge(t *testing.T) {
-	f := newFixture(t)
-	f.newStream("radio", "705")
-	f.compile()
-	s := f.stream("radio")
-	want(t, numbers.StateUnavailable, s.Generation, s.Status.State, s.Status.Conditions,
-		cond(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonNoStreamBridge,
-			`release A has no stream bridge: dialling 705 plays "not available"`), noConflict)
-}
-
-// TestStreamConflict: a newer Stream on a held number, and one outside the
-// streams range, are Invalid.
-func TestStreamConflict(t *testing.T) {
-	f := newFixture(t)
-	f.newStream("a-radio", "705")
-	f.newStream("b-tv", "705")
-	f.newStream("c-odd", "301")
-	f.compile()
-	if s := f.stream("a-radio"); s.Status.State != numbers.StateUnavailable {
-		t.Errorf("a-radio is %s; want Unavailable", s.Status.State)
-	}
-	const msg = "number 705 is held by Stream a-radio, which is older"
-	s := f.stream("b-tv")
-	want(t, numbers.StateInvalid, s.Generation, s.Status.State, s.Status.Conditions,
-		cond(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonNumberConflict, msg),
-		cond(v1alpha1.ConditionNumberConflict, metav1.ConditionTrue, v1alpha1.ReasonNumberConflict, msg))
-	s = f.stream("c-odd")
-	want(t, numbers.StateInvalid, s.Generation, s.Status.State, s.Status.Conditions,
-		cond(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonNumberNotInPlan, "number 301 is not in the Stream range 7XX"),
-		noConflict)
-}
-
 // TestStatusWrittenOnlyWhenChanged: judging again on unchanged input writes
 // nothing.
 func TestStatusWrittenOnlyWhenChanged(t *testing.T) {
 	f := newFixture(t)
 	f.newPerson("chris", "301", "phone desk")
-	f.newStream("radio", "705")
 	f.compile()
 	p := f.person("chris")
-	s := f.stream("radio")
-	if n := f.statusWrites.Load(); n != 2 {
-		t.Fatalf("%d status writes; want 2", n)
+	if n := f.statusWrites.Load(); n != 1 {
+		t.Fatalf("%d status writes; want 1", n)
 	}
-	p2, s2 := f.person("chris"), f.stream("radio")
-	if n := f.statusWrites.Load(); n != 2 || p2.ResourceVersion != p.ResourceVersion || s2.ResourceVersion != s.ResourceVersion {
-		t.Errorf("judging again: %d status writes; want 2 and unchanged resourceVersions", n)
+	if p2 := f.person("chris"); f.statusWrites.Load() != 1 || p2.ResourceVersion != p.ResourceVersion {
+		t.Errorf("judging again: %d status writes; want 1 and an unchanged resourceVersion", f.statusWrites.Load())
 	}
-	if e := f.rec.take(); len(e) != 2 {
-		t.Errorf("events %q; want the two first StateChanged", e)
+	if e := f.rec.take(); len(e) != 1 {
+		t.Errorf("events %q; want the first StateChanged", e)
 	}
 }
 
@@ -462,15 +405,11 @@ func TestStatusWrittenOnlyWhenChanged(t *testing.T) {
 func TestNothingBeforeCompiled(t *testing.T) {
 	f := newFixture(t)
 	f.newPerson("chris", "301", "phone desk")
-	f.newStream("radio", "705")
-	if p, s := f.person("chris"), f.stream("radio"); p.Status.State != "" || s.Status.State != "" || f.statusWrites.Load() != 0 {
-		t.Errorf("statuses %+v %+v; want none", p.Status, s.Status)
+	if p := f.person("chris"); p.Status.State != "" || f.statusWrites.Load() != 0 {
+		t.Errorf("status %+v; want none", p.Status)
 	}
 	// Missing resources are done.
 	if _, err := f.people.Reconcile(f.ctx, req(f, "gone")); err != nil {
-		t.Error(err)
-	}
-	if _, err := f.streams.Reconcile(f.ctx, req(f, "gone")); err != nil {
 		t.Error(err)
 	}
 }
@@ -481,7 +420,6 @@ func TestNothingBeforeCompiled(t *testing.T) {
 func TestStatusWriteError(t *testing.T) {
 	f := newFixture(t)
 	f.newPerson("chris", "301", "phone desk")
-	f.newStream("radio", "705")
 	f.compile()
 	invalid := error(apierrors.NewInvalid(schema.GroupKind{Group: v1alpha1.GroupVersion.Group, Kind: "Person"}, "chris",
 		field.ErrorList{field.Invalid(field.NewPath("status", "state"), "quoted-value", "bad")}))
@@ -489,11 +427,8 @@ func TestStatusWriteError(t *testing.T) {
 	if _, err := f.people.Reconcile(f.ctx, req(f, "chris")); !apierrors.IsInvalid(err) || strings.Contains(err.Error(), "quoted-value") {
 		t.Errorf("error %v", err)
 	}
-	conflict := error(apierrors.NewConflict(schema.GroupResource{Resource: "streams"}, "radio", nil))
+	conflict := error(apierrors.NewConflict(schema.GroupResource{Resource: "persons"}, "dana", nil))
 	f.statusErr.Store(&conflict)
-	if res, err := f.streams.Reconcile(f.ctx, req(f, "radio")); err != nil || res.RequeueAfter <= 0 || res.RequeueAfter > time.Second {
-		t.Errorf("Stream conflict: %+v, %v; want a requeue within a second and no error", res, err)
-	}
 	f.newPerson("dana", "302", "phone desk")
 	if res, err := f.people.Reconcile(f.ctx, req(f, "dana")); err != nil || res.RequeueAfter <= 0 || res.RequeueAfter > time.Second {
 		t.Errorf("Person conflict: %+v, %v; want a requeue within a second and no error", res, err)
@@ -508,7 +443,6 @@ func TestStatusWriteError(t *testing.T) {
 func TestIndexUnreadable(t *testing.T) {
 	f := newFixture(t)
 	f.newPerson("chris", "301", "phone desk")
-	f.newStream("radio", "705")
 	f.compile()
 	var cm corev1.ConfigMap
 	if err := env.Client.Get(f.ctx, client.ObjectKey{Namespace: f.ns, Name: f.names.ConfigMap}, &cm); err != nil {
@@ -521,9 +455,6 @@ func TestIndexUnreadable(t *testing.T) {
 	if _, err := f.people.Reconcile(f.ctx, req(f, "chris")); err == nil {
 		t.Error("Person: no error")
 	}
-	if _, err := f.streams.Reconcile(f.ctx, req(f, "radio")); err == nil {
-		t.Error("Stream: no error")
-	}
 }
 
 // TestConfigValidated: an incomplete Config is refused.
@@ -533,9 +464,6 @@ func TestConfigValidated(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), w) {
 			t.Errorf("error %v; want it to say %q", err, w)
 		}
-	}
-	if _, err := numbers.NewStreamReconciler(numbers.Config{}); err == nil {
-		t.Error("NewStreamReconciler accepted an empty Config")
 	}
 	if err := numbers.Setup(nil, numbers.Config{}); err == nil {
 		t.Error("Setup accepted an empty Config")

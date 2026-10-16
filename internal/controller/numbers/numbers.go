@@ -1,10 +1,12 @@
-// Package numbers holds the Person and Stream reconcilers
-// (docs/plans/release-a.md W3.6, §6.2.6). Persons and Streams have no
-// driver: their status comes from the number table (compile.ResolveClaims,
-// the same function Compile routes with, over every resource) and, for a
-// Person, from which of its ring targets the compiled bundle routes.
+// Package numbers holds the Person reconciler (docs/plans/release-a.md
+// W3.6, §6.2.6). Persons have no driver: their status comes from the
+// number table (compile.ResolveClaims, the same function Compile routes
+// with, over every resource) and from which of their ring targets the
+// compiled bundle routes. Streams are judged by internal/controller/
+// streamstate since release B (docs/plans/release-b.md RT.5), which reads
+// the same number table.
 //
-// Each writes two conditions, in order Ready and NumberConflict, and a
+// It writes two conditions, in order Ready and NumberConflict, and a
 // display state:
 //   - Invalid: an older resource holds the number (NumberConflict True,
 //     Ready False NumberConflict), or the number is outside the kind's range
@@ -12,12 +14,12 @@
 //   - Ready (Person): every ring target exists and is routed;
 //   - Incomplete (Person): some ring targets are missing or not routed; it
 //     still rings the others (Ready False MissingRingTargets);
-//   - Unavailable: a Person none of whose targets is routed, or a Stream
-//     (release A has no stream bridge): dialling it plays "not available".
+//   - Unavailable: a Person none of whose targets is routed: dialling it
+//     plays "not available".
 //
 // No status is written while the bundle has not been compiled (6.2.1,
-// "Gating"); a new bundle enqueues every Person and Stream, and status is
-// written only when it changed.
+// "Gating"); a new bundle enqueues every Person, and status is written
+// only when it changed.
 package numbers
 
 import (
@@ -44,7 +46,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 )
 
-// Display states (status.state) of Persons and Streams.
+// Display states (status.state) of Persons.
 const (
 	StateReady       = "Ready"
 	StateInvalid     = "Invalid"
@@ -52,7 +54,7 @@ const (
 	StateUnavailable = "Unavailable"
 )
 
-// Config is what both reconcilers need. Every field but Now and Log is
+// Config is what the reconciler needs. Every field but Now and Log is
 // required.
 type Config struct {
 	// Client is the manager's client: reads come from its cache.
@@ -91,7 +93,7 @@ func (c Config) validate() error {
 	return errors.Join(errs...)
 }
 
-// base is what both reconcilers share.
+// base is the reconciler's shared machinery.
 type base struct {
 	cfg Config
 	now func() time.Time
@@ -109,7 +111,7 @@ func newBase(cfg Config, controller string) (base, error) {
 	return b, nil
 }
 
-// view is what a Person or Stream is judged from.
+// view is what a Person is judged from.
 type view struct {
 	index  compile.Index
 	inputs compile.Inputs
@@ -151,7 +153,7 @@ func listInputs(ctx context.Context, c client.Reader, namespace string) (compile
 	return compile.Inputs{Phones: phones.Items, Softphones: softphones.Items, People: people.Items, Streams: streams.Items}, nil
 }
 
-// verdict is a Person's or Stream's judged status.
+// verdict is a Person's judged status.
 type verdict struct {
 	state    string
 	ready    metav1.Condition
@@ -182,7 +184,7 @@ func claimVerdict(claims compile.Claims, ref compile.ResourceRef) (v verdict, ok
 			ready:    ready(metav1.ConditionFalse, v1alpha1.ReasonNumberConflict, p.Message),
 			conflict: numberConflict(metav1.ConditionTrue, v1alpha1.ReasonNumberConflict, p.Message),
 		}, true
-	default: // out of the plan: the only other problem a Person or Stream can have
+	default: // out of the plan: the only other problem a Person can have
 		return verdict{
 			state:    StateInvalid,
 			ready:    ready(metav1.ConditionFalse, v1alpha1.ReasonNumberNotInPlan, p.Message),
@@ -349,56 +351,5 @@ func personRouting(p *v1alpha1.Person, v view) verdict {
 		return verdict{state: StateUnavailable,
 			ready:    ready(metav1.ConditionFalse, v1alpha1.ReasonMissingRingTargets, not+": "+notAvailable(string(p.Spec.Number))),
 			conflict: noConflict}
-	}
-}
-
-// StreamReconciler judges Streams (W3.6).
-type StreamReconciler struct{ base }
-
-// NewStreamReconciler checks the config and builds the reconciler.
-func NewStreamReconciler(cfg Config) (*StreamReconciler, error) {
-	b, err := newBase(cfg, streamController)
-	if err != nil {
-		return nil, err
-	}
-	return &StreamReconciler{b}, nil
-}
-
-// Reconcile judges one Stream and writes its status when it changed. In
-// release A every Stream that holds its number is Unavailable: there is no
-// stream bridge.
-func (r *StreamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var s v1alpha1.Stream
-	if err := r.cfg.Client.Get(ctx, req.NamespacedName, &s); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-	v, ok, err := r.observe(ctx)
-	if err != nil || !ok {
-		return ctrl.Result{}, err
-	}
-	verdict, invalid := claimVerdict(v.claims, compile.ResourceRef{Kind: compile.ResourceStream, Name: s.Name})
-	if !invalid {
-		verdict = noBridge(string(s.Spec.Number))
-	}
-	before := s.Status.DeepCopy()
-	after := s.Status.DeepCopy()
-	r.apply(&after.State, &after.ObservedGeneration, &after.Conditions, verdict, s.Generation)
-	if !statusChanged(before, after) {
-		return ctrl.Result{}, nil
-	}
-	s.Status = *after
-	if err := r.cfg.Client.Status().Update(ctx, &s); err != nil {
-		return r.writeFailed("Stream", s.Name, err)
-	}
-	r.written(&s, before.State, after.State, verdict)
-	return ctrl.Result{}, nil
-}
-
-// noBridge is a Stream that holds its number in release A.
-func noBridge(number string) verdict {
-	return verdict{
-		state:    StateUnavailable,
-		ready:    ready(metav1.ConditionFalse, v1alpha1.ReasonNoStreamBridge, "release A has no stream bridge: "+notAvailable(number)),
-		conflict: noConflict,
 	}
 }
