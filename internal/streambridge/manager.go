@@ -153,7 +153,8 @@ func newManager(src Source, clk clock.WithTicker, log logr.Logger, started time.
 // register puts the bridge's metrics on reg.
 func (m *manager) register(reg prometheus.Registerer) error {
 	for _, c := range []prometheus.Collector{
-		m.metrics.starts, m.metrics.refused, m.metrics.dropped, m.metrics.underruns, m.metrics.loadFailures, gauges{m},
+		m.metrics.starts, m.metrics.ends, m.metrics.refused, m.metrics.dropped, m.metrics.underruns, m.metrics.loadFailures,
+		gauges{m},
 	} {
 		if err := reg.Register(c); err != nil {
 			return fmt.Errorf("stream-bridge: registering metrics: %w", err)
@@ -289,7 +290,7 @@ func (m *manager) join(id string) (*caller, error) {
 	}
 	if preempt != nil {
 		m.log.Info("session stopped", "source", preempt.source, "pool", preempt.pool, "reason", "its tuner is needed for "+st.Source)
-		m.stop(preempt, endStopping)
+		m.stopFor(preempt, endStopping, endedPreempted)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -386,11 +387,21 @@ func (m *manager) drain(s *session) {
 			defer m.mu.Unlock()
 			if s.graceStop == stop && !s.stopped {
 				m.log.Info("session stopped", "source", s.source, "pool", s.pool, "reason", "no caller for "+Grace.String())
-				m.stop(s, endStopping)
+				m.stopFor(s, endStopping, endedIdle)
 			}
 		case <-stop:
 		}
 	}()
+}
+
+// stopFor stops s, counting why it ended (session_ends_total) the first
+// time.
+func (m *manager) stopFor(s *session, why endReason, cause string) {
+	if s.stopped {
+		return
+	}
+	m.metrics.ends.WithLabelValues(cause).Inc()
+	m.stop(s, why)
 }
 
 // stop stops s: no new caller joins it, its decoder's context ends, and
@@ -437,11 +448,11 @@ func (m *manager) fail(s *session, reason api.FailureReason, msg string) {
 	}
 	m.log.Info("session failed", "source", s.source, "pool", s.pool, "reason", reason, "message", msg,
 		"state", s.state, "callers", len(s.callers))
-	why := endSourceEnded
+	why, cause := endSourceEnded, endedSourceEnded
 	if reason == api.FailureSourceFailed {
-		why = endSourceFailed
+		why, cause = endSourceFailed, endedSourceFailed
 	}
-	m.stop(s, why)
+	m.stopFor(s, why, cause)
 }
 
 // run is a session's life: wait for the pool's tuner to settle, start the
@@ -646,7 +657,7 @@ func (m *manager) stopAll() {
 	m.mu.Lock()
 	m.closed = true
 	for _, s := range m.sessions {
-		m.stop(s, endStopping)
+		m.stopFor(s, endStopping, endedStopping)
 	}
 	m.mu.Unlock()
 	m.wg.Wait()

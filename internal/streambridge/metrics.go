@@ -4,12 +4,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// The bridge's metrics (docs/plans/release-b.md 6.1 BR.7), registered on
-// Options.Registerer and served from Options.Gatherer on api.PathMetrics:
+// The bridge's metrics (docs/plans/release-b.md 6.1 BR.7, §13), registered
+// on Options.Registerer and served from Options.Gatherer on
+// api.PathMetrics:
 //
 //	patchbay_stream_bridge_calls{stream}                    open calls per loaded stream (by name)
 //	patchbay_stream_bridge_sessions{pool}                   running sessions (decoders) per pool; "none" without one
 //	patchbay_stream_bridge_session_starts_total{result}     sessions that played (first audio) or failed before it
+//	patchbay_stream_bridge_session_ends_total{reason}       sessions that ended: source_ended, source_failed, idle, preempted, stopping
 //	patchbay_stream_bridge_refused_calls_total{reason}      unknown_stream, tuner_busy, bridge_full
 //	patchbay_stream_bridge_frames_dropped_total             frames a full caller queue dropped
 //	patchbay_stream_bridge_underrun_frames_total            silent frames sent while a session was Playing
@@ -23,6 +25,16 @@ const (
 	resultPlayed = "played"
 	resultFailed = "failed"
 
+	// Why a session ended (session_ends_total): its source closed or
+	// stalled after it played; it failed before any audio; its grace ran
+	// out with no caller; it gave its tuner to another source of its pool;
+	// the bridge stopped.
+	endedSourceEnded  = "source_ended"
+	endedSourceFailed = "source_failed"
+	endedIdle         = "idle"
+	endedPreempted    = "preempted"
+	endedStopping     = "stopping"
+
 	refusedUnknown   = "unknown_stream"
 	refusedTunerBusy = "tuner_busy"
 	refusedFull      = "bridge_full"
@@ -34,6 +46,7 @@ const (
 // metrics are the bridge's counters.
 type metrics struct {
 	starts       *prometheus.CounterVec
+	ends         *prometheus.CounterVec
 	refused      *prometheus.CounterVec
 	dropped      prometheus.Counter
 	underruns    prometheus.Counter
@@ -46,6 +59,12 @@ func newMetrics() *metrics {
 			Name: "patchbay_stream_bridge_session_starts_total",
 			Help: "Sessions (decoders) that played (their first audio arrived) or failed before any audio.",
 		}, []string{"result"}),
+		ends: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "patchbay_stream_bridge_session_ends_total",
+			Help: "Sessions (decoders) that ended, by why: source_ended (the source closed or stalled after it played), " +
+				"source_failed (before any audio), idle (no caller for the grace), preempted (its tuner went to another " +
+				"source of its pool), stopping (the bridge stopped).",
+		}, []string{"reason"}),
 		refused: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "patchbay_stream_bridge_refused_calls_total",
 			Help: "Calls refused: an unknown stream, a busy tuner pool, or a bridge at its limit of calls or sessions.",
@@ -65,6 +84,9 @@ func newMetrics() *metrics {
 	}
 	for _, r := range []string{resultPlayed, resultFailed} {
 		mt.starts.WithLabelValues(r)
+	}
+	for _, r := range []string{endedSourceEnded, endedSourceFailed, endedIdle, endedPreempted, endedStopping} {
+		mt.ends.WithLabelValues(r)
 	}
 	for _, r := range []string{refusedUnknown, refusedTunerBusy, refusedFull} {
 		mt.refused.WithLabelValues(r)

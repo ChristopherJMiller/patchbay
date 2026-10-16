@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
+	clocktesting "k8s.io/utils/clock/testing"
 
 	"github.com/ChristopherJMiller/patchbay/internal/streambridge/api"
 	"github.com/ChristopherJMiller/patchbay/internal/streams"
@@ -75,6 +76,8 @@ func TestEveryMetric(t *testing.T) {
 		`patchbay_stream_bridge_sessions{pool="none"} 0`,
 		`patchbay_stream_bridge_session_starts_total{result="played"} 1`,
 		`patchbay_stream_bridge_session_starts_total{result="failed"} 1`,
+		`patchbay_stream_bridge_session_ends_total{reason="source_failed"} 1`,
+		`patchbay_stream_bridge_session_ends_total{reason="idle"} 0`,
 		`patchbay_stream_bridge_refused_calls_total{reason="bridge_full"} 1`,
 		`patchbay_stream_bridge_refused_calls_total{reason="tuner_busy"} 1`,
 		`patchbay_stream_bridge_refused_calls_total{reason="unknown_stream"} 1`,
@@ -100,4 +103,42 @@ func TestEveryMetric(t *testing.T) {
 		t.Error("king5's session, still playing, no longer counts")
 	}
 	m.leave(slow)
+}
+
+// TestSessionEnds: each way a session ends is counted once, by why
+// (session_ends_total): a source that stops after it played, one that
+// fails before any audio, a grace running out, a preemption, the bridge
+// stopping.
+func TestSessionEnds(t *testing.T) {
+	const name = "patchbay_stream_bridge_session_ends_total"
+	clk := clocktesting.NewFakeClock(epoch)
+	src := newFakeSource().
+		set(srcRadio, failAfter(5, errors.New("ffmpeg exited with status 0: the source ended"))).
+		failStart(srcKomo, errors.New("starting ffmpeg: no such file"))
+	m, reg := testManager(t, src, clk, doc(t, []streams.Pool{hdhomerun}, king5, kiro7, komo4, groovesalad))
+
+	radio := join(t, m, groovesalad)
+	eventually(t, "the radio to end", func() bool { return ended(radio) })
+	komo := join(t, m, komo4)
+	eventually(t, "komo4 to fail", func() bool { return ended(komo) })
+
+	king := join(t, m, king5)
+	popN(t, king, 1)
+	m.leave(king)
+	eventually(t, "king5 to drain", func() bool { return sessionState(m, srcKing) == api.SessionDraining })
+	clk.Step(Grace)
+	eventually(t, "king5's grace to stop it", func() bool { return gauge(t, reg, name, "reason=idle") == 1 })
+
+	again := join(t, m, king5)
+	m.leave(again)
+	join(t, m, kiro7) // king5's draining session gives its tuner to kiro7
+	m.stopAll()
+
+	for reason, want := range map[string]float64{
+		"source_ended": 1, "source_failed": 1, "idle": 1, "preempted": 1, "stopping": 1,
+	} {
+		if v := gauge(t, reg, name, "reason="+reason); v != want {
+			t.Errorf("%s{reason=%q} %v, want %v", name, reason, v, want)
+		}
+	}
 }
