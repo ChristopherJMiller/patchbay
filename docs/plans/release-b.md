@@ -1276,6 +1276,15 @@ e2e tests, docs)
   (`watchFor`). After the scale-up, Down allows 60 s for Idle (I.6: 30 s).
   The refused case asserts "5XX" (above), and the first tone is asserted
   within 5 s, not 3 s (Measured, below).
+- A third run from scratch failed one assertion of `TestStreamTuner/refused`:
+  the refusal landed in the second the test took its start time, and the
+  fold (like an Event's `creationTimestamp`) keeps whole seconds, so
+  21:15:24 read as before 21:15:24.6. The limit and refused cases now
+  take their start truncated to the second (`sinceNow`, `77442e0`).
+  Everything else in that run passed, and a fourth run from scratch on the
+  final code passed whole (652 s; first tones 0.10-0.25 s on the radio,
+  1.60-1.62 s for a tuner session; the limit at 20.001 s; the added Stream
+  Idle 71 s after it was created; the bridge's memory peak 105.7 MiB).
 - streamkit_test.go's keep-quiet `var _ = []any{…}` is removed, as its
   owner asked, now that every helper has a caller.
 - Commit `14b007f` also carried `cmd/patchbay/stubs.go`'s deletion (staged
@@ -1300,7 +1309,7 @@ e2e tests, docs)
 | `TestStreamRadio`; first tone; the long call ended by the PBX at | 53.2 s; 0.08-0.22 s; 20.001 s | 56.3 s; 0.14-2.98 s; 20.003 s | ~50 s; 3 s; 20 s |
 | `TestStreamTuner`; first tone of a session (the 1.5 s lock included); the tuner free after the calls' pods ended | 75.5 s; 1.46-2.38 s; 1.8 s | 74.6 s; 1.58-2.05 s; 1.6 s | ~80 s; 3 s; 10 s |
 | The parallel group, set by `TestPhoneLifecycle` as in release A (the stream tests add nothing) | 394 s | 386 s | adds nothing |
-| The bridge's memory after the stream tests (cgroup `memory.current`, page cache included; up to 3 sessions at once) | (not logged) | 89-115 MiB, peak 125.6 MiB | requests 96Mi, limit 512Mi |
+| The bridge's memory after the stream tests (cgroup `memory.current`, page cache included; up to 3 sessions at once) | (not logged) | 89-115 MiB, peak 125.6 MiB (a third run: 39-51 MiB, peak 72.4 MiB) | requests 96Mi, limit 512Mi |
 | The bridge's CPU over its life (it restarts in `TestStreamBridgeDown`) | (not logged) | 2.0 s in 106 s (19m average) | requests 50m |
 
 - **The first tone is asserted within 5 s, not 3 s** (`firstToneWithin`):
@@ -1312,8 +1321,9 @@ e2e tests, docs)
 - **The kubelet's sync varies** (5 s and 85 s): `TestStreamAdded`'s
   150 s holds, and docs/streams.md says "usually under a minute, up to
   about two".
-- **The bridge's memory request (96Mi) is under its working set with three
-  sessions** (126 MiB peak, page cache included), and far under the 512Mi
+- **The bridge's memory request (96Mi) can be under its working set with
+  three sessions** (peaks of 126 MiB and 72 MiB in two runs, page cache
+  included), and far under the 512Mi
   limit. Left as packaged; a house that wants the scheduler to count what
   three sessions use sets `streamBridge.resources.requests.memory: 128Mi`.
 
