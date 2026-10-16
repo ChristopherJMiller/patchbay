@@ -133,6 +133,10 @@ type caller struct {
 	uuid, name, number string
 	sess               *session
 	queue              frameQueue
+	// limit is the call's time limit (streams.json's callLimitSeconds when
+	// it joined; zero: none): the server ends a call CallLimitSlack past
+	// it, if Asterisk has not.
+	limit time.Duration
 	// ended is closed when the bridge ends the call (its session stopped
 	// or failed, or the bridge is stopping); why says which, set first.
 	ended chan struct{}
@@ -153,8 +157,8 @@ func newManager(src Source, clk clock.WithTicker, log logr.Logger, started time.
 // register puts the bridge's metrics on reg.
 func (m *manager) register(reg prometheus.Registerer) error {
 	for _, c := range []prometheus.Collector{
-		m.metrics.starts, m.metrics.ends, m.metrics.refused, m.metrics.dropped, m.metrics.underruns, m.metrics.loadFailures,
-		gauges{m},
+		m.metrics.starts, m.metrics.ends, m.metrics.refused, m.metrics.limitEnds, m.metrics.dropped, m.metrics.underruns,
+		m.metrics.loadFailures, gauges{m},
 	} {
 		if err := reg.Register(c); err != nil {
 			return fmt.Errorf("stream-bridge: registering metrics: %w", err)
@@ -251,7 +255,10 @@ func (m *manager) join(id string) (*caller, error) {
 	}
 	mem := m.mem(id)
 	mem.calls++
-	c := &caller{uuid: id, name: st.Name, number: st.Number, ended: make(chan struct{})}
+	c := &caller{
+		uuid: id, name: st.Name, number: st.Number, ended: make(chan struct{}),
+		limit: time.Duration(m.doc.CallLimitSeconds) * time.Second,
+	}
 	if s := m.sessions[st.Source]; s != nil {
 		m.attach(s, c, now)
 		return c, nil

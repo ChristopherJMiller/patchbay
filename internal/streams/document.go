@@ -34,6 +34,9 @@ const (
 	// MaxStreams is the most streams one document holds (the 7XX range has
 	// 100 numbers).
 	MaxStreams = 1000
+	// MaxCallLimitSeconds is the longest CallLimitSeconds: 24 h, the
+	// settings' compile.MaxCallLimit.
+	MaxCallLimitSeconds = 24 * 60 * 60
 )
 
 // Document is streams.json: every Stream the compiled dialplan routes to the
@@ -50,6 +53,16 @@ type Document struct {
 	// reports the version it loaded (streambridge/api.BridgeStatus), so
 	// the controller can tell when a new document has reached it.
 	Version string `json:"version"`
+
+	// CallLimitSeconds is how long one call may last, in whole seconds
+	// (settings streams.callLimit, compile.StreamSettings.Limit), or zero
+	// for no limit at the bridge. Asterisk ends a call at the limit
+	// (TIMEOUT(absolute) and Dial's S()); the bridge ends any call still
+	// open streambridge.CallLimitSlack after it, wherever Asterisk has
+	// moved the call (an attended transfer into an application keeps
+	// neither of Asterisk's limits) and whoever dialled the bridge
+	// (docs/plans/release-b.md §13). Compile always sets it.
+	CallLimitSeconds int `json:"callLimitSeconds,omitempty"`
 
 	// Pools are the tuner pools (settings streams.tunerPools), sorted by
 	// name, each once: all of them, used or not.
@@ -130,15 +143,20 @@ func CheckSource(source string) error {
 	return nil
 }
 
-// Validate checks a document: its Version matches its content; pools are
-// sorted by name, each a DNS label once, with Max 1 to MaxPoolMax; at most
-// MaxStreams streams, each keyed by UUID(Name), named by a DNS subdomain
-// once, with a number of 1-16 digits, a source CheckSource accepts and a
-// pool that is empty or listed; and streams with one source agree on its
-// pool (a session is per source).
+// Validate checks a document: its Version matches its content;
+// CallLimitSeconds is 0 to MaxCallLimitSeconds; pools are sorted by name,
+// each a DNS label once, with Max 1 to MaxPoolMax; at most MaxStreams
+// streams, each keyed by UUID(Name), named by a DNS subdomain once, with a
+// number of 1-16 digits, a source CheckSource accepts and a pool that is
+// empty or listed; and streams with one source agree on its pool (a
+// session is per source).
 func (d Document) Validate() error {
 	var errs []error
 	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf("streams: "+format, args...)) }
+
+	if d.CallLimitSeconds < 0 || d.CallLimitSeconds > MaxCallLimitSeconds {
+		bad("callLimitSeconds %d is not 0-%d", d.CallLimitSeconds, MaxCallLimitSeconds)
+	}
 
 	pools := map[string]bool{}
 	for i, p := range d.Pools {
@@ -208,7 +226,7 @@ func (d Document) Validate() error {
 // empty, Pools are sorted by name, and Version is set from the content.
 // It fails if the result does not Validate.
 func (d Document) Sealed() (Document, error) {
-	out := Document{Pools: slices.Clone(d.Pools), Streams: maps.Clone(d.Streams)}
+	out := Document{CallLimitSeconds: d.CallLimitSeconds, Pools: slices.Clone(d.Pools), Streams: maps.Clone(d.Streams)}
 	if out.Pools == nil {
 		out.Pools = []Pool{}
 	}

@@ -410,3 +410,64 @@ func TestServeSlowCallerSkipsAhead(t *testing.T) {
 		t.Errorf("%d frames came back to back after the stall, want the bridge to skip ahead", burst)
 	}
 }
+
+// limited is d with a time limit of seconds, sealed again.
+func limited(t *testing.T, d streams.Document, seconds int) streams.Document {
+	t.Helper()
+	d.CallLimitSeconds = seconds
+	sealed, err := d.Sealed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+// TestServeCallLimit: a call still open CallLimitSlack past streams.json's
+// limit (Asterisk lost track of it: an attended transfer into an
+// application, or a client dialling the bridge itself) gets a hangup
+// frame and is closed; it is counted and its listener leaves. Until then
+// it plays on.
+func TestServeCallLimit(t *testing.T) {
+	clk := clocktesting.NewFakeClock(epoch)
+	m, reg := testManager(t, newFakeSource().set(srcRadio, silent()), clk, limited(t, doc(t, nil, groovesalad), 1))
+	addr, _ := startServer(t, m, clk)
+	a := call(t, addr, "groovesalad")
+	a.audio(1)
+	eventually(t, "the call to join", func() bool { return streamObs(t, m, "groovesalad").Listeners == 1 })
+	clk.Step(time.Second + CallLimitSlack - 30*time.Millisecond)
+	for {
+		f, err := a.next(100 * time.Millisecond)
+		if os.IsTimeout(err) {
+			break
+		}
+		if err != nil || f.Kind != audiosocket.KindAudio {
+			t.Fatalf("before the limit and its slack: %s, %v; want audio", f.Kind, err)
+		}
+	}
+	if v := gauge(t, reg, "patchbay_stream_bridge_call_limit_ends_total", ""); v != 0 {
+		t.Fatalf("ended before the limit and its slack: %v", v)
+	}
+	clk.Step(60 * time.Millisecond)
+	a.hungUp()
+	eventually(t, "the listener to leave", func() bool { return streamObs(t, m, "groovesalad").Listeners == 0 })
+	if v := gauge(t, reg, "patchbay_stream_bridge_call_limit_ends_total", ""); v != 1 {
+		t.Errorf("call_limit_ends_total %v, want 1", v)
+	}
+}
+
+// TestServeNoCallLimit: without a limit in streams.json (zero), the bridge
+// never ends a call by its age.
+func TestServeNoCallLimit(t *testing.T) {
+	clk := clocktesting.NewFakeClock(epoch)
+	src := newFakeSource().set(srcRadio, silent())
+	m, reg := testManager(t, src, clk, doc(t, nil, groovesalad))
+	addr, _ := startServer(t, m, clk)
+	a := call(t, addr, "groovesalad")
+	a.audio(1)
+	eventually(t, "the call to join", func() bool { return streamObs(t, m, "groovesalad").Listeners == 1 })
+	clk.Step(StartTimeout - time.Second) // the silent source is not failed yet
+	a.audio(1)
+	if v := gauge(t, reg, "patchbay_stream_bridge_call_limit_ends_total", ""); v != 0 || streamObs(t, m, "groovesalad").Listeners != 1 {
+		t.Errorf("a call with no limit ended by its age (%v)", v)
+	}
+}

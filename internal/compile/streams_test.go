@@ -155,6 +155,24 @@ func TestStreamDocument(t *testing.T) {
 	if back, err := streams.Decode(raw); err != nil || !reflect.DeepEqual(back, d) {
 		t.Errorf("the document does not round-trip: %v", err)
 	}
+	// The time limit, for the bridge's own ceiling: the settings' limit in
+	// seconds (the default 2 h here), whatever the bridge setting.
+	if d.CallLimitSeconds != 7200 {
+		t.Errorf("callLimitSeconds %d, want the default limit, 7200", d.CallLimitSeconds)
+	}
+	if time.Duration(streams.MaxCallLimitSeconds)*time.Second != compile.MaxCallLimit {
+		t.Errorf("streams.MaxCallLimitSeconds %d is not compile.MaxCallLimit %s", streams.MaxCallLimitSeconds, compile.MaxCallLimit)
+	}
+	limited, noBridge := s, s
+	limited.Streams.CallLimit = metav1.Duration{Duration: 90 * time.Minute}
+	noBridge.StreamBridge = ""
+	if got := compileOK(t, reg, in, limited).Streams.CallLimitSeconds; got != 5400 {
+		t.Errorf("a 90 min limit: callLimitSeconds %d, want 5400", got)
+	}
+	if got := compileOK(t, reg, in, noBridge).Streams.CallLimitSeconds; got != 7200 {
+		t.Errorf("without a bridge: callLimitSeconds %d, want 7200", got)
+	}
+
 	for p := range b.Files {
 		if strings.Contains(p, streams.FileName) {
 			t.Errorf("streams.json is among the bundle's files: %s", p)

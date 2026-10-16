@@ -1,5 +1,6 @@
 {
-  "version": "23987748c4d948abde7bc1e81c6448b1c92da3449fc3a473293726e7adcd212c",
+  "version": "08b5ae7ca1ad08fc245c62c0f78f8aef61ed6ee63ae9635955806034ff6eb973",
+  "callLimitSeconds": 7200,
   "pools": [],
   "streams": {
     "17654a6b-99f3-561e-92b4-7264ce1ca339": {

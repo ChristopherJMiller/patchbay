@@ -43,6 +43,10 @@ const (
 // endCallerError is a call Asterisk ended with an error frame.
 const endCallerError endReason = "the caller sent an error frame"
 
+// endTimeLimit is a call the bridge ended CallLimitSlack past its time
+// limit: Asterisk had not ended it.
+const endTimeLimit endReason = "the call outlived its time limit"
+
 // server serves AudioSocket connections.
 type server struct {
 	m     *manager
@@ -111,6 +115,11 @@ func (srv *server) handle(ctx context.Context, conn net.Conn) {
 	start := srv.clock.Now()
 	why := srv.play(ctx, conn, c)
 	srv.m.leave(c)
+	if why == endTimeLimit {
+		srv.m.metrics.limitEnds.Inc()
+		srv.log.Info("call ended past its time limit: Asterisk had not ended it (a transfer into an application, or a client dialling the bridge itself)",
+			"stream", c.name, "number", c.number, "remote", conn.RemoteAddr().String(), "limit", c.limit.String())
+	}
 	srv.log.Info("call ended", "stream", c.name, "number", c.number,
 		"duration", srv.clock.Since(start).Round(time.Millisecond).String(), "ended", string(why))
 }
@@ -163,7 +172,7 @@ func (srv *server) play(ctx context.Context, conn net.Conn, c *caller) endReason
 	}()
 	why := srv.pace(ctx, conn, c, readerDone, &readerWhy)
 	switch why {
-	case endSourceFailed, endSourceEnded, endStopping:
+	case endSourceFailed, endSourceEnded, endStopping, endTimeLimit:
 		// The reader goes on dropping what Asterisk sends until it closes.
 		if sendHangup(conn) {
 			<-readerDone
@@ -178,13 +187,18 @@ func (srv *server) play(ctx context.Context, conn net.Conn, c *caller) endReason
 // pace sends c its frames on schedule (docs/plans/release-b.md §2(l)):
 // frame n is due n×20 ms after the call joined, on the bridge's clock; at
 // each due time the oldest queued frame goes out, or silence if there is
-// none. A caller more than lateFrames behind skips ahead.
+// none. A caller more than lateFrames behind skips ahead. A call with a
+// time limit ends at the first due time CallLimitSlack past it.
 func (srv *server) pace(ctx context.Context, conn net.Conn, c *caller, readerDone <-chan struct{}, readerWhy *endReason) endReason {
 	silence := audiosocket.AppendFrame(nil, audiosocket.KindAudio, make([]byte, streams.FrameBytes))
 	buf := make([]byte, 0, audiosocket.HeaderSize+streams.FrameBytes)
 	timer := srv.clock.NewTimer(streams.FrameDuration)
 	defer timer.Stop()
 	t0 := srv.clock.Now()
+	var cut time.Time // zero: no limit
+	if c.limit > 0 {
+		cut = t0.Add(c.limit + CallLimitSlack)
+	}
 	for n := 0; ; n++ {
 		due := t0.Add(time.Duration(n) * streams.FrameDuration)
 		if wait := due.Sub(srv.clock.Now()); wait > 0 {
@@ -209,6 +223,9 @@ func (srv *server) pace(ctx context.Context, conn net.Conn, c *caller, readerDon
 		case <-ctx.Done():
 			return endStopping
 		default:
+		}
+		if !cut.IsZero() && !srv.clock.Now().Before(cut) {
+			return endTimeLimit
 		}
 		out := silence
 		if f, ok := c.queue.pop(); ok {

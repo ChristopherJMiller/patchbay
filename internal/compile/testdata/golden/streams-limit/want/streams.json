@@ -1,5 +1,6 @@
 {
-  "version": "a539dadfac0604b97b6a55f07fee1a086dfebe2c94c9932a9fad0403f00d6828",
+  "version": "87c4cca99270ae3030e5a387e468080b8522414e5ad73a58778793643c88610e",
+  "callLimitSeconds": 5400,
   "pools": [
     {
       "name": "attic",

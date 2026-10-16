@@ -107,4 +107,13 @@ const (
 	// StopTimeout is how long a stopped decoder has to exit before it is
 	// killed (ffmpeg: SIGTERM, then SIGKILL).
 	StopTimeout = 2 * time.Second
+	// CallLimitSlack: the bridge ends a call (a hangup frame) this long
+	// after streams.json's callLimitSeconds, counted from when it joined,
+	// if it is still open. Asterisk ends every call it can at the limit
+	// itself (TIMEOUT(absolute), Dial's S()), so the bridge's ceiling only
+	// meets the calls Asterisk lost track of: one transferred into an
+	// application (an attended transfer to the echo test moves the
+	// AudioSocket leg into a channel with neither limit), or a client
+	// that dialled the bridge directly (docs/plans/release-b.md §13).
+	CallLimitSlack = 5 * time.Second
 )

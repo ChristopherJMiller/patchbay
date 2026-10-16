@@ -78,6 +78,7 @@ func TestEveryMetric(t *testing.T) {
 		`patchbay_stream_bridge_session_starts_total{result="failed"} 1`,
 		`patchbay_stream_bridge_session_ends_total{reason="source_failed"} 1`,
 		`patchbay_stream_bridge_session_ends_total{reason="idle"} 0`,
+		`patchbay_stream_bridge_call_limit_ends_total 0`,
 		`patchbay_stream_bridge_refused_calls_total{reason="bridge_full"} 1`,
 		`patchbay_stream_bridge_refused_calls_total{reason="tuner_busy"} 1`,
 		`patchbay_stream_bridge_refused_calls_total{reason="unknown_stream"} 1`,

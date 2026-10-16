@@ -1,5 +1,6 @@
 {
-  "version": "3172911ad72bd70efb671fbeaa871a428e26b09e8ed5df26932074e4ae3223b7",
+  "version": "cc427c23df3125e1d386bc8699bb04a768f9494c1132d20c8d22fabab6bae6d7",
+  "callLimitSeconds": 7200,
   "pools": [
     {
       "name": "hdhomerun",

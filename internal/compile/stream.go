@@ -44,11 +44,16 @@ import (
 // change rewrites streams.json alone.
 
 // streamTargets is the dialplan entry of each Stream holding its number,
-// sorted by number, and the unsealed streams.json: every tuner pool, and
-// each of those Streams with an acceptable source, keyed by UUID, with the
-// pool its source's host is in.
+// sorted by number, and the unsealed streams.json: the time limit (for
+// the bridge's own ceiling), every tuner pool, and each of those Streams
+// with an acceptable source, keyed by UUID, with the pool its source's
+// host is in.
 func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTarget, streams.Document) {
-	doc := streams.Document{Pools: []streams.Pool{}, Streams: map[string]streams.Stream{}}
+	doc := streams.Document{
+		CallLimitSeconds: int(s.Streams.Limit() / time.Second),
+		Pools:            []streams.Pool{},
+		Streams:          map[string]streams.Stream{},
+	}
 	for _, p := range s.Streams.TunerPools {
 		doc.Pools = append(doc.Pools, streams.Pool{Name: p.Name, Max: p.Max})
 	}

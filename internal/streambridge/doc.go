@@ -28,8 +28,10 @@
 //   - serves its observations (streambridge/api) for the controller, and
 //     metrics, on the control port.
 //
-// Asterisk ends each call at the install's time limit
-// (settings streams.callLimit); the bridge only sees the connection close.
+// Asterisk ends each call at the install's time limit (settings
+// streams.callLimit: TIMEOUT(absolute) on the caller, Dial's S() on the
+// AudioSocket leg); the bridge ends any call still open CallLimitSlack
+// past streams.json's callLimitSeconds, the calls Asterisk lost track of.
 //
 // Contract files (docs/plans/release-b.md §4): doc.go, options.go and
 // source.go here, audiosocket/frame.go and api/api.go. The bridge stage

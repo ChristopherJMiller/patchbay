@@ -99,7 +99,8 @@ func TestCheckSource(t *testing.T) {
 
 func house() streams.Document {
 	return streams.Document{
-		Pools: []streams.Pool{{Name: "hdhomerun", Max: 1}, {Name: "attic", Max: 2}},
+		CallLimitSeconds: 7200,
+		Pools:            []streams.Pool{{Name: "hdhomerun", Max: 1}, {Name: "attic", Max: 2}},
 		Streams: map[string]streams.Stream{
 			streams.UUID("king5"):       {Name: "king5", Number: "705", Source: "http://192.168.0.58:5004/auto/v5.1", Pool: "hdhomerun"},
 			streams.UUID("groovesalad"): {Name: "groovesalad", Number: "750", Source: "https://ice2.somafm.com/groovesalad-128-mp3"},
@@ -139,6 +140,18 @@ func TestSealEncodeDecode(t *testing.T) {
 	changed.Pools[0].Max = 2
 	if c, err := changed.Sealed(); err != nil || c.Version == d.Version {
 		t.Errorf("a changed pool max kept version %s (%v)", c.Version, err)
+	}
+	changed = house()
+	changed.CallLimitSeconds = 60
+	if c, err := changed.Sealed(); err != nil || c.Version == d.Version {
+		t.Errorf("a changed call limit kept version %s (%v)", c.Version, err)
+	}
+	noLimit := house()
+	noLimit.CallLimitSeconds = 0 // the bridge then sets no limit of its own
+	if c, err := noLimit.Sealed(); err != nil {
+		t.Errorf("no call limit: %v", err)
+	} else if raw, _ := c.Encode(); strings.Contains(string(raw), "callLimitSeconds") {
+		t.Errorf("a zero call limit is written:\n%s", raw)
 	}
 
 	empty, err := streams.Document{}.Sealed()
@@ -185,6 +198,8 @@ func TestValidate(t *testing.T) {
 		"pool max 0":         {func(d *streams.Document) { d.Pools[0].Max = 0 }, "max 0"},
 		"pool max too large": {func(d *streams.Document) { d.Pools[0].Max = streams.MaxPoolMax + 1 }, "max 17"},
 		"pools unsorted":     {func(d *streams.Document) { d.Pools[0], d.Pools[1] = d.Pools[1], d.Pools[0] }, "not sorted"},
+		"negative limit":     {func(d *streams.Document) { d.CallLimitSeconds = -1 }, "callLimitSeconds -1"},
+		"limit too long":     {func(d *streams.Document) { d.CallLimitSeconds = streams.MaxCallLimitSeconds + 1 }, "callLimitSeconds 86401"},
 		"wrong key": {func(d *streams.Document) {
 			s := d.Streams[streams.UUID("king5")]
 			s.Name = "king5b"
@@ -247,7 +262,7 @@ func TestJSONFieldNames(t *testing.T) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"version", "pools", "streams"} {
+	for _, k := range []string{"version", "callLimitSeconds", "pools", "streams"} {
 		if _, ok := generic[k]; !ok {
 			t.Errorf("no top-level %q in\n%s", k, raw)
 		}

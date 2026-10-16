@@ -13,6 +13,7 @@ import (
 //	patchbay_stream_bridge_session_starts_total{result}     sessions that played (first audio) or failed before it
 //	patchbay_stream_bridge_session_ends_total{reason}       sessions that ended: source_ended, source_failed, idle, preempted, stopping
 //	patchbay_stream_bridge_refused_calls_total{reason}      unknown_stream, tuner_busy, bridge_full
+//	patchbay_stream_bridge_call_limit_ends_total            calls the bridge ended past the time limit (Asterisk had not)
 //	patchbay_stream_bridge_frames_dropped_total             frames a full caller queue dropped
 //	patchbay_stream_bridge_underrun_frames_total            silent frames sent while a session was Playing
 //	patchbay_stream_bridge_streams_version_info{version}    1 for the loaded streams.json (one series)
@@ -48,6 +49,7 @@ type metrics struct {
 	starts       *prometheus.CounterVec
 	ends         *prometheus.CounterVec
 	refused      *prometheus.CounterVec
+	limitEnds    prometheus.Counter
 	dropped      prometheus.Counter
 	underruns    prometheus.Counter
 	loadFailures prometheus.Counter
@@ -69,6 +71,11 @@ func newMetrics() *metrics {
 			Name: "patchbay_stream_bridge_refused_calls_total",
 			Help: "Calls refused: an unknown stream, a busy tuner pool, or a bridge at its limit of calls or sessions.",
 		}, []string{"reason"}),
+		limitEnds: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "patchbay_stream_bridge_call_limit_ends_total",
+			Help: "Calls the bridge ended itself, CallLimitSlack past streams.json's time limit, because Asterisk had not " +
+				"(a call transferred into an application, or a client dialling the bridge directly).",
+		}),
 		dropped: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "patchbay_stream_bridge_frames_dropped_total",
 			Help: "Audio frames dropped from a full caller queue (a slow caller, or a source that bursts).",

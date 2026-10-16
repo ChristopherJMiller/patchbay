@@ -49,6 +49,9 @@ func TestTimings(t *testing.T) {
 	if streambridge.PreemptSettle >= streambridge.Grace || streambridge.StallTimeout >= streambridge.StartTimeout {
 		t.Error("PreemptSettle < Grace and StallTimeout < StartTimeout")
 	}
+	if streambridge.CallLimitSlack <= 0 || streambridge.CallLimitSlack > streambridge.Grace {
+		t.Errorf("CallLimitSlack %s: Asterisk ends a call at its limit, the bridge a few seconds after", streambridge.CallLimitSlack)
+	}
 	if streambridge.MaxSessions > streambridge.MaxCalls {
 		t.Error("MaxSessions > MaxCalls")
 	}
