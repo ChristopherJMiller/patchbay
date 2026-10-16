@@ -166,6 +166,54 @@ func TestFold(t *testing.T) {
 			d:    &agentapi.DeviceObservations{Web: web("", "jar45sip.9-4-2SR4-3.sbn")},
 			want: drivers.Memory{Firmware: "jar45sip.9-4-2SR4-3.sbn"},
 		},
+		// What a real CP-7945G on SIP 9.4(2)SR4-3 reports (2026-10-15):
+		// versionID wrapped in asterisks, appLoadID its jar image.
+		{
+			name: "firmware: the asterisks around versionID are not the load's",
+			mem:  drivers.Memory{Firmware: sccp45},
+			d:    &agentapi.DeviceObservations{Web: web("*SIP45.9-4-2SR4-3S*", jarSIP)},
+			want: drivers.Memory{Firmware: sip45},
+		},
+		{
+			name: "firmware: nor is white space",
+			d:    &agentapi.DeviceObservations{Web: web(" *SIP45.9-4-2SR4-3S*\t", "")},
+			want: drivers.Memory{Firmware: sip45},
+		},
+		{
+			name: "firmware: another load in asterisks is that load",
+			d:    &agentapi.DeviceObservations{Web: web("*SIP45.9-4-2ES26S*", "jar45sip.9-4-2ES26.sbn")},
+			want: drivers.Memory{Firmware: "SIP45.9-4-2ES26S"},
+		},
+		{
+			name: "firmware: appLoadID naming the target load counts when versionID does not",
+			d:    &agentapi.DeviceObservations{Web: web("*9.4(2)SR4.3*", jarSIP)},
+			want: drivers.Memory{Firmware: jarSIP},
+		},
+		{
+			name: "firmware: appLoadID in asterisks too",
+			d:    &agentapi.DeviceObservations{Web: web("", "*jar45sip.9-4-2SR4-3.sbn*")},
+			want: drivers.Memory{Firmware: jarSIP},
+		},
+		{
+			name: "firmware: neither naming the target load: versionID",
+			d:    &agentapi.DeviceObservations{Web: web("*SCCP45.9-4-2SR4-3S*", "jar45sccp.9-4-2SR4-3.sbn")},
+			want: drivers.Memory{Firmware: sccp45},
+		},
+		{
+			name: "firmware: a remembered load in asterisks is normalised",
+			mem:  drivers.Memory{Firmware: "*SIP45.9-4-2SR4-3S*"},
+			d:    &agentapi.DeviceObservations{},
+			want: drivers.Memory{Firmware: sip45},
+		},
+		{
+			name: "firmware: a live SIP registration rules out an SCCP load in asterisks",
+			mem:  drivers.Memory{FirstSeen: mt(ago(time.Hour)), LastRegistered: mt(ago(30 * time.Second))},
+			d: &agentapi.DeviceObservations{
+				Registration: contact(t0.Add(time.Minute)),
+				Web:          web("*SCCP45.9-4-2SR4-3S*", ""),
+			},
+			want: drivers.Memory{FirstSeen: mt(ago(time.Hour)), Address: deskIP, LastRegistered: mt(ago(30 * time.Second))},
+		},
 		{
 			name: "firmware unchanged by a failed scrape",
 			mem:  drivers.Memory{Firmware: "SCCP45.9-4-2SR4-3S"},
@@ -453,7 +501,7 @@ func TestFold(t *testing.T) {
 			if now.IsZero() {
 				now = t0
 			}
-			got := cisco79x5.Fold(dev, obs, now, prof)
+			got := cisco79x5.Fold(dev, obs, now, prof, defaultLoad(t))
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("fold:\n got %s\nwant %s", fmtMemory(got), fmtMemory(c.want))
 			}
@@ -465,9 +513,18 @@ func TestFold(t *testing.T) {
 	}
 }
 
+// defaultLoad is the 7945's default load (the desk phone's target).
+func defaultLoad(t *testing.T) drivers.FirmwareLoad {
+	t.Helper()
+	load, ok := drivers.LoadByName(cisco79x5.New().Firmware(), cisco79x5.DefaultLoad)
+	if !ok {
+		t.Fatal("no default load")
+	}
+	return load
+}
+
 func TestRunsLoad(t *testing.T) {
-	loads := cisco79x5.New().Firmware()
-	load, _ := drivers.LoadByName(loads, cisco79x5.DefaultLoad)
+	load := defaultLoad(t)
 	for reported, want := range map[string]bool{
 		"SIP45.9-4-2SR4-3S":        true,
 		"jar45sip.9-4-2SR4-3.sbn":  true,
@@ -480,6 +537,20 @@ func TestRunsLoad(t *testing.T) {
 		"SIP45.9-4-2SR4-3S.loads":  false,
 		"sip45.9-4-2sr4-3s":        false,
 		"":                         false,
+		// A real 7945's versionID (2026-10-15), and the like.
+		"*SIP45.9-4-2SR4-3S*":        true,
+		" *SIP45.9-4-2SR4-3S* ":      true,
+		"*SIP45.9-4-2SR4-3S":         true,
+		"**SIP45.9-4-2SR4-3S**":      true,
+		"*jar45sip.9-4-2SR4-3.sbn*":  true,
+		"*SCCP45.9-4-2SR4-3S*":       false,
+		"*jar45sccp.9-4-2SR4-3.sbn*": false,
+		"*SIP45.9-4-2ES26S*":         false,
+		"*SIP45.9-4-2SR4-3S.loads*":  false,
+		"SIP45.*9-4-2SR4-3S":         false,
+		"*":                          false,
+		"**":                         false,
+		" ":                          false,
 	} {
 		if got := cisco79x5.RunsLoad(reported, load); got != want {
 			t.Errorf("runsLoad(%q) = %v, want %v", reported, got, want)

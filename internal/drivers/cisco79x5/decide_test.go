@@ -1083,6 +1083,13 @@ func registeringCases() []decideCase {
 	obs.Firmware = staged()
 	cases = append(cases, decideCase{name: "wrong firmware before Admin VLAN", dev: dev, obs: obs,
 		want: registering(p10, m, faStaged, fcOther(sccp45), 0)})
+	// P10 and FirmwareCurrent name the load without the asterisks a real
+	// 7945 wraps its versionID in.
+	dev, obs, m = at(6*time.Minute, web("*SCCP45.9-4-2SR4-3S*", "", "line 1"))
+	m.Firmware = sccp45
+	obs.Firmware = staged()
+	cases = append(cases, decideCase{name: "wrong firmware in asterisks", dev: dev, obs: obs,
+		want: registering(p10, m, faStaged, fcOther(sccp45), 0)})
 
 	// Never fetched its config: it was first seen asking for its trust list
 	// 6 minutes ago. P11 comes first even with an Admin VLAN.
@@ -1297,6 +1304,29 @@ func configStaleCases() []decideCase {
 			RequeueAfter: 5 * time.Minute,
 		},
 	})
+
+	// The same as the real 7945 reports it: another load in asterisks is
+	// still another load, and the status names it without them.
+	const es26 = "SIP45.9-4-2ES26S"
+	inStars := registeredMem(cfgFetch(vNow, ago(30*time.Minute)))
+	inStars.Firmware = ""
+	inStarsNext := inStars
+	inStarsNext.Firmware, inStarsNext.LastAction = es26, resyncAction(vNow, t0, 1)
+	inStarsObs := registeredObs(vNow, 0, withStore(staged()))
+	inStarsObs.Device.Web = web("*"+es26+"*", "jar45sip.9-4-2ES26.sbn")
+	cases = append(cases, decideCase{
+		name: "config current, another load in asterisks, target staged",
+		dev:  deskWith(inStars),
+		obs:  inStarsObs,
+		want: drivers.Decision{
+			State: drivers.StateConfigStale,
+			Conditions: conds(ready(cF, cisco79x5.ReasonConfigStale, "resync sent (attempt 1)"), faStaged,
+				fcOther(es26), provNow, regLive, cfgNow),
+			Actions:      resyncNow(),
+			StatusPatch:  inStarsNext,
+			RequeueAfter: 5 * time.Minute,
+		},
+	})
 	return cases
 }
 
@@ -1329,7 +1359,36 @@ func registeredCases() []decideCase {
 	advancedWant.LastRegistered = mt(t0)
 	upgradeEnded := registeredMem(cur)
 	upgradeEnded.UpgradeStartedAt = mt(ago(40 * time.Minute))
+	// The bench phone (2026-10-15): SIP 9.4(2)SR4-3 reports its load in
+	// asterisks, its first report since it registered, with the load staged.
+	firstReport := registeredMem(cur)
+	firstReport.Firmware = ""
+	bench := func(versionID, appLoadID string) drivers.Observations {
+		o := registeredObs(vNow, 0, withStore(staged()))
+		o.Device.Web = web(versionID, appLoadID)
+		return o
+	}
+	current := func(m drivers.Memory) drivers.Decision {
+		return drivers.Decision{
+			State:        drivers.StateRegistered,
+			Conditions:   conds(ready(cT, cisco79x5.ReasonRegistered, ""), faStaged, fcRunning, provNow, regLive, cfgNow),
+			StatusPatch:  m,
+			RequeueAfter: 10 * time.Minute,
+		}
+	}
 	cases := []decideCase{
+		{
+			name: "the real 7945: versionID in asterisks, load staged: current, nothing sent",
+			dev:  deskWith(firstReport),
+			obs:  bench("*SIP45.9-4-2SR4-3S*", jarSIP),
+			want: current(plain),
+		},
+		{
+			name: "versionID in another form, appLoadID the target's image: current",
+			dev:  deskWith(firstReport),
+			obs:  bench("*9.4(2)SR4.3*", jarSIP),
+			want: current(jarOnly),
+		},
 		{name: "plain", dev: deskWith(plain), obs: registeredObs(vNow, 0), want: registered(plain, fcRunning, cfgNow, nil)},
 		{name: "firmware not reported", dev: deskWith(notReported), obs: notReportedObs, want: registered(notReported, fcNotReported, cfgNow, nil)},
 		{

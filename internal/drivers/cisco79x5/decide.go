@@ -128,7 +128,7 @@ func (d *Driver) newInput(dev drivers.Device, obs drivers.Observations, s driver
 	in.defLoad, in.defOK = d.load(dev.Model, in.p.Provisioning.DefaultFirmware)
 	in.defStaged = in.defOK && len(in.defLoad.Missing(obs.Firmware)) == 0
 
-	in.m = fold(dev, obs, now, in.p)
+	in.m = fold(dev, obs, now, in.p, in.load)
 	in.live = liveContact(in.d, now, in.p)
 	in.available = in.loadOK && len(in.load.Missing(obs.Firmware)) == 0
 	in.current = in.m.LastConfigFetch != nil && in.m.LastConfigFetch.Version == dev.ConfigVersion

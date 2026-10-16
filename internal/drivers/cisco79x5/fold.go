@@ -3,6 +3,7 @@ package cisco79x5
 import (
 	"strings"
 	"time"
+	"unicode"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -24,14 +25,16 @@ const registeredResolution = time.Minute
 //   - Address: the live contact's, else the latest fetch's source.
 //   - LastConfigFetch: the latest served fetch of SEP<MAC>.cnf.xml with a
 //     version, when newer than the remembered one.
-//   - Firmware: what the phone last reported, kept only while it can still
+//   - Firmware: what the phone last reported, normalised (loadID: a real
+//     7945 wraps its versionID in asterisks), kept only while it can still
 //     be true. A download changes the load: when the phone comes back from
 //     one (its first config fetch after the last firmware fetch, or after
 //     UpgradeStartedAt when the agent's log no longer holds the download),
 //     the load it reported before is forgotten. Then the load of a fresh
-//     scrape (freshScrape) is taken: its versionID, else its appLoadID
-//     (runsLoad accepts both). Last, a live SIP registration rules out an
-//     SCCP load (design §8.2: an SCCP phone never sends a SIP REGISTER).
+//     scrape (freshScrape) is taken (reportedLoad: whichever of versionID
+//     and appLoadID names target, the device's target load, else
+//     versionID, else appLoadID). Last, a live SIP registration rules out
+//     an SCCP load (design §8.2: an SCCP phone never sends a SIP REGISTER).
 //   - LastRegistered: while there is a live contact, now, when it was never
 //     set, is a minute old or more, or is older than the last config fetch
 //     (so a fetch while registered never looks newer than the registration:
@@ -46,8 +49,9 @@ const registeredResolution = time.Minute
 // resync's LastAction.At in the rows) round up, so nothing that happened
 // before a mark can look newer than it once the mark is stored. The agent's
 // times are compared with memory at whole seconds too (drivers.FloorSecond).
-func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers.Profile) drivers.Memory {
+func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers.Profile, target drivers.FirmwareLoad) drivers.Memory {
 	m := dev.Memory.DeepCopy()
+	m.Firmware = loadID(m.Firmware)
 	d := obs.Device
 	if d == nil {
 		return m
@@ -89,10 +93,8 @@ func fold(dev drivers.Device, obs drivers.Observations, now time.Time, p drivers
 		m.Firmware = ""
 	}
 	if w := freshScrape(d.Web, m, lastFw); w != nil && w.DeviceInformation != nil {
-		if v := w.DeviceInformation.VersionID; v != "" {
-			m.Firmware = v
-		} else if a := w.DeviceInformation.AppLoadID; a != "" {
-			m.Firmware = a
+		if r := reportedLoad(w.DeviceInformation, target); r != "" {
+			m.Firmware = r
 		}
 	}
 	if live && sccpLoad(m.Firmware) {
@@ -141,9 +143,37 @@ func lastFirmwareFetch(fs []agentapi.Fetch) time.Time {
 }
 
 // sccpLoad reports whether a reported load is SCCP firmware: a load
-// (SCCP45.9-4-2SR4-3S) or an image (jar45sccp.9-4-2SR4-3.sbn).
+// (SCCP45.9-4-2SR4-3S, *SCCP45.9-4-2SR4-3S* as a 7945 reports it) or an
+// image (jar45sccp.9-4-2SR4-3.sbn).
 func sccpLoad(reported string) bool {
-	return strings.Contains(strings.ToLower(reported), "sccp")
+	return strings.Contains(strings.ToLower(loadID(reported)), "sccp")
+}
+
+// loadID is a load or image name as the phone reports it, normalised: a
+// real CP-7945G on SIP 9.4(2)SR4-3 wraps the running load in asterisks in
+// /DeviceInformationX's versionID (*SIP45.9-4-2SR4-3S*, observed
+// 2026-10-15), so every asterisk and white space around it is trimmed. A
+// load name never starts or ends with either.
+func loadID(reported string) string {
+	return strings.TrimFunc(reported, func(r rune) bool { return r == '*' || unicode.IsSpace(r) })
+}
+
+// reportedLoad is the load a scrape's /DeviceInformationX reports,
+// normalised (loadID), for the device whose target load is target: its
+// versionID when that names target (runsLoad), else its appLoadID when
+// that does, so either matching counts; else its versionID, else its
+// appLoadID; "" when it reports neither.
+func reportedLoad(di *agentapi.DeviceInformation, target drivers.FirmwareLoad) string {
+	v, a := loadID(di.VersionID), loadID(di.AppLoadID)
+	switch {
+	case runsLoad(v, target):
+		return v
+	case runsLoad(a, target):
+		return a
+	case v != "":
+		return v
+	}
+	return a
 }
 
 // liveContact reports whether the device holds a registration that has not
@@ -172,12 +202,14 @@ func isFirmwareFile(name string) bool {
 	return strings.HasSuffix(name, ".sbn") || strings.HasSuffix(name, ".loads")
 }
 
-// runsLoad reports whether a reported load (Memory.Firmware) is the given
-// load: its name (versionID, SIP45.9-4-2SR4-3S), or one of its .sbn images
-// with or without the suffix (appLoadID, jar45sip.9-4-2SR4-3.sbn). An SCCP
-// image or load (jar45sccp..., SCCP45...) never matches a SIP load, and
-// neither does a .loads file name.
+// runsLoad reports whether a reported load (Memory.Firmware), normalised
+// (loadID), is the given load: its name (versionID, SIP45.9-4-2SR4-3S, or
+// *SIP45.9-4-2SR4-3S* as a real 7945 reports it), or one of its .sbn
+// images with or without the suffix (appLoadID, jar45sip.9-4-2SR4-3.sbn).
+// An SCCP image or load (jar45sccp..., SCCP45...) never matches a SIP
+// load, and neither does a .loads file name.
 func runsLoad(reported string, load drivers.FirmwareLoad) bool {
+	reported = loadID(reported)
 	if reported == "" {
 		return false
 	}
