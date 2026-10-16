@@ -19,8 +19,9 @@ import (
 
 // chartDefaults is testdata/chart-defaults.json: the settings.json the chart
 // must render with its default values, the ci minimal values
-// (pbx.address 192.0.2.10) and the release name "patchbay". test/chart
-// checks the chart's rendering against the same file.
+// (pbx.address 192.0.2.10), the release name "patchbay" and the namespace
+// "telephony" (the stream bridge's address). test/chart checks the chart's
+// rendering against the same file.
 const chartDefaults = "testdata/chart-defaults.json"
 
 func readFixture(t *testing.T) []byte {
@@ -48,6 +49,8 @@ func TestParseChartDefaults(t *testing.T) {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       compile.SecretRef{Name: "patchbay-ami", Key: "password"},
+		StreamBridge:    "patchbay-streams.telephony.svc:9092",
+		Streams:         compile.StreamSettings{CallLimit: metav1.Duration{Duration: 2 * time.Hour}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Parse(chart defaults) =\n%+v\nwant\n%+v", got, want)

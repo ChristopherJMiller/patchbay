@@ -21,5 +21,9 @@
   "amiSecret": {
     "name": "patchbay-ami",
     "key": "password"
+  },
+  "streamBridge": "patchbay-streams.telephony.svc:9092",
+  "streams": {
+    "callLimit": "2h"
   }
 }

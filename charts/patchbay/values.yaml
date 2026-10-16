@@ -125,6 +125,41 @@ phoneDefaults: {}
 sounds:
   voice: espeak
 
+# The stream bridge (release B, design §9): dialling a Stream's number
+# plays its live source (a TV channel from a tuner, internet radio) through
+# patchbay stream-bridge, which holds a source only while someone listens.
+# Off, no bridge is configured and every Stream's number plays "not
+# available". The chart renders its AudioSocket address,
+# <fullname>-streams.<namespace>.svc:<ports.audioSocket>, into the settings.
+streamBridge:
+  enabled: true
+  ports:
+    # AudioSocket, from Asterisk to the bridge (design §9: 9092).
+    audioSocket: 9092
+    # The bridge's control API: observations for the controller, metrics.
+    control: 9093
+
+# Stream settings, rendered into settings.json's streams
+# (compile.StreamSettings); a change rolls only the controller.
+streams:
+  # How long one call to a stream may last: Asterisk hangs up at it, so a
+  # phone left off the hook cannot hold a tuner for ever. A duration,
+  # whole seconds from 10s to 24h ("2h", "90m").
+  callLimit: 2h
+  # Tuner pools: the tuner devices whose tuners a stream holds while it
+  # plays. A Stream whose source's host (its URL's host, any port) is one
+  # of a pool's hosts counts against that pool: at most max of the pool's
+  # sources play at once (everyone on one source shares it), and a call
+  # that would need one more hears "not available" while the Stream
+  # reports why. A source on no pool's host (internet radio) has no limit.
+  # List every host form the Streams use (an IP and a name are two hosts).
+  #
+  # tunerPools:
+  #   - name: hdhomerun          # a DNS label; Stream.status.tunerPool
+  #     hosts: ["192.168.0.58"]  # as the Streams' source URLs write it
+  #     max: 1                   # of its 2 tuners: the DVR keeps one
+  tunerPools: []
+
 controller:
   # One replica decides at a time (leader election); a second only speeds
   # up failover.

@@ -76,10 +76,13 @@ controller mints it (install.Names.AgentTokenSecret); the name is fixed.
 The install's settings, as the controller reads them: compile.Settings in
 JSON (internal/controller/settings parses it strictly; test/chart compares
 the default with its fixture). Every number-plan entry is a string, whatever
-YAML made of it. streamBridge stays unset until release B. The AMI Secret is
-the one the controller mints, <fullname>-ami (install.CheckSettings).
-phoneDefaults is there only when phoneDefaults.display is set
-(patchbay.phoneDefaultsDisplay), so the default render is unchanged.
+YAML made of it. The AMI Secret is the one the controller mints,
+<fullname>-ami (install.CheckSettings). phoneDefaults is there only when
+phoneDefaults.display is set (patchbay.phoneDefaultsDisplay), so the
+default render is unchanged. streamBridge is the bridge's AudioSocket
+address (install.StreamBridgeAddress) while streamBridge.enabled; streams
+always carries the call limit, and the tuner pools when there are any
+(compile.StreamSettings).
 */}}
 {{- define "patchbay.settingsJSON" -}}
 {{- $p := .Values.pbx -}}
@@ -110,6 +113,28 @@ phoneDefaults is there only when phoneDefaults.display is set
 {{- if $display -}}
 {{- $_ := set $settings "phoneDefaults" (dict "display" ($display | fromJson)) -}}
 {{- end -}}
+{{- if .Values.streamBridge.enabled -}}
+{{- $_ := set $settings "streamBridge" (printf "%s-streams.%s.svc:%d" (include "patchbay.fullname" .) .Release.Namespace (int .Values.streamBridge.ports.audioSocket)) -}}
+{{- end -}}
+{{- $streams := dict "callLimit" (toString (required "streams.callLimit is required: a duration from 10s to 24h (\"2h\")" .Values.streams.callLimit)) -}}
+{{- $pools := list -}}
+{{- range $i, $pool := .Values.streams.tunerPools -}}
+{{- if not (kindIs "map" $pool) -}}
+{{- fail (printf "streams.tunerPools[%d] must be a map of name, hosts and max" $i) -}}
+{{- end -}}
+{{- $hosts := list -}}
+{{- range (required (printf "streams.tunerPools[%d].hosts is required: the hosts its Streams' sources are on" $i) $pool.hosts) -}}
+{{- $hosts = append $hosts (toString .) -}}
+{{- end -}}
+{{- $pools = append $pools (dict
+  "name" (toString (required (printf "streams.tunerPools[%d].name is required (a DNS label)" $i) $pool.name))
+  "hosts" $hosts
+  "max" (int (required (printf "streams.tunerPools[%d].max is required: how many of its sources may play at once" $i) $pool.max))) -}}
+{{- end -}}
+{{- if $pools -}}
+{{- $_ := set $streams "tunerPools" $pools -}}
+{{- end -}}
+{{- $_ := set $settings "streams" $streams -}}
 {{- toPrettyJson $settings -}}
 {{- end -}}
 
