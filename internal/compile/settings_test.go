@@ -10,6 +10,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 func TestSettingsValidate(t *testing.T) {
@@ -105,5 +106,79 @@ func TestCheckDrivers(t *testing.T) {
 	}
 	if err := s.CheckDrivers(nil); err == nil {
 		t.Error("no registry: accepted")
+	}
+}
+
+// TestSettingsValidateStreams: the stream bridge's address is safe inside
+// Dial(), the call limit is whole seconds from 10s to 24h, and the tuner
+// pools are named once, hold hosts that are in one pool each, and play 1
+// to streams.MaxPoolMax sources (docs/plans/release-b.md RT.1).
+func TestSettingsValidateStreams(t *testing.T) {
+	edit := func(f func(s *compile.Settings)) compile.Settings {
+		s := houseSettings()
+		s.StreamBridge = "patchbay-streams.telephony.svc:9092"
+		f(&s)
+		return s
+	}
+	limit := func(d time.Duration) metav1.Duration { return metav1.Duration{Duration: d} }
+	pools := func(p ...compile.TunerPool) func(s *compile.Settings) {
+		return func(s *compile.Settings) { s.Streams.TunerPools = p }
+	}
+	for name, s := range map[string]compile.Settings{
+		"no stream settings":     edit(func(*compile.Settings) {}),
+		"no stream bridge":       edit(func(s *compile.Settings) { s.StreamBridge = "" }),
+		"an IPv4 bridge":         edit(func(s *compile.Settings) { s.StreamBridge = "10.96.0.12:9092" }),
+		"an IPv6 bridge":         edit(func(s *compile.Settings) { s.StreamBridge = "[fd00::12]:9092" }),
+		"a one-label bridge":     edit(func(s *compile.Settings) { s.StreamBridge = "bridge:1" }),
+		"the shortest limit":     edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(compile.MinCallLimit) }),
+		"the longest limit":      edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(compile.MaxCallLimit) }),
+		"a 90 minute limit":      edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(90 * time.Minute) }),
+		"the house's tuner pool": edit(pools(compile.TunerPool{Name: "hdhomerun", Hosts: []string{"192.168.0.58"}, Max: 1})),
+		"two pools": edit(pools(
+			compile.TunerPool{Name: "hdhomerun", Hosts: []string{"192.168.0.58", "hdhomerun.lan"}, Max: 1},
+			compile.TunerPool{Name: "attic", Hosts: []string{"fd00::58", "Attic.LAN"}, Max: streams.MaxPoolMax})),
+	} {
+		if err := s.Validate(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		s    compile.Settings
+		want string
+	}{
+		{"a bridge with a path", edit(func(s *compile.Settings) { s.StreamBridge = "bridge/x:9092" }), `streamBridge "bridge/x:9092" is not host:port`},
+		{"a bridge with a comma", edit(func(s *compile.Settings) { s.StreamBridge = "a,b:9092" }), `streamBridge "a,b:9092" is not host:port`},
+		{"a bridge with parentheses", edit(func(s *compile.Settings) { s.StreamBridge = "a(b):9092" }), `streamBridge "a(b):9092" is not host:port`},
+		{"a bridge with an upper-case name", edit(func(s *compile.Settings) { s.StreamBridge = "Bridge:9092" }), `streamBridge "Bridge:9092" is not host:port`},
+		{"a bridge with an underscore", edit(func(s *compile.Settings) { s.StreamBridge = "stream_bridge:9092" }), `streamBridge "stream_bridge:9092" is not host:port`},
+		{"a bridge with a signed port", edit(func(s *compile.Settings) { s.StreamBridge = "bridge:+9092" }), `streamBridge "bridge:+9092" is not host:port`},
+		{"a bridge with an IPv6 zone", edit(func(s *compile.Settings) { s.StreamBridge = "[fe80::1%eth0]:9092" }), `is not host:port`},
+		{"a bridge with a space", edit(func(s *compile.Settings) { s.StreamBridge = "a b:9092" }), `streamBridge "a b:9092" is not host:port`},
+		{"a negative limit", edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(-time.Minute) }), "streams.callLimit -1m0s is not whole seconds from 10s to 24h"},
+		{"a limit under 10s", edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(9 * time.Second) }), "streams.callLimit 9s is not whole seconds from 10s to 24h"},
+		{"a limit over 24h", edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(24*time.Hour + time.Second) }), "streams.callLimit 24h0m1s is not whole seconds from 10s to 24h"},
+		{"a limit of part of a second", edit(func(s *compile.Settings) { s.Streams.CallLimit = limit(90*time.Second + time.Millisecond) }), "streams.callLimit 1m30.001s is not whole seconds from 10s to 24h"},
+		{"a pool without a name", edit(pools(compile.TunerPool{Hosts: []string{"h"}, Max: 1})), `streams.tunerPools[0]: name "" is not a DNS label`},
+		{"a pool named with a dot", edit(pools(compile.TunerPool{Name: "hd.homerun", Hosts: []string{"h"}, Max: 1})), `streams.tunerPools[0]: name "hd.homerun" is not a DNS label`},
+		{"a pool named in upper case", edit(pools(compile.TunerPool{Name: "HDHomeRun", Hosts: []string{"h"}, Max: 1})), `streams.tunerPools[0]: name "HDHomeRun" is not a DNS label`},
+		{"a pool listed twice", edit(pools(
+			compile.TunerPool{Name: "tv", Hosts: []string{"a"}, Max: 1},
+			compile.TunerPool{Name: "tv", Hosts: []string{"b"}, Max: 1})), `streams.tunerPools[1]: name "tv" is listed twice`},
+		{"a pool without hosts", edit(pools(compile.TunerPool{Name: "tv", Max: 1})), "streams.tunerPools[0]: hosts is empty"},
+		{"a host with a port", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{"192.168.0.58:5004"}, Max: 1})), `streams.tunerPools[0]: host "192.168.0.58:5004" is not an IP address or a DNS name`},
+		{"a host with a scheme", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{"http://192.168.0.58"}, Max: 1})), `streams.tunerPools[0]: host "http://192.168.0.58" is not an IP address or a DNS name`},
+		{"an IPv6 host in brackets", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{"[fd00::58]"}, Max: 1})), `streams.tunerPools[0]: host "[fd00::58]" is not an IP address or a DNS name`},
+		{"an empty host", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{""}, Max: 1})), `streams.tunerPools[0]: host "" is not an IP address or a DNS name`},
+		{"a host in two pools", edit(pools(
+			compile.TunerPool{Name: "attic", Hosts: []string{"HDHomeRun.lan"}, Max: 1},
+			compile.TunerPool{Name: "tv", Hosts: []string{"hdhomerun.LAN"}, Max: 1})), `host "hdhomerun.LAN" is in pools "attic" and "tv"`},
+		{"a pool of none", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{"h"}})), "streams.tunerPools[0]: max 0 is not 1-16"},
+		{"a pool of too many", edit(pools(compile.TunerPool{Name: "tv", Hosts: []string{"h"}, Max: streams.MaxPoolMax + 1})), "streams.tunerPools[0]: max 17 is not 1-16"},
+	} {
+		err := tc.s.Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Validate() = %v, want it to say %q", tc.name, err, tc.want)
+		}
 	}
 }

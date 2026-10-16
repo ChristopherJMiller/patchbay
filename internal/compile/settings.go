@@ -6,8 +6,13 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 // Validate checks the install settings before anything is compiled from
@@ -18,8 +23,10 @@ import (
 // pjsip; the number plan is valid; the allowed networks are IPv4 network
 // addresses in CIDR form, at least one and none twice; the AMI secret names
 // a Secret key a placeholder can carry; the stream bridge is empty or
-// host:port; the house default display passes
-// v1alpha1.PhoneDisplay.Validate (the checks the CRD makes of a Phone's).
+// host:port, the host an IP address or a DNS name (so it is safe inside
+// Dial()); the stream settings keep StreamSettings' rules; the house
+// default display passes v1alpha1.PhoneDisplay.Validate (the checks the
+// CRD makes of a Phone's).
 func (s Settings) Validate() error {
 	var errs []error
 	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf("settings: "+format, args...)) }
@@ -80,13 +87,10 @@ func (s Settings) Validate() error {
 	if err := checkSecretRef(s.AMISecret); err != nil {
 		bad("amiSecret: %v", err)
 	}
-	if s.StreamBridge != "" {
-		host, port, err := net.SplitHostPort(s.StreamBridge)
-		n, perr := strconv.Atoi(port)
-		if err != nil || host == "" || perr != nil || n < 1 || n > 65535 {
-			bad("streamBridge %q is not host:port", s.StreamBridge)
-		}
+	if s.StreamBridge != "" && !bridgeAddress(s.StreamBridge) {
+		bad("streamBridge %q is not host:port", s.StreamBridge)
 	}
+	errs = append(errs, s.Streams.validate()...)
 	if err := s.PhoneDefaults.Display.Validate(); err != nil {
 		bad("phoneDefaults.display: %w", err)
 	}
@@ -114,4 +118,86 @@ func checkSecretRef(r SecretRef) error {
 		return fmt.Errorf("%+v does not name a Secret key (a lower-case Secret name and a data key)", r)
 	}
 	return nil
+}
+
+// bridgeAddress accepts the stream bridge's AudioSocket address as the
+// dialplan writes it into Dial(AudioSocket/<address>/…): host:port, the
+// host an IP address (IPv6 in brackets, no zone) or a DNS subdomain, the
+// port 1-65535 in digits, and none of "/", ",", "(" or ")", which would end
+// the dial string's part or Dial's argument.
+func bridgeAddress(addr string) bool {
+	if strings.ContainsAny(addr, "/,()") {
+		return false
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || !hostName(host) || port == "" || strings.Trim(port, "0123456789") != "" {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// hostName accepts an IP address without a zone (IPv6 without brackets, as
+// url.URL.Hostname gives it) or a DNS subdomain (lower case).
+func hostName(h string) bool {
+	if a, err := netip.ParseAddr(h); err == nil {
+		return a.Zone() == ""
+	}
+	return h != "" && len(validation.IsDNS1123Subdomain(h)) == 0
+}
+
+// validate checks the stream settings: CallLimit is zero or whole seconds
+// from MinCallLimit to MaxCallLimit; each tuner pool's Name is a DNS label,
+// listed once; its Hosts are not empty, each an IP address or a DNS name,
+// compared lower-case ("HDHomeRun.lan" is "hdhomerun.lan"), none in two
+// pools; its Max is 1 to streams.MaxPoolMax. Every message names the
+// field.
+func (s StreamSettings) validate() []error {
+	var errs []error
+	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf("settings: "+format, args...)) }
+	if d := s.CallLimit.Duration; d != 0 && (d < MinCallLimit || d > MaxCallLimit || d%time.Second != 0) {
+		bad("streams.callLimit %s is not whole seconds from %s to %s", d, fmtLimit(MinCallLimit), fmtLimit(MaxCallLimit))
+	}
+	names := map[string]bool{}
+	hosts := map[string]string{} // lower-case host -> the pool that lists it
+	for i, p := range s.TunerPools {
+		field := fmt.Sprintf("streams.tunerPools[%d]", i)
+		switch {
+		case len(validation.IsDNS1123Label(p.Name)) > 0:
+			bad("%s: name %q is not a DNS label", field, p.Name)
+		case names[p.Name]:
+			bad("%s: name %q is listed twice", field, p.Name)
+		}
+		names[p.Name] = true
+		if len(p.Hosts) == 0 {
+			bad("%s: hosts is empty", field)
+		}
+		for _, h := range p.Hosts {
+			key := strings.ToLower(h)
+			if !hostName(key) {
+				bad("%s: host %q is not an IP address or a DNS name (no scheme, port or brackets)", field, h)
+				continue
+			}
+			if other, dup := hosts[key]; dup && other != p.Name {
+				bad("%s: host %q is in pools %q and %q", field, h, other, p.Name)
+				continue
+			}
+			hosts[key] = p.Name
+		}
+		if p.Max < 1 || p.Max > streams.MaxPoolMax {
+			bad("%s: max %d is not 1-%d", field, p.Max, streams.MaxPoolMax)
+		}
+	}
+	return errs
+}
+
+// fmtLimit writes a bound of the call limit as people write it (10s, 24h).
+func fmtLimit(d time.Duration) string {
+	switch {
+	case d%time.Hour == 0:
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	case d%time.Minute == 0:
+		return strconv.FormatInt(int64(d/time.Minute), 10) + "m"
+	}
+	return d.String()
 }
