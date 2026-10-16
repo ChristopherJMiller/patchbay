@@ -9,15 +9,18 @@
 #     (DeterminateSystems/magic-nix-cache-action was shut down in Feb 2025 and
 #     revived in mid-2025. By default it sends diagnostics to Determinate and
 #     tries FlakeHub, which needs `id-token: write`. So we don't use it.)
+#   - docker/setup-qemu-action: arm64 emulation for the stream bridge's
+#     `apk add`, with its binfmt image pinned by digest.
 #
 # `ci-ok` is the one check the main ruleset requires: it passes only when
 # check, e2e and image all passed, so Renovate's PRs auto-merge on it and
 # nothing else (docs/releasing.md). Publishing happens only in the publish
-# job, on a push to main (image `sha-<commit>`, `main`) or a `v*` tag
-# (image `<version>`, `<major>.<minor>`, then the chart, pinned to that
-# image's digest, and the GitHub release), and only after every test
-# passed. No other job can write packages: a PR's run holds a read-only
-# token.
+# job, on a push to main (images `sha-<commit>`, `main`) or a `v*` tag
+# (images `<version>`, `<major>.<minor>`, then the chart, pinned to both
+# images' digests, and the GitHub release), and only after every test
+# passed. The images are patchbay and patchbay-stream-bridge (patchbay plus
+# ffmpeg), built from the one Dockerfile. No other job can write packages:
+# a PR's run holds a read-only token.
 name: CI
 
 on:
@@ -203,9 +206,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Every event: both architectures build. Nothing is pushed and the token
-  # can only read, so a PR's code (its flake, `make sounds`, the actions a
-  # Renovate PR bumps) never runs with the right to publish.
+  # Every event: both images build for both architectures, and the stream
+  # bridge's amd64 build is checked (make image-check-stream-bridge).
+  # Nothing is pushed and the token can only read, so a PR's code (its
+  # flake, `make sounds`, the actions a Renovate PR bumps) never runs with
+  # the right to publish.
   image:
     name: image (amd64, arm64)
     needs: [check, e2e]
@@ -233,8 +238,15 @@ jobs:
       - name: Sound prompts
         run: nix develop -c make sounds
 
-      # The Dockerfile cross-compiles on the build platform and its final
-      # stage has no RUN, so arm64 needs no emulation.
+      # The Dockerfile cross-compiles on the build platform, and patchbay's
+      # stage has no RUN; the stream bridge's runs `apk add` on the target
+      # platform, so arm64 needs QEMU. The binfmt image is pinned by digest
+      # (CLAUDE.md hard rule 5); the action's default is :latest.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The same build arguments as publish's, so its build hits this cache.
@@ -242,7 +254,10 @@ jobs:
         id: args
         run: echo "date=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      # Each image keeps its own cache scope: two builds writing one scope
+      # replace each other's cache.
+      - name: patchbay
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -251,21 +266,57 @@ jobs:
             VERSION=ci
             COMMIT=${{ github.sha }}
             DATE=${{ steps.args.outputs.date }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=patchbay
+          cache-to: type=gha,scope=patchbay,mode=max
+
+      - name: stream bridge
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: stream-bridge
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.args.outputs.date }}
+          cache-from: type=gha,scope=stream-bridge
+          cache-to: type=gha,scope=stream-bridge,mode=max
+
+      # The amd64 build again (from the cache), into the runner's docker,
+      # for test/image: the image's user, ffmpeg's licence, the CA bundle,
+      # and its ffmpeg decoding with the contract's arguments.
+      - name: stream bridge (amd64, loaded)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: stream-bridge
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ghcr.io/christopherjmiller/patchbay-stream-bridge:ci
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.args.outputs.date }}
+          cache-from: type=gha,scope=stream-bridge
+
+      - name: Check the stream bridge image
+        run: nix develop -c make image-check-stream-bridge IMG_STREAM_BRIDGE=ghcr.io/christopherjmiller/patchbay-stream-bridge:ci
 
   # A push to main (`sha-<7>`, `main`) or a v* tag (`<version>`,
   # `<major>.<minor>`) only, after every test passed: the one job that may
-  # push to ghcr.io. Each primary tag (`sha-<7>` on main, `<version>` on a
-  # tag) is written once: a re-run finds it and reuses its digest rather
-  # than push another build under the same name. The digest goes to
-  # release, which pins the chart to it.
+  # push to ghcr.io. Both images, patchbay and the stream bridge, get the
+  # same tags and each its own attestation. Each primary tag (`sha-<7>` on
+  # main, `<version>` on a tag) is written once per image: a re-run finds
+  # it and reuses its digest rather than push another build under the same
+  # name. The digests go to release, which pins the chart to them.
   publish:
     name: publish (ghcr.io)
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [check, e2e, image]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
       packages: write # push to ghcr.io
@@ -273,8 +324,10 @@ jobs:
       attestations: write
     outputs:
       digest: ${{ steps.digest.outputs.digest }}
+      bridge-digest: ${{ steps.digest.outputs.bridge-digest }}
     env:
       IMAGE: ghcr.io/christopherjmiller/patchbay
+      BRIDGE_IMAGE: ghcr.io/christopherjmiller/patchbay-stream-bridge
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -291,6 +344,12 @@ jobs:
 
       - name: Sound prompts
         run: nix develop -c make sounds
+
+      # The stream bridge's arm64 `apk add` (as in the image job).
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -311,6 +370,23 @@ jobs:
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+
+      # The bridge: the same tags. Its labels say what it is and that it
+      # carries ffmpeg (the action's defaults are the repository's, which
+      # would name patchbay's licence alone).
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: bridge-meta
+        with:
+          images: ${{ env.BRIDGE_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,format=short,enable=${{ github.ref_type != 'tag' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=patchbay-stream-bridge
+            org.opencontainers.image.description=patchbay stream bridge: live audio sources to callers over AudioSocket (patchbay + ffmpeg)
+            org.opencontainers.image.licenses=Apache-2.0 AND GPL-3.0-or-later
 
       # The primary tag, the version stamped into the binary, and the commit
       # time as its date (as the Makefile does), so two builds of one
@@ -339,11 +415,14 @@ jobs:
         env:
           TAG: ${{ steps.primary.outputs.tag }}
         run: |
-          if manifest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{json .Manifest}}' 2>/dev/null); then
-            digest=$(jq -r .digest <<<"$manifest")
-            echo "::notice::${IMAGE}:${TAG} is already published (${digest}): not pushed again"
-            echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          fi
+          for pair in "digest=${IMAGE}" "bridge-digest=${BRIDGE_IMAGE}"; do
+            key="${pair%%=*}" image="${pair#*=}"
+            if manifest=$(docker buildx imagetools inspect "${image}:${TAG}" --format '{{json .Manifest}}' 2>/dev/null); then
+              digest=$(jq -r .digest <<<"$manifest")
+              echo "::notice::${image}:${TAG} is already published (${digest}): not pushed again"
+              echo "${key}=$digest" >> "$GITHUB_OUTPUT"
+            fi
+          done
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
@@ -358,7 +437,7 @@ jobs:
             VERSION=${{ steps.primary.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.primary.outputs.date }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=patchbay
           provenance: mode=max
           sbom: true
 
@@ -370,31 +449,64 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: bridge-build
+        if: steps.existing.outputs.bridge-digest == ''
+        with:
+          context: .
+          target: stream-bridge
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.bridge-meta.outputs.tags }}
+          labels: ${{ steps.bridge-meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.primary.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.primary.outputs.date }}
+          cache-from: type=gha,scope=stream-bridge
+          provenance: mode=max
+          sbom: true
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: steps.existing.outputs.bridge-digest == ''
+        with:
+          subject-name: ${{ env.BRIDGE_IMAGE }}
+          subject-digest: ${{ steps.bridge-build.outputs.digest }}
+          push-to-registry: true
+
       - name: Published
         id: digest
         env:
           DIGEST: ${{ steps.existing.outputs.digest || steps.build.outputs.digest }}
+          BRIDGE_DIGEST: ${{ steps.existing.outputs.bridge-digest || steps.bridge-build.outputs.digest }}
           PRIMARY: ${{ steps.primary.outputs.tag }}
           TAGS: ${{ steps.meta.outputs.tags }}
+          BRIDGE_TAGS: ${{ steps.bridge-meta.outputs.tags }}
         run: |
-          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::no image digest (got '$DIGEST')"
-            exit 1
-          fi
+          for d in "$DIGEST" "$BRIDGE_DIGEST"; do
+            if ! [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::no image digest (got '$DIGEST' and '$BRIDGE_DIGEST')"
+              exit 1
+            fi
+          done
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "bridge-digest=$BRIDGE_DIGEST" >> "$GITHUB_OUTPUT"
           {
             echo "### Published"
             echo
             echo "Pin: \`${IMAGE}:${PRIMARY}@${DIGEST}\`"
             echo
+            echo "Pin: \`${BRIDGE_IMAGE}:${PRIMARY}@${BRIDGE_DIGEST}\`"
+            echo
             echo '```'
             echo "$TAGS"
+            echo "$BRIDGE_TAGS"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # A v* tag: the chart (version and appVersion = the tag, the image pinned
-  # by the digest publish pushed) as a GitHub release asset, and the Helm
-  # repository index on gh-pages, served at
+  # A v* tag: the chart (version and appVersion = the tag, both images
+  # pinned by the digests publish pushed) as a GitHub release asset, and
+  # the Helm repository index on gh-pages, served at
   # https://christopherjmiller.github.io/patchbay. This is chart-releaser's
   # layout, done in four commands because the app and the chart share one
   # version (chart-releaser-action releases a chart only when charts/
@@ -427,29 +539,40 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.nix', 'flake.lock') }}
           save: false
 
-      # The released chart runs exactly the image publish pushed for this
-      # tag: tag and digest, never the tag alone.
+      # The released chart runs exactly the images publish pushed for this
+      # tag: tag and digest, never the tag alone, for patchbay (controller,
+      # agent, file server) and for the stream bridge.
       - name: Package the chart
         env:
           DIGEST: ${{ needs.publish.outputs.digest }}
+          BRIDGE_DIGEST: ${{ needs.publish.outputs.bridge-digest }}
         run: |
           v="${GITHUB_REF_NAME#v}"
           if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::tag $GITHUB_REF_NAME is not v<semver>"
             exit 1
           fi
-          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::publish gave no image digest (got '$DIGEST')"
-            exit 1
-          fi
+          for d in "$DIGEST" "$BRIDGE_DIGEST"; do
+            if ! [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::publish gave no image digest (got '$DIGEST' and '$BRIDGE_DIGEST')"
+              exit 1
+            fi
+          done
           echo "VERSION=$v" >> "$GITHUB_ENV"
-          DIGEST="$DIGEST" nix develop -c yq -i '.image.digest = strenv(DIGEST)' charts/patchbay/values.yaml
+          DIGEST="$DIGEST" BRIDGE_DIGEST="$BRIDGE_DIGEST" nix develop -c yq -i \
+            '.image.digest = strenv(DIGEST) | .streamBridge.image.digest = strenv(BRIDGE_DIGEST)' \
+            charts/patchbay/values.yaml
           nix develop -c helm package charts/patchbay --version "$v" --app-version "$v" -d dist
           nix develop -c helm template patchbay "dist/patchbay-${v}.tgz" \
             --set pbx.nodeName=n --set pbx.address=192.0.2.10 > dist/rendered.yaml
           want="ghcr.io/christopherjmiller/patchbay:${v}@${DIGEST}"
           if [[ "$(grep -c "image: \"${want}\"" dist/rendered.yaml)" -lt 3 ]]; then
             echo "::error::the packaged chart does not run ${want}"
+            exit 1
+          fi
+          want="ghcr.io/christopherjmiller/patchbay-stream-bridge:${v}@${BRIDGE_DIGEST}"
+          if [[ "$(grep -c "image: \"${want}\"" dist/rendered.yaml)" -ne 1 ]]; then
+            echo "::error::the packaged chart does not run the stream bridge ${want}"
             exit 1
           fi
           rm dist/rendered.yaml
