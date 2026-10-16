@@ -21,14 +21,19 @@ apiVersion: patchbay.chrismiller.xyz/v1alpha1
 kind: Person            # dialling 301 rings every listed device
 metadata: {name: chris}
 spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
+---
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Stream            # dialling 705 plays live TV audio from an HDHomeRun
+metadata: {name: king5}
+spec: {number: "705", name: KING 5, source: "http://192.168.0.58:5004/auto/v5.1"}
 ```
 
 Numbers are strings: quote them (`number: "100"`). A bare `number: 100` is
 refused by the API server (design §4).
 
 It is scoped to the hardware in one house (Cisco CP-7945G/7965G/7975G desk
-phones on SIP firmware, and Linphone softphones), LAN only, with no outside
-line. The design, including the per-device state machines, is
+phones on SIP firmware, Linphone softphones, an HDHomeRun tuner), LAN only,
+with no outside line. The design, including the per-device state machines, is
 [docs/design.md](docs/design.md).
 
 ## Status
@@ -45,8 +50,22 @@ suite in kind runs all of it against real Asterisk with simulated phones: a
 79x5 walking from SCCP firmware to `Registered`, a factory-reset one,
 Linphone's one-time QR code, calls both ways, a person ringing two devices, a
 blind transfer, a label change reaching the screen, a resync held during a
-call. Nothing here has run a real phone yet: the bench questions are in
-[docs/plans/release-a.md §8](docs/plans/release-a.md).
+call. Release A (`v0.1.0`) runs on the house's cluster: the Cisco 7945 on
+the desk registers, calls and transfers; the bench questions and their
+answers are in [docs/plans/release-a.md §8](docs/plans/release-a.md).
+
+Release B ("streams") is built: dialling a `Stream`'s number plays a live
+source, a TV channel from a tuner or an internet radio station, through
+`patchbay stream-bridge` (one ffmpeg per source, shared by everyone
+listening, 16 kHz over Asterisk's AudioSocket). Tuner pools cap how many
+channels of one tuner device play at once (the house lets phones hold one
+of its HDHomeRun's two tuners; the DVR keeps the other), every stream call
+ends at a time limit (2 h by default), and each Stream's status says
+whether it is Idle, Playing, Busy, Failing or Pending, and why. e2e runs
+it against a fake tuner and a fake Icecast station; the bench questions
+for the real HDHomeRun and SomaFM are in
+[docs/plans/release-b.md §8](docs/plans/release-b.md).
+[docs/streams.md](docs/streams.md) is the guide.
 
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
 extras (wallpaper, ringtones, speed dials, a Services menu, push messages).
@@ -86,6 +105,24 @@ When something is wrong, [docs/operations.md](docs/operations.md) goes from
 what you see (in `patchbay status`, `kubectl get phones`, the Events and
 the metrics) to its cause and what to do.
 
+Streams need nothing more by default: the chart runs the bridge
+(`<fullname>-streams`) and the controller compiles the Streams into the
+streams.json it plays. A tuner device is a **tuner pool** in the values,
+which limits how many of its channels play at once; internet radio needs
+none:
+
+```sh
+helm upgrade patchbay charts/patchbay -n telephony --reuse-values \
+  --set 'streams.tunerPools[0].name=hdhomerun' \
+  --set 'streams.tunerPools[0].hosts[0]=192.168.0.58' \
+  --set 'streams.tunerPools[0].max=1'
+```
+
+A Stream's source is a direct stream URL (an HDHomeRun channel, an
+Icecast mount), never a `.pls` or `.m3u` playlist:
+[docs/streams.md](docs/streams.md) has the rules, the states, the house's
+manifests and what to do when a stream will not play.
+
 The PBX's spoken prompts (911's "This phone cannot call emergency
 services" and "That number is not available") are rendered from text when
 the image is built, in five voices: espeak-ng's, the default, and four
@@ -108,8 +145,10 @@ make lint                      # golangci-lint (with exhaustive) + helm lint
 make build                     # bin/patchbay
 make sounds                    # the 911 and "not available" prompts, every voice (espeak-ng, Piper) into build/sounds
 make image                     # ghcr.io/christopherjmiller/patchbay:dev (renders the prompts first)
+make image-stream-bridge       # ghcr.io/christopherjmiller/patchbay-stream-bridge:dev (patchbay + Alpine's ffmpeg)
+make image-check-stream-bridge # that image's user, ffmpeg licence, CA bundle and decoder flags (docker)
 make asterisk-check            # every compile golden booted in the pinned Asterisk (docker)
-make e2e                       # kind + the chart + the controller + real Asterisk + simulated phones
+make e2e                       # kind + the chart + the controller + real Asterisk + simulated phones and sources
 make check-hygiene             # no binaries, firmware or secrets in git (CI runs it)
 make vulncheck                 # govulncheck, with the Go that builds the image
 ```
@@ -126,11 +165,16 @@ api/v1alpha1/          resource types -> generated CRDs
 internal/compile/      pure: resources + settings -> config bundle
 internal/drivers/      the driver contract, and the cisco79x5 and softphone drivers
 internal/agent/        the PBX pod's sidecar (apply, device HTTP, AMI, observations) and file server
+internal/streams/      the stream document (streams.json), its UUIDs and the audio format
+internal/streambridge/ the stream bridge: AudioSocket server, sessions (ffmpeg), tuner pools, control API
 internal/controller/   the controller: Setup, and its pieces (install, secrets, bundle, poller,
-                       devices, numbers, discovery, metrics)
+                       devices, numbers, discovery, metrics; bridgeclient and streamstate for Streams)
 internal/cli/          the client commands (status, softphone qr, phone resync, firmware load, models)
-charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk, agent sidecar, file server)
-test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5 and Linphone
+charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk, agent sidecar, file server),
+                       the stream bridge
+test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5 and Linphone,
+                       and the fake stream sources (an HDHomeRun, an Icecast station)
+test/image/            the stream bridge image checked (its user, ffmpeg's licence and flags)
 test/chart/            the rendered chart checked against the Go layout contracts
 hack/                  check-hygiene.sh, gen-sounds.sh
 config/samples/        one example of each resource

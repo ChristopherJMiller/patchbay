@@ -3,7 +3,11 @@
 What to look at, and what to do, when something is wrong with an
 install. Every entry is symptom, cause, action. The design's failure
 table is [design §7](design.md); what release A accepts as a known
-limitation is [plan §11](plans/release-a.md#11-known-limitations-accepted-for-a).
+limitation is [plan §11](plans/release-a.md#11-known-limitations-accepted-for-a),
+and release B [its plan §11](plans/release-b.md#11-known-limitations-accepted-for-b).
+Streams (a number that plays TV or radio) have their own guide,
+[docs/streams.md](streams.md), whose troubleshooting table goes from a
+Stream's state and message to the cause.
 `<ns>` below is the install's namespace (`telephony` at home), `<fullname>`
 its Helm fullname (`patchbay` when the release is called `patchbay`).
 
@@ -23,30 +27,45 @@ its Helm fullname (`patchbay` when the release is called `patchbay`).
      that is not healthy, and its **human action** (the one thing a person
      must do). "(its spec changed since; not decided again yet)" means the
      controller has not seen your last edit.
+   - a Stream also shows its listeners and tuner pool, and its last failure
+     while it is not Ready (`Stream kiro7 (707): Busy (pool hdhomerun)`).
    - the unknown phones: MACs that asked for a config no Phone names.
-2. **`kubectl -n <ns> get phones,softphones`**: State, Ready and its
-   Reason. In an outage State keeps the last state (design §8.3); Ready and
-   Reason say why it is Unknown.
+2. **`kubectl -n <ns> get phones,softphones`** (and `streams -o wide`):
+   State, Ready and its Reason. In an outage State keeps the last state
+   (design §8.3); Ready and Reason say why it is Unknown.
 3. **Events** (`kubectl -n <ns> get events`): StateChanged, ActionSent,
    ActionFailed, RequestIgnored, ApplyFailed on the devices; UnknownPhone,
    ConfigWritten, CompileFailed on `<fullname>-pbx-config` (or on
-   `<fullname>-settings` before the first bundle). A repeated Event is a
+   `<fullname>-settings` before the first bundle); StateChanged,
+   SourceFailed and CallRefused on the Streams. A repeated Event is a
    count on one Event; a new note is a new Event.
 4. **Metrics** (the chart's PodMonitor, `podMonitor.enabled`):
    `patchbay_agent_reachable` (0: the controller cannot poll the agent),
    `patchbay_asterisk_up` (0: Asterisk's AMI session is down; absent while
    the agent cannot be reached), `patchbay_observation_age_seconds`,
    `patchbay_compile_failures_total`, `patchbay_apply_failures_total`,
-   `patchbay_devices{kind,state}`, `patchbay_registered_endpoints`, and the
-   agent's own `patchbay_agent_*`.
+   `patchbay_devices{kind,state}`, `patchbay_registered_endpoints`,
+   `patchbay_streams{state}`, `patchbay_stream_bridge_reachable` (0: the
+   controller cannot poll the stream bridge), the agent's own
+   `patchbay_agent_*` and the bridge's `patchbay_stream_bridge_*`
+   (docs/streams.md lists them).
 5. **Logs**: `kubectl -n <ns> logs deploy/<fullname>-controller`, and the
    PBX pod's containers `agent`, `asterisk`, `fileserver`
-   (`kubectl -n <ns> logs deploy/<fullname>-pbx -c agent`).
+   (`kubectl -n <ns> logs deploy/<fullname>-pbx -c agent`), and the
+   stream bridge (`kubectl -n <ns> logs deploy/<fullname>-streams`: one
+   line per stream call, and per source started, stopped or failed; never
+   audio).
 
 Restarting the PBX pod, the remedy several entries below name, is
 `kubectl -n <ns> delete pod -l app.kubernetes.io/component=pbx,app.kubernetes.io/instance=<release>`.
 **Calls in progress drop**, and calls to a phone fail until it registers
 again (at most its 600 s expiry; Asterisk's contacts live on an emptyDir).
+
+Restarting the stream bridge (`kubectl -n <ns> rollout restart
+deploy/<fullname>-streams`, or any upgrade of it) **drops every stream
+call**: it is one replica, recreated, never two (two bridges would hold
+two tuners for one channel). Phone calls are unaffected, and the Streams
+read `Unknown` (`BridgeUnreachable`) until it is back, their history kept.
 
 ## The install
 
@@ -56,6 +75,9 @@ again (at most its 600 s expiry; Asterisk's contacts live on an emptyDir).
 | The PBX pod stays in `ContainerCreating` | Its `<fullname>-agent-token` Secret does not exist yet: the controller mints it, and is not running (or not yet). | Look at the controller pod. |
 | The controller crash-loops; its log names `settings.json` | A chart value it refuses: a time zone the 79x5 has no name for (the message lists the ones it takes), a number plan that clashes, an `amiSecret` that is not this install's. | Fix the value. The old controller pod keeps running meanwhile (rolling update). |
 | The PBX pod is not Ready; the agent's startup probe fails, `/readyz` says no config is live | The agent waits for `pbx-config` and `pbx-secrets`, or refused what it found (`Agent:` and the agent log say why). After a change of `pbx.address` or `pbx.ports.sip`, or a new release, the new PBX pod refuses a version compiled for its old SIP bind or modules until the new controller has compiled ("refused: compiled for SIP on …"): Asterisk would keep the transports it booted with, and no reload moves them. | Normally seconds. If it lasts, the controller is not compiling: see the `Controller:` and `Config:` lines. The startup probe allows 300 s, then the kubelet restarts the agent. |
+| The stream bridge pod stays in `ContainerCreating` | Its `<fullname>-streams` ConfigMap (streams.json) does not exist yet: the controller writes it on its first compile, before `pbx-config`. | Look at the controller pod. |
+| The stream bridge is not Ready; `/readyz` (port 9093) says why | It has not loaded a valid streams.json yet, or `ffmpeg -version` fails in its image. | Its log; `streamsError` in its observations (docs/streams.md). |
+| The controller exits at start naming `streams.` or `streamBridge` | A stream setting it refuses: `streams.callLimit` outside 10s to 24h or not whole seconds, a tuner pool whose name is not a DNS label or repeats, a host in two pools, `max` outside 1 to 16. | Fix the value; the message names the field. |
 | `/readyz` names a sound prompt | The image lacks a prompt in the voice `sounds.voice` picks (a broken image). | Use a released image. |
 | The agent exits at start naming `--sounds-voice` | A voice the image does not carry; the chart refuses one (`helm template` fails), so the pod spec was edited by hand. | Set `sounds.voice` to one of the voices it lists (docs/sounds.md). |
 
@@ -101,6 +123,14 @@ held while the phone is on a call).
 
 ## Changes and upgrades
 
+- **A Stream** (new, renumbered, a new source): compiled into
+  `<fullname>-streams` before `pbx-config`, then `Pending` until the
+  kubelet syncs the bridge's mounted copy (usually under a minute, up to
+  about two); a source change alone rewrites only `<fullname>-streams` (no
+  PBX reload). Calls already playing keep their source until they hang up.
+- **The stream settings** (`streams.callLimit`, `streams.tunerPools`)
+  roll the controller only; the new limit is in the next compiled
+  dialplan, the new pools in the next streams.json.
 - **A label, number, `spec.display` or new device**: compiled and applied
   by reload, no call drops. Phones are resynced when idle.
 - **The house default display** (the chart value `phoneDefaults.display`,
@@ -133,7 +163,7 @@ firmware volume (`firmware.persistence.keep`). The controller's own objects
 are not Helm's; once the controller is gone, delete them by name:
 
 ```sh
-kubectl -n <ns> delete configmap <fullname>-pbx-config
+kubectl -n <ns> delete configmap <fullname>-pbx-config <fullname>-streams
 kubectl -n <ns> delete secret <fullname>-pbx-secrets <fullname>-ami <fullname>-agent-token
 ```
 

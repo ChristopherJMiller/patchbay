@@ -21,7 +21,14 @@ resources (Phone, Softphone, Person, Stream)
         fileserver TFTP :69 and HTTP :6970; binds as root, then runs as
                    65533 with no capabilities; reports each transfer to the
                    agent over a unix socket
-        asterisk   SIP 5060, RTP 10000-10099; sees only the compiled modules
+        asterisk   SIP 5060, RTP 10000-10099; sees only the compiled modules;
+                   a Stream's number dials the bridge over AudioSocket
+   -> stream bridge  Deployment <fullname>-streams (pod network, 1 replica, no
+                   token): AudioSocket :9092 from Asterisk, one ffmpeg per
+                   source shared by its callers, tuner pools; plays the
+                   streams.json the controller compiles (<fullname>-streams
+                   ConfigMap, mounted); GET /v1/observations :9093 (no token)
+                   polled by the controller. Senses and plays; never decides.
 ```
 
 **Pure core, imperative shell.**
@@ -60,9 +67,19 @@ the bounds on status and Event text), `internal/controller/agentview` (the polle
 `SnapshotFunc`, the `Actor` the device reconcilers send actions through),
 `internal/controller/ctrltest` (the shared envtest harness),
 `internal/cli/env.go` (the CLI's seams) and `test/e2e/fakephone/script`
-(what `fakephone run` does and reports). Change them deliberately: the
-controller, agent, drivers and e2e fake phone all build on them. The release A plan, with the reasoning behind
-each contract, is [docs/plans/release-a.md](docs/plans/release-a.md).
+(what `fakephone run` does and reports, and the fake stream source). Release
+B added (docs/plans/release-b.md §4): `internal/streams` (the stream
+document streams.json, its UUIDs, `CheckSource`, the audio format),
+`internal/streambridge/{doc,options,source}.go` (the bridge's `Options`,
+flags, defaults, timings and bounds, the `Source`/`Decoder` seam,
+`FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
+kinds and frame), `internal/streambridge/api` (the bridge's control API
+JSON), the stream settings and `Bundle.Streams` in `internal/compile`
+(`streams_contract_test.go`), and install's streams ConfigMap, names and
+Event reasons. Change them deliberately: the
+controller, agent, bridge, drivers and e2e fake phone all build on them. The release A plan, with the reasoning behind
+each contract, is [docs/plans/release-a.md](docs/plans/release-a.md); release
+B's, [docs/plans/release-b.md](docs/plans/release-b.md).
 
 ## Deviations from the design
 
@@ -286,6 +303,79 @@ departs from it, the departure is recorded here (and in the code's docs).
   error; it becomes NeedsTrustReset by the 3 min `.sgn` rule (e2e
   `TestPhoneLifecycle/reset`; plan §11).
 
+Release B (streams; docs/plans/release-b.md, its §6.5 "as built"):
+
+- **Streams dial the AudioSocket channel driver, at 16 kHz** (§9 has
+  `AudioSocket(<uuid>, <bridge>)`, the application, and 8 kHz): a
+  Stream's number runs `Answer()`, `Set(TIMEOUT(absolute)=<limit>)`,
+  `Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,g)`, then "not available".
+  Tested against the pinned Asterisk 22.11 (plan §3): the channel driver
+  carries 16 kHz both ways (kind `0x12`, 640 bytes per 20 ms) and continues
+  the dialplan after a refusal, a close or an unreachable bridge; the
+  application sends 8 kHz and needs `TryExec`. So `chan_audiosocket`,
+  `codec_resample` and `func_timeout` are loaded, and `app_audiosocket` is
+  not. ffmpeg decodes to 16 kHz (`-ar 16000`), not §9's `-ar 8000`, with
+  protocol and demuxer whitelists, a 10 s stall timeout and probe limits
+  (`streambridge.FFmpegArgs`). A G.711 phone hears narrowband, a G.722 one
+  wideband (bench B5).
+- **The bridge's objects are `<fullname>-streams`** (§9's
+  `patchbay-stream-bridge`): Deployment, Service and ServiceAccount, and
+  the ConfigMap holding streams.json. `<fullname>-stream-bridge` would be a
+  64-character Service name for the longest fullname, over the DNS label
+  limit.
+- **streams.json is its own ConfigMap** (§9: "the bundle carries
+  `streams.json`"): the controller compiles it into `Bundle.Streams`, not
+  among the bundle's files nor in its version, and writes
+  `<fullname>-streams` before pbx-secrets and pbx-config. The bridge
+  mounts it (the whole volume, so it follows the kubelet's `..data` swap),
+  reads it every 2 s, and holds no Kubernetes credentials. A source change
+  never reloads the PBX, and the agent never learns about streams. Cost: a
+  new Stream is `Pending` until the kubelet syncs the mount (measured in
+  e2e; plan §11).
+- **An unknown UUID, a refusal and the bridge's own hangup are a hangup
+  frame, then close** (§9: "the connection closed"), so the frame is not
+  lost to a reset; `Dial` continues either way.
+- **The time limit and tuner pools are settings** (§9 has neither; Chris,
+  2026-10-16): `streams.callLimit` (default 2 h, whole seconds from 10 s
+  to 24 h; Asterisk's `TIMEOUT(absolute)`, no prompt) and
+  `streams.tunerPools` (`{name, hosts, max}`: a Stream whose source's host
+  is a pool's counts against it; at most `max` sources of a pool play at
+  once; a draining session gives way, otherwise the call is refused,
+  `TunerBusy`). No field on Stream; `status.tunerPool` and the Pool column
+  show the match.
+- **Sources are refused as playlists, credentials or not http(s)**
+  (`streams.CheckSource` and the same rules as CEL on `spec.source`): a
+  path ending `.pls` or `.m3u`, a `user@`, white space, or a scheme other
+  than http/https. The bridge never resolves playlists. A Stream written
+  before the rule is `Invalid` (`InvalidSource`), left out of streams.json,
+  and its number plays "not available": it never fails the compile.
+- **Two states beside §9's three** (`Idle`, `Playing`, `Failing`):
+  `Busy` (Ready False `TunerBusy`: its pool plays `max` other sources) and
+  `Pending` (Ready False `BridgePending`: not compiled, or the bridge has
+  not loaded it yet); also `Unknown` (`BridgeUnreachable`), `Unavailable`
+  (`NoStreamBridge`) and `Invalid`. A pure rule table
+  (`streamstate.Decide`), the bridge's memory folded into status
+  (`listeners`, `tunerPool`, `lastPlayed`, `lastFailure`) so it survives a
+  bridge restart; each new failure is one `SourceFailed` (Warning) or
+  `CallRefused` (Normal) Event. A `TunerBusy` refusal never makes a Stream
+  `Failing`.
+- **The bridge's control API on 9093 is unauthenticated** (§9 says only
+  "the bridge exposes observations"): `/v1/observations`, `/healthz`,
+  `/readyz`, `/metrics`, read only. Nothing in it is secret (sources hold
+  no credentials); anyone in the cluster can see what is playing. Capped
+  at 32 connections, 8 per source, loopback exempt, idle ones closed after
+  15 s.
+- **The bridge image is a second Dockerfile target on Alpine** (§6 has
+  one image): `ghcr.io/christopherjmiller/patchbay-stream-bridge`,
+  patchbay plus Alpine 3.24's ffmpeg, Apache-2.0 AND GPL-3.0-or-later;
+  CI refuses a nonfree ffmpeg. The patchbay image stays distroless and
+  ffmpeg-free. docs/streams.md says where the sources are.
+- **One bridge replica, `Recreate`**: two would run two ffmpegs, two
+  tuners, for one channel. Stream calls drop when it restarts.
+- **The controller polls the bridge only when the settings name one**
+  (`streamBridge`, rendered while `streamBridge.enabled`); its URL is
+  `--stream-bridge-url`, by default the bridge Service on 9093.
+
 ## Commands
 
 Everything runs in the flake's shell. `go`, `kind`, `helm` and the rest are not
@@ -301,13 +391,18 @@ make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake), th
 make test-unit    # -short: skips envtest
 make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev (GO_TAGS=e2e
                   # only for e2e images and .e2e/bin/patchbay: the e2e firmware load)
+make image-stream-bridge       # ghcr.io/christopherjmiller/patchbay-stream-bridge:dev: the same binary
+                               # on Alpine with its ffmpeg (the Dockerfile's stream-bridge target)
+make image-check-stream-bridge # test/image (tag image): that image's uid, labels, ffmpeg's licence
+                               # and build flags, the CA bundle, FFmpegArgs decoding (docker, no network)
 make sounds       # the prompts in every voice into build/sounds/<voice>; make image runs it.
                   # espeak-ng + ffmpeg from the shell; Piper and its voices are flake packages
                   # (.#piper, .#piper-voices) that gen-sounds `nix build`s, never in the shell
 make tools-versions
 make check-versions # envtest's kube-apiserver minor = go.mod's k8s.io minor, flake Go minor =
                     # the Dockerfile's (hard rule 1, checked; make test runs it first)
-make e2e          # kind + chart + controller + real Asterisk + fakephones; docs/e2e.md
+make e2e          # kind + chart + controller + real Asterisk + fakephones + the stream
+                  # bridge against fake sources; docs/e2e.md
                   # PATCHBAY_E2E_KEEP=1 keeps the cluster, PATCHBAY_E2E_REUSE=1 reuses it
 make e2e-down     # delete the e2e cluster
 make check-hygiene # no tracked binaries, big files, firmware types or secrets
