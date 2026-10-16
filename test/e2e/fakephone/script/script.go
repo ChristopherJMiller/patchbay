@@ -22,7 +22,9 @@
 //   - cisco mode: it serves the three pages the agent scrapes
 //     (scrape.PathDeviceInformation and the others, built with
 //     internal/agent/scrape's page types and MarshalPage) from the current
-//     Web, or 503 while Web.Down or before any Web was set.
+//     Web, or 503 while Web.Down or before any Web was set; with
+//     Web.NetworkConfigurationBreaksOff and Web.EmptyDeviceLog, as a real
+//     CP-7945G on SIP 9.4(2)SR4-3 serves them.
 //
 // A step that fails ends the run: the phone logs why and exits 1 (the pod
 // fails and its log says which step). When the steps are done it keeps
@@ -238,6 +240,22 @@ type Web struct {
 	AdminVLAN        string   `json:"adminVLAN,omitempty"`
 	CallManager1     string   `json:"callManager1,omitempty"`
 	Log              []string `json:"log,omitempty"`
+
+	// NetworkConfigurationBreaksOff ends /NetworkConfigurationX as a real
+	// CP-7945G on SIP 9.4(2)SR4-3 does (observed 2026-10-15): after its
+	// fields, at <EnergywisePowerLevel>java.lang.NullPointerException, the
+	// renderer's crash, with no closing tag.
+	NetworkConfigurationBreaksOff bool `json:"networkConfigurationBreaksOff,omitempty"`
+	// EmptyDeviceLog makes /DeviceLogX a 200 with an empty body, as that
+	// phone's is. Log must then be empty.
+	EmptyDeviceLog bool `json:"emptyDeviceLog,omitempty"`
+}
+
+func (w Web) validate() error {
+	if w.EmptyDeviceLog && len(w.Log) > 0 {
+		return errors.New("web: an empty device log has no log lines")
+	}
+	return nil
 }
 
 // Register REGISTERs with the credentials of the config last parsed and,
@@ -353,6 +371,11 @@ func (s Script) Validate() error {
 		if s.ProvisioningURL != "" {
 			bad("a cisco phone has no provisioning URL")
 		}
+		if s.Web != nil {
+			if err := s.Web.validate(); err != nil {
+				errs = append(errs, fmt.Errorf("script: %w", err))
+			}
+		}
 	case ModeLinphone:
 		u, err := url.Parse(s.ProvisioningURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -455,7 +478,9 @@ func (st Step) validate(mode Mode) error {
 		if st.Sleep.For <= 0 {
 			return errors.New("sleep for a positive duration")
 		}
-	case st.SetWeb != nil, st.Unregister != nil, st.StopRefreshing != nil, st.Hangup != nil:
+	case st.SetWeb != nil:
+		return st.SetWeb.validate()
+	case st.Unregister != nil, st.StopRefreshing != nil, st.Hangup != nil:
 	}
 	return nil
 }

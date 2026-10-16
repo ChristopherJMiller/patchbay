@@ -122,6 +122,47 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestWebAsTheReal7945: a Web can ask for the pages a real CP-7945G on SIP
+// 9.4(2)SR4-3 serves (a /NetworkConfigurationX that breaks off, an empty
+// /DeviceLogX), at start or in a SetWeb; an empty log with lines is
+// refused.
+func TestWebAsTheReal7945(t *testing.T) {
+	real7945 := script.Web{
+		VersionID: "*SIP45.9-4-2SR4-3S*", AppLoadID: "jar45sip.9-4-2SR4-3.sbn",
+		NetworkConfigurationBreaksOff: true, EmptyDeviceLog: true,
+	}
+	s := lifecycle()
+	s.Web = &real7945
+	s.Steps = append(s.Steps, script.Step{SetWeb: &real7945})
+	enc, err := s.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(enc, `"networkConfigurationBreaksOff":true`) || !strings.Contains(enc, `"emptyDeviceLog":true`) {
+		t.Errorf("encoding: %s", enc)
+	}
+	back, err := script.Parse([]byte(enc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back, s) {
+		t.Errorf("round trip:\n got %+v\nwant %+v", back, s)
+	}
+
+	withLog := real7945
+	withLog.Log = []string{"Trust List Update Failed"}
+	s = lifecycle()
+	s.Web = &withLog
+	if err := s.Validate(); err == nil {
+		t.Error("an empty device log with lines, at start: valid")
+	}
+	s = lifecycle()
+	s.Steps = append(s.Steps, script.Step{SetWeb: &withLog})
+	if err := s.Validate(); err == nil {
+		t.Error("an empty device log with lines, in a step: valid")
+	}
+}
+
 func TestExpand(t *testing.T) {
 	if got := script.Expand("SEP{mac}.cnf.xml.sgn", "0200E2E00011", "E2E45.0-0-1S"); got != "SEP0200E2E00011.cnf.xml.sgn" {
 		t.Errorf("Expand mac = %q", got)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -72,6 +73,41 @@ func TestWebPagesParse(t *testing.T) {
 	h = startRun(t, linphoneScript("http://127.0.0.1:1/p/not-a-secret-token"), runOptions{})
 	if code, _ := h.get(scrape.PathDeviceInformation); code != http.StatusNotFound {
 		t.Errorf("linphone: %d", code)
+	}
+}
+
+// TestWebPagesAsTheReal7945: with NetworkConfigurationBreaksOff and
+// EmptyDeviceLog the pages are what a real CP-7945G on SIP 9.4(2)SR4-3
+// serves (2026-10-15): /NetworkConfigurationX ends mid-element where the
+// phone's renderer throws, with the scripted fields before the break, and
+// /DeviceLogX is a 200 with nothing in it. scrape's parsers read them so.
+func TestWebPagesAsTheReal7945(t *testing.T) {
+	web := script.Web{
+		VersionID: "*SIP45.9-4-2SR4-3S*", AppLoadID: "jar45sip.9-4-2SR4-3.sbn", ModelNumber: "CP-7945G",
+		AdminVLAN: "", CallManager1: "192.168.0.240   Active",
+		NetworkConfigurationBreaksOff: true, EmptyDeviceLog: true,
+	}
+	sc := ciscoScript()
+	sc.Web = &web
+	h := startRun(t, sc, runOptions{TFTPPort: 1})
+
+	code, b := h.get(scrape.PathDeviceInformation)
+	info, err := scrape.ParseDeviceInformation(b)
+	if code != http.StatusOK || err != nil || info.VersionID != web.VersionID {
+		t.Errorf("%s: %d %+v %v", scrape.PathDeviceInformation, code, info, err)
+	}
+	code, b = h.get(scrape.PathNetworkConfiguration)
+	if !bytes.HasSuffix(b, []byte("<EnergywisePowerLevel>java.lang.NullPointerException")) {
+		t.Errorf("%s does not end as the phone's does:\n%s", scrape.PathNetworkConfiguration, b)
+	}
+	netcfg, err := scrape.ParseNetworkConfiguration(b)
+	if code != http.StatusOK || !errors.Is(err, scrape.ErrIncomplete) || netcfg == nil || netcfg.CallManager1 != web.CallManager1 {
+		t.Errorf("%s: %d %+v %v", scrape.PathNetworkConfiguration, code, netcfg, err)
+	}
+	code, b = h.get(scrape.PathDeviceLog)
+	lines, err := scrape.ParseDeviceLog(b)
+	if code != http.StatusOK || len(b) != 0 || err != nil || lines != nil {
+		t.Errorf("%s: %d %q %q %v", scrape.PathDeviceLog, code, b, lines, err)
 	}
 }
 

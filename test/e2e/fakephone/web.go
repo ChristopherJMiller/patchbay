@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -55,25 +56,46 @@ func (r *runner) webHandler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	if r.sc.Mode == script.ModeCisco {
-		mux.HandleFunc("GET "+scrape.PathDeviceInformation, r.page(func(web script.Web) any {
-			return scrape.DeviceInformationX{
+		mux.HandleFunc("GET "+scrape.PathDeviceInformation, r.page(func(web script.Web) ([]byte, error) {
+			return scrape.MarshalPage(scrape.DeviceInformationX{
 				VersionID: web.VersionID, AppLoadID: web.AppLoadID, BootLoadID: web.BootLoadID,
 				HardwareRevision: web.HardwareRevision, SerialNumber: web.SerialNumber, ModelNumber: web.ModelNumber,
+			})
+		}))
+		mux.HandleFunc("GET "+scrape.PathNetworkConfiguration, r.page(func(web script.Web) ([]byte, error) {
+			b, err := scrape.MarshalPage(scrape.NetworkConfigurationX{AdminVLANID: web.AdminVLAN, CallManager1: web.CallManager1})
+			if err != nil || !web.NetworkConfigurationBreaksOff {
+				return b, err
 			}
+			return breakOff(b), nil
 		}))
-		mux.HandleFunc("GET "+scrape.PathNetworkConfiguration, r.page(func(web script.Web) any {
-			return scrape.NetworkConfigurationX{AdminVLANID: web.AdminVLAN, CallManager1: web.CallManager1}
-		}))
-		mux.HandleFunc("GET "+scrape.PathDeviceLog, r.page(func(web script.Web) any {
-			return scrape.DeviceLogX{Status: web.Log}
+		mux.HandleFunc("GET "+scrape.PathDeviceLog, r.page(func(web script.Web) ([]byte, error) {
+			if web.EmptyDeviceLog {
+				return nil, nil
+			}
+			return scrape.MarshalPage(scrape.DeviceLogX{Status: web.Log})
 		}))
 	}
 	return mux
 }
 
+// crashTail is where a real CP-7945G on SIP 9.4(2)SR4-3 ends its
+// /NetworkConfigurationX (2026-10-15): its renderer throws while it
+// writes this element, and the page stops there.
+const crashTail = "<EnergywisePowerLevel>java.lang.NullPointerException"
+
+// breakOff ends a marshalled /NetworkConfigurationX as that phone does:
+// its fields, then crashTail in place of the closing tag.
+func breakOff(page []byte) []byte {
+	if i := bytes.LastIndex(page, []byte("</NetworkConfiguration>")); i >= 0 {
+		page = page[:i:i]
+	}
+	return append(page, crashTail...)
+}
+
 // page serves one scraped page from the current Web, or 503 while the web
 // server is down or before any Web was set.
-func (r *runner) page(build func(script.Web) any) http.HandlerFunc {
+func (r *runner) page(build func(script.Web) ([]byte, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		r.mu.Lock()
 		web, set := cloneWeb(r.state.Web), r.webSet
@@ -82,7 +104,7 @@ func (r *runner) page(build func(script.Web) any) http.HandlerFunc {
 			http.Error(w, "the phone's web server is not answering", http.StatusServiceUnavailable)
 			return
 		}
-		b, err := scrape.MarshalPage(build(web))
+		b, err := build(web)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
