@@ -26,11 +26,14 @@ import (
 // the stream bridge's ffmpeg has a real network source to decode and
 // resample, and no test reaches a tuner or the internet.
 //
-// Beyond the contract: POST SourcePathOccupy with more tuners than are
-// free (open streams hold theirs) is 409 Conflict, with the status as the
-// body, as a DVR cannot take a tuner the bridge holds; any other method on
-// a path is 405, an unusable hz 400, and SourcePathOccupy on the radio
-// listener 404.
+// Beyond the contract: a stream sends its first sourceBurst (4 s) of
+// audio at once, then paces it at real time, as Icecast bursts on connect
+// (the contract says only "paced at real time"; without the burst,
+// ffmpeg's probe of the WAV holds the first audio back 2.7 s, see
+// sourceBurst). POST SourcePathOccupy with more tuners than are free (open
+// streams hold theirs) is 409 Conflict, with the status as the body, as a
+// DVR cannot take a tuner the bridge holds; any other method on a path is
+// 405, an unusable hz 400, and SourcePathOccupy on the radio listener 404.
 
 const (
 	// sourceChunk is one write of a stream: 20 ms, like a call's packet.
@@ -39,6 +42,15 @@ const (
 	// channel), sourceBytesPerFrame a frame in bytes (16-bit samples).
 	sourceFramesPerChunk = script.SourceSampleRate * int(sourceChunk/time.Millisecond) / 1000
 	sourceBytesPerFrame  = script.SourceChannels * 2
+	// sourceBurst is how much audio a stream sends at once before it is
+	// paced, as Icecast bursts on connect: ffmpeg reads 512 KiB of a PCM
+	// WAV's data before it decodes any (probing it for S/PDIF or
+	// mislabelled MP3; ffmpeg 8.1 and 9.0, with FFmpegArgs' limits),
+	// which at this WAV's 192 kB/s would take 2.7 s; a tuner's MPEG-TS
+	// (megabytes a second) and an Icecast mount fill ffmpeg's probe in a
+	// fraction of a second. 4 s (768 kB) covers the probe with room.
+	sourceBurst       = 4 * time.Second
+	sourceBurstChunks = int(sourceBurst / sourceChunk)
 	// sourceAmplitude is the tone's level, of full scale.
 	sourceAmplitude = 0.5
 	// maxSourceHz keeps the tone below the WAV's Nyquist frequency.
@@ -80,8 +92,9 @@ func newSourceCmd(rf *rootFlags) *cobra.Command {
   --radio-listen  a fake Icecast station: no tuners, no limit, no delay.
 
 GET of any path but /fake/status (that listener's counters, as JSON) streams
-a tone at real time: a WAV header (48 kHz, stereo, 16-bit), then the samples
-in 20 ms writes, the tone's frequency from ?hz= (default 1000).`,
+a tone: a WAV header (48 kHz, stereo, 16-bit), then its first 4 s at once (as
+Icecast bursts), then the rest at real time in 20 ms writes; the tone's
+frequency is ?hz= (default 1000).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			o.Log = rf.logger()
@@ -314,7 +327,14 @@ func (s *fakeSource) stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tone := &stereoTone{freq: hz}
-	buf := wavHeader(make([]byte, 0, 44+sourceFramesPerChunk*sourceBytesPerFrame))
+	buf := wavHeader(make([]byte, 0, 44+sourceBurstChunks*sourceFramesPerChunk*sourceBytesPerFrame))
+	for range sourceBurstChunks {
+		buf = tone.appendChunk(buf)
+	}
+	if _, err := w.Write(buf); err != nil {
+		return
+	}
+	buf = buf[:0]
 	next := time.Now()
 	for {
 		buf = tone.appendChunk(buf)

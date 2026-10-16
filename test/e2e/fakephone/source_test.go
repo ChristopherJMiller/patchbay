@@ -12,12 +12,15 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ChristopherJMiller/patchbay/internal/streambridge"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 	"github.com/ChristopherJMiller/patchbay/test/e2e/fakephone/script"
 )
 
@@ -246,14 +249,25 @@ func TestSourceWAV(t *testing.T) {
 	}
 }
 
-// TestSourceRealTime: a stream arrives at real time, 1 s of audio per
-// second (± 10%), not as fast as the client reads.
+// TestSourceRealTime: a stream's first sourceBurst of audio comes at once
+// (as Icecast bursts, so ffmpeg's probe of the WAV is quick), then 1 s of
+// audio per second (± 10%), not as fast as the client reads.
 func TestSourceRealTime(t *testing.T) {
 	h := startSource(t, sourceOptions{})
+	chunk := sourceFramesPerChunk * sourceBytesPerFrame
 	for _, base := range []string{h.radio, h.tuner} {
 		r := bufio.NewReader(openStream(t, base+"/x").Body)
 		readWAVHeader(t, r)
 		start := time.Now()
+		burst := make([]byte, sourceBurstChunks*chunk)
+		if _, err := io.ReadFull(r, burst); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Errorf("%s: the %s burst took %s", base, sourceBurst, took)
+		}
+
+		start = time.Now()
 		var n int
 		buf := make([]byte, 4096)
 		for time.Since(start) < 2*time.Second {
@@ -267,7 +281,7 @@ func TestSourceRealTime(t *testing.T) {
 		perSecond := float64(n) / elapsed.Seconds()
 		want := float64(script.SourceSampleRate * sourceBytesPerFrame)
 		if math.Abs(perSecond-want) > want/10 {
-			t.Errorf("%s: %.0f bytes a second over %s, want %.0f ± 10%%", base, perSecond, elapsed.Round(time.Millisecond), want)
+			t.Errorf("%s: after the burst, %.0f bytes a second over %s, want %.0f ± 10%%", base, perSecond, elapsed.Round(time.Millisecond), want)
 		}
 	}
 }
@@ -558,5 +572,65 @@ func TestSourceCommand(t *testing.T) {
 		if err == nil {
 			t.Errorf("source %v ran", args)
 		}
+	}
+}
+
+// TestSourceFeedsFFmpeg: the bridge's decoder (the dev shell's ffmpeg with
+// streambridge.FFmpegArgs, the contract) decodes each fake source to its
+// tone at 16 kHz mono, and soon: the radio within about a second, the
+// tuner within about a second of its lock. Without the burst, ffmpeg's
+// probe of the WAV would hold the first audio back 2.7 s (sourceBurst).
+func TestSourceFeedsFFmpeg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs ffmpeg")
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Fatal("ffmpeg is not on PATH: run the tests inside `nix develop`")
+	}
+	const lock = 500 * time.Millisecond
+	h := startSource(t, sourceOptions{Tuners: 1, LockDelay: lock})
+	for _, tc := range []struct {
+		url    string
+		hz     float64
+		within time.Duration
+	}{
+		{h.radio + "/radio-a?hz=500", 500, 1500 * time.Millisecond},
+		{h.tuner + "/auto/v5.1?hz=1100", 1100, lock + 1500*time.Millisecond},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		var stderr bytes.Buffer
+		cmd := exec.CommandContext(ctx, ffmpeg, streambridge.FFmpegArgs(tc.url, "")...)
+		cmd.Stderr = &stderr
+		out, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pcm := make([]byte, streams.SampleRate) // 0.5 s of 16-bit mono
+		_, rerr := io.ReadFull(out, pcm[:streams.FrameBytes])
+		first := time.Since(start)
+		if rerr == nil {
+			_, rerr = io.ReadFull(out, pcm[streams.FrameBytes:])
+		}
+		cancel()
+		_ = cmd.Wait()
+		if rerr != nil {
+			t.Fatalf("%s: reading ffmpeg's PCM: %v\n%s", tc.url, rerr, stderr.String())
+		}
+		if first > tc.within {
+			t.Errorf("%s: the first frame came after %s, want within %s", tc.url, first.Round(time.Millisecond), tc.within)
+		}
+		samples := make([]float64, len(pcm)/2)
+		for i := range samples {
+			samples[i] = float64(int16(binary.LittleEndian.Uint16(pcm[2*i:])))
+		}
+		if a := analyseAt(samples, tc.hz, streams.SampleRate); a.Ratio < 0.9 {
+			t.Errorf("%s: %.0f Hz carries %.3f of the decoded audio", tc.url, tc.hz, a.Ratio)
+		}
+		t.Logf("%s: first frame after %s", tc.url, first.Round(time.Millisecond))
 	}
 }
