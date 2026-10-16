@@ -175,6 +175,12 @@ func mapValues(m map[string]bool) []bool {
 	return out
 }
 
+// sinceNow is "since this test began" for status and Event times, which
+// are whole seconds (the controller's fold truncates a failure's time,
+// and an Event's creationTimestamp has no fraction): now, truncated, so
+// a failure in this very second is not "before" it.
+func sinceNow() metav1.Time { return metav1.NewTime(time.Now().Truncate(time.Second)) }
+
 // getStream reads one Stream.
 func getStream(ctx context.Context, name string) (*v1alpha1.Stream, error) {
 	s := &v1alpha1.Stream{}
@@ -556,7 +562,7 @@ func TestStreamTuner(t *testing.T) {
 		}).
 		Assess("limit: 707 while 705 plays is refused, Busy, and never reaches the tuner", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			before := fakeSourceStatus(ctx, t, fakeTunerService, script.DefaultTunerPort)
-			since := metav1.Now()
+			since := sinceNow()
 			long := streamCall{Number: tunerANumber, Duration: 16 * time.Second, ExpectHz: tunerAHz, EndedBy: "local"}
 			pa := startStreamCall(ctx, t, "call-705-long", long)
 			waitBridge(ctx, t, "tuner-a playing", 20*time.Second, func(o bridgeapi.Observations) (bool, string) {
@@ -608,7 +614,7 @@ func TestStreamTuner(t *testing.T) {
 					occupyTuners(context.WithoutCancel(ctx), t, 0)
 				}
 			}()
-			since := metav1.Now()
+			since := sinceNow()
 			refused := streamCall{Number: tunerANumber, Duration: 10 * time.Second, ExpectPrompt: true, EndedBy: "remote"}
 			logCall(t, tunerANumber, callStream(ctx, t, "call-705-refused", refused))
 			failing := waitStream(ctx, t, tunerAName, "Failing", 20*time.Second,
