@@ -199,6 +199,15 @@ func TestReporter(t *testing.T) {
 	for i := 110; i < 110+reporterQueue+10; i++ {
 		r.RecordFetch(event(i))
 	}
+	// The sender may hold the first of them, popped for a write to the
+	// closed agent, while the rest arrive: the queue then has room for one
+	// more, and the tenth drop happens only when the failed write puts
+	// that event back (unpop). So wait for the count to settle; it must
+	// never pass 10.
+	deadline := time.Now().Add(5 * time.Second)
+	for r.Dropped() < 10 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if got := r.Dropped(); got != 10 {
 		t.Errorf("Dropped = %d, want 10", got)
 	}
