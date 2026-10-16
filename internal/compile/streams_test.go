@@ -54,7 +54,7 @@ func TestStreamDialplan(t *testing.T) {
 		want := "; Stream king5\n" +
 			"exten => 705,1,Answer()\n" +
 			" same => n,Set(TIMEOUT(absolute)=5400)\n" +
-			" same => n,Dial(AudioSocket/" + bridge + "/89fb6719-3e3d-5ef3-881a-b9f423a8a432/c(slin16),,g)\n" +
+			" same => n,Dial(AudioSocket/" + bridge + "/89fb6719-3e3d-5ef3-881a-b9f423a8a432/c(slin16),,gS(5400))\n" +
 			" same => n,Goto(patchbay-unavailable,s,1)\n"
 		ext := extensions(compileOK(t, reg, in, s))
 		if !strings.Contains(ext, want) {
@@ -73,7 +73,7 @@ func TestStreamDialplan(t *testing.T) {
 
 	t.Run("the default limit", func(t *testing.T) {
 		in, s := streamHouse(king)
-		if ext := extensions(compileOK(t, reg, in, s)); !strings.Contains(ext, " same => n,Set(TIMEOUT(absolute)=7200)\n") {
+		if ext := extensions(compileOK(t, reg, in, s)); !strings.Contains(ext, " same => n,Set(TIMEOUT(absolute)=7200)\n") || !strings.Contains(ext, "/c(slin16),,gS(7200))\n") {
 			t.Errorf("the default call limit is not 2 h:\n%s", ext)
 		}
 	})

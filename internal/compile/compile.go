@@ -224,10 +224,11 @@ type PhoneDefaults struct {
 // §2(c), §2(e)).
 type StreamSettings struct {
 	// CallLimit is how long one call to a stream may last: the dialplan
-	// sets TIMEOUT(absolute) to it, so Asterisk hangs up at it and a
-	// phone left off the hook cannot hold a tuner for ever. Whole seconds,
-	// MinCallLimit to MaxCallLimit; zero is DefaultCallLimit. It applies to
-	// every stream, tuner or not.
+	// sets TIMEOUT(absolute) on the caller's channel and Dial's S() on the
+	// AudioSocket leg to it, so Asterisk hangs up at it (a blind transfer
+	// keeps the leg's) and a phone left off the hook cannot hold a tuner
+	// for ever. Whole seconds, MinCallLimit to MaxCallLimit; zero is
+	// DefaultCallLimit. It applies to every stream, tuner or not.
 	CallLimit metav1.Duration `json:"callLimit,omitzero"`
 
 	// TunerPools are the tuner devices whose tuners a stream holds while

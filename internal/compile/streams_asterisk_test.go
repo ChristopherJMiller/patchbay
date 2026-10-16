@@ -311,7 +311,14 @@ func (c asteriskContainer) waitFile(name string, timeout time.Duration) []byte {
 // record is the stand-in bridge's record of a call on a stream.
 func (c asteriskContainer) record(name string) audioSocketRecord {
 	c.t.Helper()
-	raw := c.waitFile(streams.UUID(name)+".json", 30*time.Second)
+	return c.recordWithin(name, 30*time.Second)
+}
+
+// recordWithin is the record of a call on a stream, waited for up to
+// timeout (the stand-in writes it when the call ends).
+func (c asteriskContainer) recordWithin(name string, timeout time.Duration) audioSocketRecord {
+	c.t.Helper()
+	raw := c.waitFile(streams.UUID(name)+".json", timeout)
 	var rec audioSocketRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		c.t.Fatalf("the record of %s: %v\n%s", name, err, raw)
@@ -355,6 +362,10 @@ var heldCall = regexp.MustCompile(`^status=(\d+) endedBy=(local|remote) held=([0
 //   - 704 (komo4): the bridge plays for 20 s; Asterisk ends the call at the
 //     10 s limit (TIMEOUT(absolute)), closing the bridge's connection, and
 //     never reaches "not available";
+//   - 713 (fox13): the phone blind-transfers the call to the echo test 2 s
+//     in (a REFER) and hangs up; the bridge plays for 40 s, and Asterisk
+//     still closes its connection at the 10 s limit (Dial's S(), the
+//     limit on the AudioSocket leg, which the transfer keeps);
 //   - 750 (groovesalad), with nothing listening: answered, "not
 //     available";
 //
@@ -377,7 +388,7 @@ func TestRealAsteriskStreams(t *testing.T) {
 	if !slices.Equal(steps, []string{
 		"Answer()",
 		"Set(TIMEOUT(absolute)=10)",
-		"Dial(AudioSocket/" + checkBridge + "/" + streams.UUID("king5") + "/c(slin16),,g)",
+		"Dial(AudioSocket/" + checkBridge + "/" + streams.UUID("king5") + "/c(slin16),,gS(10))",
 		"Goto(patchbay-unavailable,s,1)",
 	}) {
 		t.Fatalf("705 compiles to %q", steps)
@@ -390,9 +401,10 @@ func TestRealAsteriskStreams(t *testing.T) {
 	}
 
 	c.audioSocket(map[string]string{
-		"AUDIOSOCKET_LISTEN":      checkBridge,
-		"AUDIOSOCKET_PLAY":        streams.UUID("king5") + "=2s," + streams.UUID("komo4") + "=20s",
-		"AUDIOSOCKET_CONNECTIONS": "3",
+		"AUDIOSOCKET_LISTEN": checkBridge,
+		"AUDIOSOCKET_PLAY": streams.UUID("king5") + "=2s," + streams.UUID("komo4") + "=20s," +
+			streams.UUID("fox13") + "=40s",
+		"AUDIOSOCKET_CONNECTIONS": "4",
 	})
 	id := drivers.DeviceID(drivers.KindPhone, "desk")
 	port := s.SIPPort + 300
@@ -465,8 +477,35 @@ func TestRealAsteriskStreams(t *testing.T) {
 		}
 	})
 
+	t.Run("transferred", func(t *testing.T) {
+		// The desk phone blind-transfers its 713 call to the echo test 2 s
+		// in, by a REFER as the 7945's transfer key sends, and hangs up 2 s
+		// later. The stream's AudioSocket leg then plays into Echo() with
+		// nobody on the line, and must still end at the 10 s limit (the
+		// stand-in would play for 40 s).
+		port += 10
+		env := streamCallEnv(t, b, s, in.Secrets, id, port, "713", 4*time.Second)
+		env["SIP_REFER_TO"], env["SIP_REFER_AFTER"] = "600", "2s"
+		out := c.sip("call", env)
+		m := regexp.MustCompile(`^status=(\d+) endedBy=(local|remote) held=([0-9.]+) refer=(\d+)$`).FindStringSubmatch(out)
+		if m == nil {
+			t.Fatalf("calling 713: %s", out)
+		}
+		if m[1] != "200" || m[4] != "202" {
+			t.Errorf("713: %s; want 200, then the REFER taken (202)", out)
+		}
+		rec := c.recordWithin("fox13", 60*time.Second)
+		t.Logf("the bridge's record of fox13: %+v", rec)
+		if !rec.PeerClosed || rec.HangupSent || rec.Seconds < 9.5 || rec.Seconds > 12 {
+			t.Errorf("record %+v; want Asterisk to close the transferred call's connection at about 10 s, mid-tone", rec)
+		}
+		if !strings.Contains(c.logs(), "Executing [600@"+compile.DevicesContext+":2] Echo(\"AudioSocket/") {
+			t.Errorf("the stream's AudioSocket leg never reached the echo test")
+		}
+	})
+
 	t.Run("no bridge", func(t *testing.T) {
-		c.waitFile("done", 30*time.Second) // the stand-in has served its three calls and exited
+		c.waitFile("done", 30*time.Second) // the stand-in has served its four calls and exited
 		if status, _, _ := call("750", 3*time.Second); status != "200" {
 			t.Errorf("750: status %s; want 200", status)
 		}

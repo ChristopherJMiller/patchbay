@@ -27,9 +27,17 @@ import (
 //   - otherwise its number answers, sets the call's time limit
 //     (TIMEOUT(absolute), so Asterisk hangs up at it), and dials the
 //     bridge through AudioSocket's channel driver at 16 kHz,
-//     Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,g); whatever ends the
-//     dial (the bridge refused the call, failed, or cannot be reached)
-//     continues to "not available".
+//     Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,gS(<limit>)); whatever
+//     ends the dial (the bridge refused the call, failed, or cannot be
+//     reached) continues to "not available". Dial's S() puts the same
+//     limit on the AudioSocket leg, from its answer: TIMEOUT(absolute) is
+//     the caller's channel's alone, and a phone that transfers the call
+//     (a blind REFER to another phone or to the echo test) leaves with
+//     it, so without S() the transferred leg had no limit and could hold
+//     a tuner for ever (asterisk-check TestRealAsteriskStreams
+//     "transferred"; docs/plans/release-b.md §13). The leg's limit starts
+//     a moment after the caller's, so an untransferred call is still
+//     ended by the caller's and never falls through to "not available".
 //
 // Only the stream's UUID (streams.UUID of its resource name) and number
 // reach the dialplan, never its display name or its source, so a source
@@ -64,10 +72,11 @@ func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTar
 			targets = append(targets, dialTarget{number: number, comment: ref.String() + ": streams are disabled (no stream bridge)"})
 			continue
 		}
+		limit := strconv.FormatInt(int64(s.Streams.Limit()/time.Second), 10)
 		targets = append(targets, dialTarget{number: number, comment: ref.String(), steps: []string{
 			"Answer()",
-			"Set(TIMEOUT(absolute)=" + strconv.FormatInt(int64(s.Streams.Limit()/time.Second), 10) + ")",
-			"Dial(AudioSocket/" + s.StreamBridge + "/" + id + "/c(" + streams.Codec + "),,g)",
+			"Set(TIMEOUT(absolute)=" + limit + ")",
+			"Dial(AudioSocket/" + s.StreamBridge + "/" + id + "/c(" + streams.Codec + "),,gS(" + limit + "))",
 			unavailable,
 		}})
 	}
