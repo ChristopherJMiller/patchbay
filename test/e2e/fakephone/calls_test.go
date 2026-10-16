@@ -156,6 +156,13 @@ func TestTransferSendsRefer(t *testing.T) {
 	}
 	s := h.atStep("")
 
+	// The fake counts the BYE after answering it, and the dialog ends as it
+	// answers: the count may still be on its way.
+	waitFor(t, 5*time.Second, "the phone's BYE at the PBX", func() bool {
+		pbx.mu.Lock()
+		defer pbx.mu.Unlock()
+		return pbx.byes >= 1
+	})
 	pbx.mu.Lock()
 	refers, byes := append([]pbxRefer(nil), pbx.refers...), pbx.byes
 	pbx.mu.Unlock()
