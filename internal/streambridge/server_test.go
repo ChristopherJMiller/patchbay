@@ -183,7 +183,7 @@ func TestServeNotUUIDFirst(t *testing.T) {
 }
 
 func TestServePacing(t *testing.T) {
-	m, _ := testManager(t, newFakeSource().set(srcRadio, toneForever(1000)), clock.RealClock{}, doc(t, nil, groovesalad))
+	m, _ := testManager(t, newFakeSource(), clock.RealClock{}, doc(t, nil, groovesalad))
 	addr, _ := startServer(t, m, clock.RealClock{})
 	a := call(t, addr, "groovesalad")
 	const n = 250
@@ -370,4 +370,43 @@ func TestServeShutdown(t *testing.T) {
 		}
 		return err != nil
 	})
+}
+
+func TestServeSlowCallerSkipsAhead(t *testing.T) {
+	m, _ := testManager(t, newFakeSource(), clock.RealClock{}, doc(t, nil, groovesalad))
+	srv := &server{m: m, clock: clock.RealClock{}, log: logr.Discard()}
+	client, conn := net.Pipe() // a write blocks until it is read, like a full socket
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		srv.handle(ctx, conn)
+	}()
+	defer func() {
+		cancel()
+		_ = client.Close()
+		<-finished
+	}()
+	a := &asterisk{t: t, conn: client}
+	u, err := streams.ParseUUID(streams.UUID("groovesalad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.send(audiosocket.KindUUID, u[:])
+	a.audio(10)
+	time.Sleep(300 * time.Millisecond) // the bridge falls 15 frames behind
+	var at []time.Time
+	for range 12 {
+		a.audio(1)
+		at = append(at, time.Now())
+	}
+	burst := 0
+	for i := 1; i < len(at); i++ {
+		if at[i].Sub(at[i-1]) < 5*time.Millisecond {
+			burst++
+		}
+	}
+	if burst > 1 {
+		t.Errorf("%d frames came back to back after the stall, want the bridge to skip ahead", burst)
+	}
 }

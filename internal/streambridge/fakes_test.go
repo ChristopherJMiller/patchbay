@@ -155,21 +155,6 @@ func writeFrame(ctx context.Context, w io.Writer, f []byte) error {
 	return err
 }
 
-// toneForever writes a hz tone as fast as it is read.
-func toneForever(hz int) producer {
-	frames := make([][]byte, 50) // one second, repeated (50 Hz multiples are whole)
-	for i := range frames {
-		frames[i] = toneFrame(i, hz)
-	}
-	return func(ctx context.Context, w io.Writer) error {
-		for i := 0; ; i++ {
-			if err := writeFrame(ctx, w, frames[i%len(frames)]); err != nil {
-				return err
-			}
-		}
-	}
-}
-
 // pacedTone writes a hz tone at real time, one frame each 20 ms, after
 // waiting delay (a tuner locking).
 func pacedTone(hz int, delay time.Duration) producer {
