@@ -15,6 +15,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
@@ -81,6 +82,10 @@ func clientFromEnv() (sipClient, error) {
 // "status=<code> endedBy=<local|remote> held=<seconds>"), and exits 0 when
 // the exchange completed (whatever the status) or 2 when it could not.
 func runSIPClient(mode string) int {
+	// The result line is the only output: sipgo's own log lines (a "TCP
+	// ref went negative" warning when the PBX's BYE and the client's close
+	// cross) would otherwise land in the output the check compares.
+	sip.SetDefaultLogger(slog.New(slog.DiscardHandler))
 	c, err := clientFromEnv()
 	if err != nil {
 		fmt.Println("error:", err)
