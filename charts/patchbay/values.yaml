@@ -55,6 +55,58 @@ numberPlan:
 allowedNetworks:
   - 192.168.20.0/24
   - 192.168.0.0/24
+# House defaults for Phones, rendered into settings.json's phoneDefaults
+# (compile.Settings.PhoneDefaults). A default fills each field a Phone
+# leaves unset, field by field: a Phone's own value always wins. Changing
+# one changes settings.json, so it rolls only the controller
+# (checksum/settings), never the PBX pod (checksum/asterisk-restart): the
+# new controller recompiles and resyncs each phone whose config changed,
+# and no call drops.
+#
+# phoneDefaults.display is the house default for Phone.spec.display: when
+# the phones' screens are on (power saving). Unset (the default),
+# settings.json has no phoneDefaults, and a phone without a spec.display of
+# its own keeps Cisco's schedule (on at 07:30 for 10h30m, Monday to Friday;
+# otherwise off, and on for 1h after a key press). Set, even to {}, it
+# applies to every Phone whose model supports it (displayPowerSave in
+# `patchbay models`; untested on a real 7945 until the bench,
+# docs/plans/release-a.md §8), under the Phone's own display; a model
+# without it ignores it.
+#
+# On a Cisco 79x5 the screen is on, on each day of onWindow.days, from
+# onWindow.start for onWindow.duration. Outside that window it is off: a
+# key press or lifting the handset turns it on, and it turns off again once
+# the phone is idle for idleTimeout. With wakeOnCall a ringing call turns it
+# on too. Without onWindow no day has a window, so the screen is off but for
+# idleTimeout after a key press (or a call, with wakeOnCall): the way to
+# turn the screens off soon after use.
+#
+# The chart checks the field names and types; the controller checks the
+# values at start and refuses to start, naming the field, as the API server
+# refuses them in a Phone.
+#
+# phoneDefaults:
+#   display:
+#     # Outside the window, how long the screen stays on after a key
+#     # press: whole minutes from 1m to 23h59m, as a duration ("1m",
+#     # "90m", "1h30m"). Unset: the phone's own (1h on the 79x5).
+#     idleTimeout: 1m
+#     # Turn the screen on for a ringing call: true or false. Unset: the
+#     # phone's own (off on the 79x5).
+#     wakeOnCall: true
+#     # The daily window the screen stays on. Unset: no day has one. It is
+#     # one field: a Phone's own onWindow replaces this one whole, and a
+#     # Phone cannot remove it.
+#     onWindow:
+#       # When it turns on: HH:MM on a 24-hour clock, in the time zone
+#       # above. Quote it.
+#       start: "07:30"
+#       # How long it stays on: whole minutes from 1m to 24h.
+#       duration: 10h30m
+#       # The days with the window, each once, at least one: Monday,
+#       # Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday.
+#       days: [Monday, Tuesday, Wednesday, Thursday, Friday]
+phoneDefaults: {}
 
 # The voice of the PBX's spoken prompts (911's "This phone cannot call
 # emergency services", "That number is not available"). The image carries

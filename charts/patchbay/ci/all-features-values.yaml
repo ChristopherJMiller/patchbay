@@ -36,3 +36,12 @@ firmware:
     keep: false
 podMonitor:
   enabled: true
+# A house default display with every field, the window on weekdays.
+phoneDefaults:
+  display:
+    idleTimeout: 90m
+    wakeOnCall: false
+    onWindow:
+      start: "07:30"
+      duration: 10h30m
+      days: [Monday, Tuesday, Wednesday, Thursday, Friday]

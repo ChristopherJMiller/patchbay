@@ -1,0 +1,10 @@
+# A house default display (phoneDefaults.display): every phone's screen off
+# a minute after the last key press, on again for a ringing call, no day
+# with an on-window. test/chart reads it back through settings.Parse.
+pbx:
+  nodeName: top
+  address: 192.0.2.10
+phoneDefaults:
+  display:
+    idleTimeout: 1m
+    wakeOnCall: true

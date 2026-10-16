@@ -78,6 +78,8 @@ JSON (internal/controller/settings parses it strictly; test/chart compares
 the default with its fixture). Every number-plan entry is a string, whatever
 YAML made of it. streamBridge stays unset until release B. The AMI Secret is
 the one the controller mints, <fullname>-ami (install.CheckSettings).
+phoneDefaults is there only when phoneDefaults.display is set
+(patchbay.phoneDefaultsDisplay), so the default render is unchanged.
 */}}
 {{- define "patchbay.settingsJSON" -}}
 {{- $p := .Values.pbx -}}
@@ -104,7 +106,74 @@ the one the controller mints, <fullname>-ami (install.CheckSettings).
   "allowedNetworks" $networks
   "amiSecret" (dict "name" (printf "%s-ami" (include "patchbay.fullname" .)) "key" "password")
 -}}
+{{- $display := include "patchbay.phoneDefaultsDisplay" . -}}
+{{- if $display -}}
+{{- $_ := set $settings "phoneDefaults" (dict "display" ($display | fromJson)) -}}
+{{- end -}}
 {{- toPrettyJson $settings -}}
+{{- end -}}
+
+{{/*
+The house default display (values phoneDefaults.display), as JSON for
+settings.json's phoneDefaults.display: compile.Settings.PhoneDefaults.Display,
+the shape of Phone.spec.display. Empty when it is unset or null, so the
+settings carry no phoneDefaults and no phone gets display settings; an empty
+map is a display ({}: no day has an on-window), and is kept. A field that is
+null is unset. The chart checks the shape (the field names, a map, a
+boolean, a list, start and duration present) and fails `helm template`
+otherwise; the controller checks the values at start (whole minutes within
+bounds, HH:MM, the day names: v1alpha1.PhoneDisplay.Validate) and refuses to
+start, naming the field. Durations and the start are written as strings.
+*/}}
+{{- define "patchbay.phoneDefaultsDisplay" -}}
+{{- $pd := .Values.phoneDefaults | default dict -}}
+{{- if not (kindIs "map" $pd) -}}
+{{- fail "phoneDefaults must be a map; its only key is display" -}}
+{{- end -}}
+{{- range $k, $_ := $pd -}}
+{{- if ne $k "display" -}}
+{{- fail (printf "phoneDefaults.%s is not a house default; the only one is phoneDefaults.display" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey $pd "display") (not (kindIs "invalid" (index $pd "display"))) -}}
+{{- $d := index $pd "display" -}}
+{{- if not (kindIs "map" $d) -}}
+{{- fail "phoneDefaults.display must be a map of idleTimeout, wakeOnCall and onWindow" -}}
+{{- end -}}
+{{- $out := dict -}}
+{{- range $k, $v := $d -}}
+{{- if kindIs "invalid" $v -}}
+{{- else if eq $k "idleTimeout" -}}
+{{- $_ := set $out "idleTimeout" (toString $v) -}}
+{{- else if eq $k "wakeOnCall" -}}
+{{- if not (kindIs "bool" $v) -}}
+{{- fail (printf "phoneDefaults.display.wakeOnCall must be true or false, not %q" (toString $v)) -}}
+{{- end -}}
+{{- $_ := set $out "wakeOnCall" $v -}}
+{{- else if eq $k "onWindow" -}}
+{{- if not (kindIs "map" $v) -}}
+{{- fail "phoneDefaults.display.onWindow must be a map of start, duration and days" -}}
+{{- end -}}
+{{- range $wk, $_ := $v -}}
+{{- if not (has $wk (list "start" "duration" "days")) -}}
+{{- fail (printf "phoneDefaults.display.onWindow.%s is not a field; the fields are start, duration and days" $wk) -}}
+{{- end -}}
+{{- end -}}
+{{- $start := required "phoneDefaults.display.onWindow.start is required: HH:MM on a 24-hour clock, quoted (\"07:30\")" $v.start -}}
+{{- $duration := required "phoneDefaults.display.onWindow.duration is required: whole minutes from 1m to 24h (\"10h30m\")" $v.duration -}}
+{{- $raw := required "phoneDefaults.display.onWindow.days is required: Monday to Sunday, at least one" $v.days -}}
+{{- if not (kindIs "slice" $raw) -}}
+{{- fail "phoneDefaults.display.onWindow.days must be a list of days (Monday to Sunday)" -}}
+{{- end -}}
+{{- $days := list -}}
+{{- range $raw -}}{{- $days = append $days (toString .) -}}{{- end -}}
+{{- $_ := set $out "onWindow" (dict "start" (toString $start) "duration" (toString $duration) "days" $days) -}}
+{{- else -}}
+{{- fail (printf "phoneDefaults.display.%s is not a field; the fields are idleTimeout, wakeOnCall and onWindow" $k) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end -}}
 {{- end -}}
 
 {{/* The PBX's SIP address, required: Asterisk binds it and advertises it in SDP. */}}
