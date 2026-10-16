@@ -109,6 +109,19 @@ departs from it, the departure is recorded here (and in the code's docs).
   Cisco's own copy (the CUCM device pack).
 - **Labels and names reject control characters** in the schema, because
   they are rendered into device XML and Asterisk config.
+- **Display power-save pulled forward from release C** (§4's Phone has no
+  such field; §10 adds phone extras in C): `Phone.spec.display`
+  (`idleTimeout`, `wakeOnCall`, `onWindow{start, duration, days}`, whole
+  minutes, validated by the CRD) and a house default in the settings
+  (`compile.Settings.PhoneDefaults.Display`, settings.json
+  `phoneDefaults.display`) that fills each field a Phone leaves unset
+  (`onWindow` whole; `drivers.DisplayWithDefaults`). The 79x5 renders
+  vendorConfig's display elements (cisco79x5/display.go), and nothing
+  without either, so a phone keeps Cisco's schedule. `displayPowerSave` is
+  `Untested` until the bench answers (plan §8). On a model whose profile
+  lacks it, a Phone's own display is Invalid with `Unsupported=True`
+  (reason `UnsupportedFeature`, §8.3's "unsupported feature" rule), and the
+  house default is left out.
 - **Softphone status has memory too** (`observed`, `lastAction`,
   `humanAction`), which §8.4's Offline and rotateToken need.
 - **Bundle trees.** §5 says TFTP and HTTP "serve from the same live

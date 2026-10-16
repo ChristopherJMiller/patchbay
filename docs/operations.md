@@ -77,7 +77,7 @@ The human action in `patchbay status` is the instruction; this is the why.
 | State (Ready reason) | Cause | Action |
 |---|---|---|
 | `Unseen` | The phone never asked for its config. | Connect it to a voice-VLAN switch port; it asks for `SEP<MAC>.cnf.xml` from the PBX address (DHCP option 66). Check the MAC in the Phone. |
-| `Invalid` (`NumberConflict`, `MACConflict`, `UnknownFirmware`) | An older resource holds its number or MAC, or its model's load is not in the manifest (a 7975 in release A). | Change the number or MAC; the older resource keeps it. |
+| `Invalid` (`NumberConflict`, `MACConflict`, `UnknownFirmware`, `UnsupportedFeature`) | An older resource holds its number or MAC, its model's load is not in the manifest (a 7975 in release A), or its spec asks for a feature its model lacks (`spec.display` without `displayPowerSave` in `patchbay models`). | Change the number or MAC; the older resource keeps it. Remove the feature the message names. |
 | `NeedsFirmware` | Its load is not staged, or the manifest has no SHA-256 for it yet (plan §11: staging Cisco firmware needs a patchbay release). | `patchbay firmware load <cisco zip> -n <ns>`; for pending digests, the release first. |
 | `NeedsTrustReset` | It trusts another call manager (old trust list): it asks only for the signed `.sgn` config. | Factory reset (hold # while powering on, then 123456789*0#), after the default load is staged. |
 | `Upgrading` | It is downloading firmware. | Do not unplug it. "Upgrade stuck" after 20 min: look at its screen. |
@@ -101,8 +101,10 @@ held while the phone is on a call).
 
 ## Changes and upgrades
 
-- **A label, number or new device**: compiled and applied by reload, no
-  call drops. Phones are resynced when idle.
+- **A label, number, `spec.display` or new device**: compiled and applied
+  by reload, no call drops. Phones are resynced when idle.
+- **The house default display** (`phoneDefaults.display` in the settings)
+  rolls the controller only; every phone that takes it is resynced.
 - **A chart or image upgrade** recreates the PBX pod: calls drop, phones
   register again within 600 s.
 - **`pbx.address`, `pbx.ports.sip`, or a release that changes the module
