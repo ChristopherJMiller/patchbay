@@ -295,10 +295,11 @@ func TestAgentWiring(t *testing.T) {
 		return false, fmt.Sprintf("%+v", devices)
 	})
 
-	// The firmware upload reaches the store: Cisco's load is pending.
+	// The firmware upload reaches the store: a body that is not Cisco's file
+	// fails its pinned SHA-256.
 	path := api.FirmwarePath(cisco79x5.DefaultLoad, "apps45.9-4-2SR4-3.sbn")
-	if code, body := f.do(http.MethodPut, path, strings.NewReader("x"), true); code != http.StatusPreconditionFailed {
-		t.Errorf("PUT %s: %d %s, want 412", path, code, body)
+	if code, body := f.do(http.MethodPut, path, strings.NewReader("x"), true); code != http.StatusUnprocessableEntity {
+		t.Errorf("PUT %s: %d %s, want 422", path, code, body)
 	}
 
 	code, metricsBody := f.do(http.MethodGet, api.PathMetrics, nil, false)
