@@ -1,0 +1,26 @@
+# The screen's power saving: a house default (off a minute after the last
+# key press, on again for a ringing call, no day with an on-window) that
+# Desk takes whole, and the kitchen 7965 overriding it with a weekday
+# window (07:30 for 10h30m, Monday to Friday) while keeping the default's
+# idle timeout and wake on call.
+settings:
+  phoneDefaults:
+    display: {idleTimeout: 1m, wakeOnCall: true}
+phones:
+  - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
+    spec: {model: cisco-7945, mac: D0C78915E8C8, number: "100", label: Desk}
+  - metadata: {name: kitchen, creationTimestamp: "2026-10-02T12:00:00Z"}
+    spec:
+      model: cisco-7965
+      mac: D0C78915EBB5
+      number: "101"
+      label: Kitchen
+      display:
+        onWindow:
+          start: "07:30"
+          duration: 10h30m
+          days: [Monday, Tuesday, Wednesday, Thursday, Friday]
+secrets:
+  - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
+  - {name: patchbay-phone-kitchen, key: sip-password, value: not-a-secret-kitchen-0001}

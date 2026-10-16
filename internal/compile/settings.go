@@ -18,7 +18,8 @@ import (
 // pjsip; the number plan is valid; the allowed networks are IPv4 network
 // addresses in CIDR form, at least one and none twice; the AMI secret names
 // a Secret key a placeholder can carry; the stream bridge is empty or
-// host:port.
+// host:port; the house default display passes
+// v1alpha1.PhoneDisplay.Validate (the checks the CRD makes of a Phone's).
 func (s Settings) Validate() error {
 	var errs []error
 	bad := func(format string, args ...any) { errs = append(errs, fmt.Errorf("settings: "+format, args...)) }
@@ -85,6 +86,9 @@ func (s Settings) Validate() error {
 		if err != nil || host == "" || perr != nil || n < 1 || n > 65535 {
 			bad("streamBridge %q is not host:port", s.StreamBridge)
 		}
+	}
+	if err := s.PhoneDefaults.Display.Validate(); err != nil {
+		bad("phoneDefaults.display: %w", err)
 	}
 	return errors.Join(errs...)
 }

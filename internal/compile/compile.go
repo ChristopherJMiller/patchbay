@@ -182,6 +182,23 @@ type Settings struct {
 	// AMISecret is the Secret key holding the generated AMI password. The
 	// controller generates it; the compiler only references it.
 	AMISecret SecretRef `json:"amiSecret"`
+
+	// PhoneDefaults are house defaults for Phone spec fields. Optional.
+	PhoneDefaults PhoneDefaults `json:"phoneDefaults,omitzero"`
+}
+
+// PhoneDefaults are the house defaults for Phones: each applies to a Phone
+// field by field, where the Phone leaves a field unset (the Phone's own
+// value always wins).
+type PhoneDefaults struct {
+	// Display is the house default for Phone.spec.display, in the same
+	// shape (settings.json phoneDefaults.display, e.g. {"idleTimeout":
+	// "1m", "wakeOnCall": true}). Each field a Phone's display leaves unset
+	// takes this one's, and a Phone without a display gets it whole;
+	// onWindow is one field. It applies only to models that support the
+	// screen's power saving (drivers.FeatureDisplayPowerSave), and nil means
+	// none: a Phone without a display then renders no display settings.
+	Display *v1alpha1.PhoneDisplay `json:"display,omitempty"`
 }
 
 // PortRange is an inclusive range of ports.
@@ -401,6 +418,9 @@ func renderContext(s Settings) drivers.RenderContext {
 		Timezone:      s.Timezone,
 		Signalling:    s.Signalling,
 		DialPatterns:  s.NumberPlan.DialPatterns(),
+		// A copy, so no driver can change the settings (drivers only read
+		// it: DisplayWithDefaults copies).
+		DisplayDefaults: s.PhoneDefaults.Display.DeepCopy(),
 	}
 }
 

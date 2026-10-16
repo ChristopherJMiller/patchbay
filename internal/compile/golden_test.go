@@ -393,6 +393,13 @@ func TestVersionsBuiltin(t *testing.T) {
 	}{
 		{"desk's label", func(in *compile.Inputs, _ *compile.Settings) { in.Phones[0].Spec.Label = "Study" }, []string{"phone-desk"}},
 		{"the laptop's label", func(in *compile.Inputs, _ *compile.Settings) { in.Softphones[0].Spec.Label = "Laptop" }, nil},
+		{"desk's display", func(in *compile.Inputs, _ *compile.Settings) {
+			in.Phones[0].Spec.Display = &v1alpha1.PhoneDisplay{}
+		}, []string{"phone-desk"}},
+		{"the house display default", func(_ *compile.Inputs, s *compile.Settings) {
+			yes := true
+			s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{WakeOnCall: &yes}
+		}, []string{"phone-desk"}},
 		{"the time zone", func(_ *compile.Inputs, s *compile.Settings) { s.Timezone = "America/Chicago" }, []string{"phone-desk"}},
 		{"the SIP port", func(_ *compile.Inputs, s *compile.Settings) { s.SIPPort = 5070 }, []string{"phone-desk", "softphone-chris-laptop"}},
 		{"the token", func(in *compile.Inputs, _ *compile.Settings) {
@@ -440,5 +447,26 @@ func TestUserTextBuiltin(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDisplayIsPhoneFilesOnly: the display golden is second-phone with
+// display settings, and they reach only the phones' SEP files: Asterisk's
+// files, the directory and the dial template are byte for byte
+// second-phone's, so make asterisk-check has nothing new to boot.
+func TestDisplayIsPhoneFilesOnly(t *testing.T) {
+	reg := builtinRegistry(t)
+	in, s := loadGolden(t, "second-phone")
+	plain := compileOK(t, reg, in, s)
+	in, s = loadGolden(t, "display")
+	display := compileOK(t, reg, in, s)
+	if !slices.Equal(slices.Sorted(maps.Keys(plain.Files)), slices.Sorted(maps.Keys(display.Files))) {
+		t.Fatalf("other files: %v and %v", slices.Sorted(maps.Keys(plain.Files)), slices.Sorted(maps.Keys(display.Files)))
+	}
+	for p, b := range plain.Files {
+		sep := strings.HasPrefix(p, "tftp/SEP")
+		if same := bytes.Equal(b, display.Files[p]); same == sep {
+			t.Errorf("%s: unchanged %v, want %v", p, same, !sep)
+		}
 	}
 }

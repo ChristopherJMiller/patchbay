@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneDirectory>
+  <Title>patchbay</Title>
+  <DirectoryEntry>
+    <Name>Desk</Name>
+    <Telephone>100</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Kitchen</Name>
+    <Telephone>101</Telephone>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>

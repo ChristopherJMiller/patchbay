@@ -3,7 +3,11 @@ package compile_test
 import (
 	"strings"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
 )
@@ -22,6 +26,10 @@ func TestSettingsValidate(t *testing.T) {
 		edit(func(s *compile.Settings) { s.StreamBridge = "192.168.0.240:9092" }),
 		edit(func(s *compile.Settings) { s.PBXAddress = "127.0.0.1" }),
 		edit(func(s *compile.Settings) { s.RTPPorts = compile.PortRange{First: 10000, Last: 10000} }),
+		edit(func(s *compile.Settings) {
+			s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{IdleTimeout: &metav1.Duration{Duration: time.Minute}}
+		}),
+		edit(func(s *compile.Settings) { s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{} }),
 	} {
 		if err := s.Validate(); err != nil {
 			t.Errorf("%+v: %v", s, err)
@@ -59,6 +67,17 @@ func TestSettingsValidate(t *testing.T) {
 		{"a stream bridge without a port", edit(func(s *compile.Settings) { s.StreamBridge = "stream-bridge" }), `streamBridge "stream-bridge" is not host:port`},
 		{"a stream bridge without a host", edit(func(s *compile.Settings) { s.StreamBridge = ":9092" }), `streamBridge ":9092" is not host:port`},
 		{"a stream bridge port out of range", edit(func(s *compile.Settings) { s.StreamBridge = "bridge:0" }), `streamBridge "bridge:0" is not host:port`},
+		{"a house display idle of 30s", edit(func(s *compile.Settings) {
+			s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{IdleTimeout: &metav1.Duration{Duration: 30 * time.Second}}
+		}), "settings: phoneDefaults.display: idleTimeout: 30s is not whole minutes from 1m to 23h59m"},
+		{"a house display window on no day", edit(func(s *compile.Settings) {
+			s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{OnWindow: &v1alpha1.DisplayOnWindow{
+				Start: "07:30", Duration: metav1.Duration{Duration: time.Hour}}}
+		}), "settings: phoneDefaults.display: onWindow.days: no day"},
+		{"a house display window from 7:30", edit(func(s *compile.Settings) {
+			s.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{OnWindow: &v1alpha1.DisplayOnWindow{
+				Start: "7:30", Duration: metav1.Duration{Duration: time.Hour}, Days: []v1alpha1.Weekday{v1alpha1.Monday}}}
+		}), `settings: phoneDefaults.display: onWindow.start: "7:30" is not HH:MM`},
 	} {
 		err := tc.s.Validate()
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

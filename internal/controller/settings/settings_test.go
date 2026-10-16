@@ -6,7 +6,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/settings"
@@ -134,5 +138,47 @@ func TestLoad(t *testing.T) {
 	}
 	if _, err := settings.Load(bad); err == nil || !strings.Contains(err.Error(), bad) {
 		t.Errorf("Load(invalid) = %v, want an error naming %s", err, bad)
+	}
+}
+
+// TestParsePhoneDefaults: the house default display is settings.json's
+// phoneDefaults.display, in the shape of Phone.spec.display (durations as
+// strings), decoded as strictly as the rest and validated as the CRD
+// validates a Phone's.
+func TestParsePhoneDefaults(t *testing.T) {
+	with := func(display string) []byte {
+		return []byte(strings.Replace(string(readFixture(t)), `"sipPort": 5060,`,
+			`"sipPort": 5060, "phoneDefaults": {"display": `+display+`},`, 1))
+	}
+	got, err := settings.Parse(with(`{"idleTimeout": "1m", "wakeOnCall": true,
+		"onWindow": {"start": "07:30", "duration": "10h30m", "days": ["Monday", "Friday"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	want := &v1alpha1.PhoneDisplay{
+		IdleTimeout: &metav1.Duration{Duration: time.Minute}, WakeOnCall: &yes,
+		OnWindow: &v1alpha1.DisplayOnWindow{Start: "07:30", Duration: metav1.Duration{Duration: 10*time.Hour + 30*time.Minute},
+			Days: []v1alpha1.Weekday{v1alpha1.Monday, v1alpha1.Friday}},
+	}
+	if !reflect.DeepEqual(got.PhoneDefaults.Display, want) {
+		t.Errorf("phoneDefaults.display = %+v, want %+v", got.PhoneDefaults.Display, want)
+	}
+	if def, err := settings.Parse(readFixture(t)); err != nil || def.PhoneDefaults.Display != nil {
+		t.Errorf("without phoneDefaults: display %+v, %v; want none", def.PhoneDefaults.Display, err)
+	}
+
+	for display, wantErr := range map[string]string{
+		`{"idleTimeout": "30s"}`:                "phoneDefaults.display: idleTimeout: 30s is not whole minutes",
+		`{"idleTimeout": 60}`:                   "decoding",
+		`{"idle": "1m"}`:                        "idle",
+		`{"wakeOnCall": true, "screen": "off"}`: "screen",
+		`{"onWindow": {"start": "7:30", "duration": "1h", "days": ["Monday"]}}`:  "onWindow.start",
+		`{"onWindow": {"start": "07:30", "duration": "1h", "days": []}}`:         "onWindow.days",
+		`{"onWindow": {"start": "07:30", "duration": "1h", "days": ["monday"]}}`: `"monday" is not a day`,
+	} {
+		if _, err := settings.Parse(with(display)); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Parse with display %s = %v, want an error containing %q", display, err, wantErr)
+		}
 	}
 }
