@@ -236,6 +236,25 @@ StatusFile, Execute, Response, Error.
 - `/StreamingStatisticsX`: per-call RTP stats.
 - Only `/CGI/Execute` and `/CGI/Screenshot` are documented as needing auth.
 
+**Observed 2026-10-15 on a CP-7945G hw rev 13, SIP 9.4(2)SR4-3** (the
+bench phone, registered to patchbay; the pages are fixtures in
+`internal/agent/scrape/testdata/cp7945g-sip-9.4.2sr4-3`, serial replaced):
+- `/DeviceInformationX` is well-formed XML (`utf-8`, CRLF after the
+  declaration), root `<DeviceInformation>`. **The load ID is `versionID`,
+  wrapped in asterisks:** `*SIP45.9-4-2SR4-3S*`. `appLoadID` names the jar
+  image, `jar45sip.9-4-2SR4-3.sbn`; `bootLoadID` is `tnp45.9-3-1-CR17.bin`;
+  `hardwareRevision` `13.0`; `modelNumber` `CP-7945G`. `udi` spans several
+  lines (model text, `CP-7945G`, `V14`, the serial).
+- `/NetworkConfigurationX` is **not** well-formed, every time: the phone's
+  own Java renderer throws, and the page ends
+  `<EnergywisePowerLevel>java.lang.NullPointerException` with no closing
+  tags (3076 bytes). Everything patchbay reads comes before the break:
+  `AdminVLANId` (empty), `CallManager1` (`192.168.0.240   Active`, three
+  spaces), `TFTPServer1`, `DHCPServer`.
+- `/DeviceLogX` answers 200 with an empty body.
+- Element names are the first of each pair patchbay accepts
+  (`AdminVLANId`, `CallManager1`); roots carry no trailing `X`.
+
 **Other management**
 - **SSH:** the configured user, then `debug`/`debug`. It uses legacy key
   exchange.

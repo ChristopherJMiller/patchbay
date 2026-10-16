@@ -87,8 +87,17 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **The running load** (§8.2 names the "app/boot load ID"): the scraper
   also reads `/DeviceInformationX`'s `versionID`, the load ID that
   `loadInformation` and the manifest use; `appLoadID` is the application
-  image (`jar45sip….sbn`), which never equals a load name. The driver
-  accepts either until the bench shows which one the 79x5 fills.
+  image (`jar45sip….sbn`), which never equals a load name. The bench 7945
+  (2026-10-15) fills both and wraps `versionID` in asterisks
+  (`*SIP45.9-4-2SR4-3S*`): the agent reports it as given, the driver trims
+  them from every reported load and counts either field that names the
+  target load.
+- **Only `/DeviceInformationX` decides a scrape** (§8.2 lists three
+  pages): the bench 7945 breaks off its own `/NetworkConfigurationX` (a
+  NullPointerException mid-page) and serves `/DeviceLogX` empty, so those
+  two are best effort (`api.WebScrape`): an unreadable one is nil, a
+  broken-off one keeps the fields before the break, and neither fails the
+  scrape.
 - **PBX down**: §7 says `Registered=False`, §8.3's Unknown row says
   `Registered=Unknown`. With Asterisk down the device is certainly not
   registered, so it is `False`, reason `PBXDown`; an unreachable agent is

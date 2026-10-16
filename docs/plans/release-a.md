@@ -391,7 +391,10 @@ coupled to real drivers' output.
   correctly upgraded phone would have looked like it ran the wrong load and
   been resynced until a human was asked. `agentapi.DeviceInformation` now
   carries `VersionID`, and the driver accepts either field (T1 *runsLoad*),
-  because which one a 79x5 fills is a bench check (§8).
+  because which one a 79x5 fills is a bench check (§8). *(Bench,
+  2026-10-15.)* The 7945 fills both, and wraps `versionID` in asterisks
+  (`*SIP45.9-4-2SR4-3S*`), so the driver trims them from every reported
+  load and the fold keeps whichever field names the target load.
 - **Requests** (`resync-requested`, `reissue-requested`) are marked handled
   by the first Decide after Unknown that sees them. A phone resync request
   sends a resync only in Registered/ConfigStale, not during a call and not
@@ -648,7 +651,7 @@ every row except Unknown. `d := obs.Device`.
 |---|---|
 | `FirstSeen` | if nil and `d` has a fetch or a live contact: the earliest fetch `At`, else `now` (rounded down to a whole second, see *Times*) |
 | `Address` | live contact's `Address`, else the latest fetch's `Source`, else unchanged |
-| `Firmware` | *As built (W1 review):* first, when the phone is back from a download (a config fetch after *loadChanged*, the later of *lastFw* and `m.UpgradeStartedAt`, while the remembered config fetch was not), the remembered load is forgotten (`""`). Then, from a *fresh scrape* only: `DeviceInformation.VersionID` when non-empty, else `AppLoadID` when non-empty, else unchanged (see *runsLoad*). Last, a live contact with an SCCP load remembered (`sccp` in the name, any case) clears it: an SCCP phone never sends a SIP REGISTER (design §8.2) |
+| `Firmware` | *As built (W1 review):* first, when the phone is back from a download (a config fetch after *loadChanged*, the later of *lastFw* and `m.UpgradeStartedAt`, while the remembered config fetch was not), the remembered load is forgotten (`""`). Then, from a *fresh scrape* only: `DeviceInformation.VersionID` when non-empty, else `AppLoadID` when non-empty, else unchanged (see *runsLoad*). *(Bench, 2026-10-15, §8: every reported load is normalised first, its surrounding `*` and white space trimmed, the remembered one too; and `AppLoadID` wins over a non-empty `VersionID` when only it names the target load.)* Last, a live contact with an SCCP load remembered (`sccp` in the name, any case) clears it: an SCCP phone never sends a SIP REGISTER (design §8.2) |
 | `LastConfigFetch` | the latest fetch with `File == ConfigFileName(MAC)`, `Result == served`, `Version != ""`, if newer than the remembered one at whole seconds, or in the same second with another version |
 | `LastRegistered` | if a live contact: set to `now` (rounded up) when nil, when `now − LastRegistered ≥ 1 min` (coarse, so status is not rewritten every poll), or when `fetchedAfter(LastRegistered)` (so a config fetch while registered never looks newer than the registration: rows 7 and 10 split on that order); else unchanged |
 | `UpgradeStartedAt` | non-nil exactly while the Upgrading predicate holds (set by that row, cleared by every other row except Invalid/Unknown) |
@@ -665,7 +668,9 @@ default; *load* = its manifest entry; *available* = `len(load.Missing(obs.Firmwa
 `reported` with any `.sbn` suffix removed equals the name, `.sbn` removed,
 of one of the load's `.sbn` files (so `jar45sip.9-4-2SR4-3.sbn` and
 `jar45sip.9-4-2SR4-3` both mean `SIP45.9-4-2SR4-3S`); the SCCP image
-`jar45sccp.…` and `SCCP45.…` never match a SIP load.
+`jar45sccp.…` and `SCCP45.…` never match a SIP load. `reported` is
+normalised first (`*SIP45.9-4-2SR4-3S*`, as the bench 7945 reports it,
+means `SIP45.9-4-2SR4-3S`).
 *fwWrong* = `m.Firmware != "" && !runsLoad(m.Firmware, load)`.
 *fwRequested* = some fetch of a file named in *load* (its `.loads`, `.sbn`
 or Shared files) has `Result == notFound` and `At` at or after
@@ -2024,15 +2029,25 @@ CM 1 as `CallManager1`, `UnifiedCM1` or `CUCM1`; log lines are the `status`
 elements' text (every leaf's text if there are none), trimmed, empty ones
 dropped. Which names a real 79x5 uses is a bench check (§8); the shapes
 are written from the documented field lists and generated, never copied
-from a phone. Addresses that are loopback, unspecified, multicast or
+from a phone (the bench phone's captured pages, 2026-10-15, are the one
+exception, §8). Addresses that are loopback, unspecified, multicast or
 link-local are refused (a failed scrape) without a request. The merge is
 `sensor.ScrapeRecorder`'s rule: a failed scrape adopts nothing.
+*(Bench, 2026-10-15, §8.)* The real 7945 breaks off its own
+`/NetworkConfigurationX` and serves `/DeviceLogX` empty, so only
+`/DeviceInformationX` (the load) decides a scrape; the other two pages are
+best effort: one that cannot be read is nil, one that breaks off keeps the
+fields completed before the break (`scrape.ErrIncomplete`), an empty log
+is an empty log, and what a success went without is logged at V(1).
 
 Tests: `TestParse…` on generated fixtures (case variants, an ISO-8859-1
-document with a Latin-1 byte, missing fields); `TestScrapeSuccess`
+document with a Latin-1 byte, missing fields) and on the bench phone's
+pages (`TestParseCapture`, `TestScrapeCapture`); `TestScrapeSuccess`
 (httptest; every field; `At` is when the last page was read);
-`TestScrapeFailureAdoptsNothing` (DeviceInformationX read, DeviceLogX 500:
-`Error` set, the fields are the previous success's, nil the first time);
+`TestScrapeFailureAdoptsNothing` (DeviceInformationX 500, HTML, broken
+off and the like: `Error` set, the fields are the previous success's, nil
+the first time); `TestScrapeBestEffortPages` (the other two pages failing
+every way: the scrape stands, that page nil);
 `TestSchedule` (60 s, 5 min, an address change, `Live` switching, removal);
 `TestRefusedAddresses`; `TestBodyLimit`; `TestNoRedirects`; `TestTimeout`.
 
@@ -3598,7 +3613,8 @@ change.
 | *(review)* Does the REGISTER carry `Expires: 600`? | `Endpoint.RegistrationExpiry`, rendered as `timerRegisterExpires` | `600s` | read it from `PJSIPShowContacts`; if the phone ignores the element, Asterisk still grants at most 600 and the phone must honour that |
 | *(plan)* Does `\*` match a literal star in the dial template? | `dialTemplateLiteralStar` (cisco79x5/dialtemplate.go) | `false` (omit `*8`) | `true` adds `match="\*8"` (usecallmanager documents `\*` as literal; the bench confirms dialling `180` still waits for its third digit) |
 | *(review)* Does `settingsAccess=2` give a restricted menu? | `settingsAccessRestricted` (cisco79x5/sep.go) | `2` (CUCM's Restricted; not on usecallmanager's page, which lists 0 and 1) | if the phone treats 2 as disabled or enabled, decide with Chris between `0` and `1`, and fix P9 to match |
-| *(review)* Which `/DeviceInformationX` field holds the load ID? | none: the fold reads `versionID`, then `appLoadID`, through `runsLoad` | both accepted | record what the real phone reports in the research notes; `FirmwareCurrent` must be True on the bench |
+| *(review)* Which `/DeviceInformationX` field holds the load ID? | `loadID` and `reportedLoad` (cisco79x5/fold.go) | both accepted | **Answered 2026-10-15** (CP-7945G, hardware revision 13, SIP 9.4(2)SR4-3): `versionID` holds the load ID wrapped in asterisks, `*SIP45.9-4-2SR4-3S*`; `appLoadID` names the jar image, `jar45sip.9-4-2SR4-3.sbn` (`bootLoadID` `tnp45.9-3-1-CR17.bin`). The driver now trims the asterisks (and white space) from every reported load, and the fold takes whichever of `versionID` and `appLoadID` names the target load (else `versionID`), so either still counts. Verbatim, the phone looked like it ran another load: FirmwareCurrent False and a resync (TestDecide's bench row) |
+| *(W2)* Which element names do the real pages use, and are they well-formed? | the scraper's parsers (agent/scrape/pages.go) | names matched case-insensitively, with aliases; roots with or without `X`; a page that is not well-formed fails the scrape | **Answered 2026-10-15** (same phone): the first name of each field (`versionID`, `appLoadID`, `bootLoadID`, `hardwareRevision`, `serialNumber`, `modelNumber`, `AdminVLANId`, `CallManager1`) and roots without `X`. `/DeviceInformationX` is well-formed (CRLF after the declaration, a multi-line `udi`). `/NetworkConfigurationX` is not: the phone's own renderer throws at `<EnergywisePowerLevel>` and the page ends `java.lang.NullPointerException` with no closing tags, every time, after every field patchbay reads. `/DeviceLogX` is a 200 with an empty body. So only `/DeviceInformationX` (the load) decides a scrape now; the other two are best effort, a page that breaks off keeps the fields before the break, and an empty log is an empty log. The three pages are fixtures (`agent/scrape/testdata/cp7945g-sip-9.4.2sr4-3`, serial replaced), and the e2e fake phone can serve them so (`script.Web.NetworkConfigurationBreaksOff`, `EmptyDeviceLog`) |
 | *(review)* Does the screen show non-ASCII labels? | none (rendered as UTF-8 XML) | as written | if they show garbled, `ScreenLabel`/`LineLabel` transliterate to ASCII and `LabelShortened` reports it |
 | *(review)* Does Linphone honour `userid`, `misc/config-uri` and the `video` keys? | the provisioning document (softphone/render.go) | as in T2 | fix the key names; the golden changes |
 | *(W3)* After a factory reset, does the 79x5 fetch its config before its firmware? | none: the agent attributes a load's files by source address, and only to a device that fetched its config (or registered) from that address (`observe`) | as is (the e2e reset phone fetches its config first) | if it downloads first, its download is nobody's and the controller never shows Upgrading: attribute a load's files to the devices whose SEP names that load |
