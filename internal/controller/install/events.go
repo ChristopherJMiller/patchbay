@@ -75,6 +75,18 @@ const (
 	// EventReasonCompileFailed (Warning): compiling or writing the bundle
 	// failed; the previous bundle stays. Note: the error.
 	EventReasonCompileFailed = "CompileFailed"
+
+	// EventReasonSourceFailed (Warning), on a Stream (release B): the
+	// controller copied a new failure of its source into
+	// status.lastFailure (reason SourceFailed or SourceEnded): its callers
+	// heard "not available". Once per failure (its At). Note: "<reason>:
+	// <the bridge's message>".
+	EventReasonSourceFailed = "SourceFailed"
+	// EventReasonCallRefused (Normal), on a Stream (release B): a call was
+	// refused because its tuner pool was busy (a new lastFailure with
+	// reason TunerBusy). Once per refusal (its At). Note: the bridge's
+	// message, which names what held the pool.
+	EventReasonCallRefused = "CallRefused"
 )
 
 // Event actions (events.k8s.io requires one: what the controller did or
@@ -86,6 +98,9 @@ const (
 	EventActionRotateToken = "RotateToken"
 	EventActionDiscover    = "Discover"
 	EventActionCompile     = "Compile"
+	// EventActionPlay is the action of a Stream's SourceFailed and
+	// CallRefused Events: a call tried to play it.
+	EventActionPlay = "Play"
 )
 
 // UnknownPhoneMessage is the note of an UnknownPhone Event, in design §5's

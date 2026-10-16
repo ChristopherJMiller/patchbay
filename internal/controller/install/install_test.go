@@ -43,6 +43,8 @@ func TestNewNames(t *testing.T) {
 		AMISecret:        "patchbay-ami",
 		Settings:         "patchbay-settings",
 		AgentService:     "patchbay-agent",
+		StreamsConfigMap: "patchbay-streams",
+		StreamBridge:     "patchbay-streams",
 	}
 	if names != want {
 		t.Fatalf("NewNames = %+v, want %+v", names, want)

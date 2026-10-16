@@ -31,6 +31,7 @@ import (
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 // MaxFullnameLength is the longest fullname the chart produces
@@ -67,6 +68,18 @@ type Names struct {
 	// AgentService is <fullname>-agent, the Service in front of the agent's
 	// control API (AgentURL).
 	AgentService string
+
+	// StreamsConfigMap is <fullname>-streams (release B): streams.json
+	// (StreamsKey), the compiled streams.Document, written by the bundle
+	// reconciler before ConfigMap (StreamsConfigMap), mounted by the stream
+	// bridge, read back with ReadStreams.
+	StreamsConfigMap string
+	// StreamBridge is <fullname>-streams too: the stream bridge's
+	// Deployment, ServiceAccount and the Service in front of its
+	// AudioSocket and control ports (StreamBridgeAddress, StreamBridgeURL).
+	// Not <fullname>-stream-bridge: with a 50-character fullname that
+	// Service name would be 64 characters, over the DNS label limit.
+	StreamBridge string
 }
 
 // Keys of the install's Secrets and ConfigMaps.
@@ -78,6 +91,9 @@ const (
 	// SettingsKey holds compile.Settings as JSON in the Settings ConfigMap,
 	// and is the file name it is mounted as.
 	SettingsKey = "settings.json"
+	// StreamsKey holds streams.json in StreamsConfigMap, and is the file
+	// name the bridge mounts it as (streams.FileName).
+	StreamsKey = streams.FileName
 )
 
 // NewNames derives every name from the chart's fullname. Validate checks
@@ -91,6 +107,8 @@ func NewNames(fullname string) Names {
 		AMISecret:        fullname + "-ami",
 		Settings:         fullname + "-settings",
 		AgentService:     fullname + "-agent",
+		StreamsConfigMap: fullname + "-streams",
+		StreamBridge:     fullname + "-streams",
 	}
 }
 
@@ -107,14 +125,16 @@ func (n Names) Validate() error {
 	}
 	for what, name := range map[string]string{
 		"configMap": n.ConfigMap, "projectedSecret": n.ProjectedSecret, "agentTokenSecret": n.AgentTokenSecret,
-		"amiSecret": n.AMISecret, "settings": n.Settings,
+		"amiSecret": n.AMISecret, "settings": n.Settings, "streamsConfigMap": n.StreamsConfigMap,
 	} {
 		for _, p := range validation.IsDNS1123Subdomain(name) {
 			errs = append(errs, fmt.Errorf("install: %s name %q: %s", what, name, p))
 		}
 	}
-	for _, p := range validation.IsDNS1035Label(n.AgentService) {
-		errs = append(errs, fmt.Errorf("install: agent Service name %q: %s", n.AgentService, p))
+	for what, name := range map[string]string{"agent": n.AgentService, "stream bridge": n.StreamBridge} {
+		for _, p := range validation.IsDNS1035Label(name) {
+			errs = append(errs, fmt.Errorf("install: %s Service name %q: %s", what, name, p))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -213,4 +233,21 @@ func ProvisioningURL(s compile.Settings, token string) string {
 // its Service: http://<fullname>-agent.<namespace>.svc:<port>.
 func AgentURL(n Names, namespace string, port int) string {
 	return "http://" + n.AgentService + "." + namespace + ".svc:" + strconv.Itoa(port)
+}
+
+// StreamBridgeAddress is the stream bridge's AudioSocket address as
+// Asterisk dials it, <fullname>-streams.<namespace>.svc:<port>: what the
+// chart renders into settings.json's streamBridge (port 9092,
+// streambridge/api.DefaultAudioSocketPort). The PBX pod resolves it
+// through the cluster's DNS (dnsPolicy ClusterFirstWithHostNet).
+func StreamBridgeAddress(n Names, namespace string, port int) string {
+	return n.StreamBridge + "." + namespace + ".svc:" + strconv.Itoa(port)
+}
+
+// StreamBridgeURL is the in-cluster base URL of the stream bridge's
+// control API (observations, metrics), through its Service:
+// http://<fullname>-streams.<namespace>.svc:<port> (port 9093,
+// streambridge/api.DefaultControlPort).
+func StreamBridgeURL(n Names, namespace string, port int) string {
+	return "http://" + StreamBridgeAddress(n, namespace, port)
 }
