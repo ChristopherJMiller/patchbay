@@ -272,6 +272,53 @@ func TestResyncSentAndRecorded(t *testing.T) {
 	}
 }
 
+// TestDisplayChangeResyncs: the screen's power saving reaches a registered
+// phone as any config change does. A new spec.display, or a new house
+// default (a settings change restarts the controller, which compiles with
+// it), changes the phone's config version and ConfigStale resyncs it.
+func TestDisplayChangeResyncs(t *testing.T) {
+	yes := true
+	for _, tc := range []struct {
+		name    string
+		change  func(f *fixture)
+		element string
+	}{
+		{"its own display", func(f *fixture) {
+			edit(f, f.phone("desk"), func(p *v1alpha1.Phone) {
+				p.Spec.Display = &v1alpha1.PhoneDisplay{IdleTimeout: &metav1.Duration{Duration: time.Minute}}
+			})
+		}, "<displayIdleTimeout>00:01</displayIdleTimeout>"},
+		{"the house default", func(f *fixture) {
+			f.settings.PhoneDefaults.Display = &v1alpha1.PhoneDisplay{WakeOnCall: &yes}
+		}, "<displayOnWhenIncomingCall>1</displayOnWhenIncomingCall>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			ring := registeredDesk(t, f)
+			old := f.version(deskID)
+			tc.change(f)
+			b := f.compile()
+			v2 := f.version(deskID)
+			if v2 == old {
+				t.Fatal("the display did not change desk's config version")
+			}
+			if sep := string(b.Files["tftp/SEP"+deskMAC+".cnf.xml"]); !strings.Contains(sep, tc.element) {
+				t.Errorf("the SEP file has no %s", tc.element)
+			}
+			f.at(time.Minute)
+			f.see(ring)
+			f.reconcilePhone("desk")
+
+			if calls := f.actor.take(); len(calls) != 1 || calls[0] != (actorCall{"resync", agentapi.ActionRequest{Device: deskID, Version: v2}}) {
+				t.Fatalf("actions %v; want one resync of %s to %s", calls, deskID, v2)
+			}
+			if st := f.phone("desk").Status.State; st != string(drivers.StateConfigStale) {
+				t.Errorf("state %s; want ConfigStale", st)
+			}
+		})
+	}
+}
+
 // TestResyncFailureKeepsLastAction (6.2.1): an action that does not go out
 // records nothing: lastAction and handledRequest stay, so a requested
 // resync stays pending; ActionFailed is a Warning; the device is decided
