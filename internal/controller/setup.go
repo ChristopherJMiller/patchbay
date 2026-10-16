@@ -12,6 +12,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/agentclient"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/agentview"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/bridgeclient"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/bundle"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/devices"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/discovery"
@@ -20,12 +21,15 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/controller/numbers"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/poller"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/secrets"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/streamstate"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	bridgeapi "github.com/ChristopherJMiller/patchbay/internal/streambridge/api"
 )
 
 // The controller's components were built in parallel against the contract
-// interfaces (internal/controller/install and agentview), each satisfying
-// the others' seams by method set only (docs/plans/release-a.md §6.2).
+// interfaces (internal/controller/install and agentview; for streams,
+// internal/streambridge/api), each satisfying the others' seams by method
+// set only (docs/plans/release-a.md §6.2, docs/plans/release-b.md §6.2).
 // These assertions are where the build checks that they fit.
 var (
 	_ agentview.Actor                = (*agentclient.Client)(nil)
@@ -35,12 +39,16 @@ var (
 	_ agentview.Observer             = (*agentview.Holder)(nil)
 	_ manager.LeaderElectionRunnable = (*poller.Poller)(nil)
 	_ agentview.SnapshotFunc         = (*discovery.Reporter)(nil).Report
+	_ streamstate.Source             = (*bridgeclient.Client)(nil)
+	_ manager.LeaderElectionRunnable = (*streamstate.Poller)(nil)
 )
 
 // Setup wires the controller into mgr (built by NewManager with the same
 // opts): the install's Secrets and its compiled bundle (pbx-secrets, then
-// pbx-config), the poller of the agent's observations, the Phone,
-// Softphone, Person and Stream reconcilers, discovery and the metrics.
+// pbx-config, with <fullname>-streams written first), the poller of the
+// agent's observations, the Phone, Softphone and Person reconcilers, the
+// Stream reconciler with its poller of the stream bridge's observations,
+// discovery and the metrics.
 //
 // The pieces meet in three places, so no component hands state to another
 // in memory except through them:
@@ -53,6 +61,11 @@ var (
 //     here has no cycle);
 //   - agentview.Changes: the poller enqueues the devices whose
 //     observations changed.
+//
+// The Stream reconciler (internal/controller/streamstate) keeps its own
+// poller of the stream bridge, and reads what the bundle reconciler
+// compiled from <fullname>-streams (install.ReadStreams). It polls only
+// when the settings name a stream bridge.
 //
 // Everything that decides or writes runs only on the leader: the
 // reconcilers and the poller. s is the install's settings (settings.Load,
@@ -78,6 +91,15 @@ func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Regi
 	}
 	if opts.AgentURL == "" {
 		opts.AgentURL = install.AgentURL(names, opts.Namespace, agentapi.DefaultPort)
+	}
+	if opts.StreamBridgeURL == "" {
+		opts.StreamBridgeURL = install.StreamBridgeURL(names, opts.Namespace, bridgeapi.DefaultControlPort)
+	}
+	if s.StreamBridge != "" {
+		// Checked here, before anything is wired; built below with its logger.
+		if _, err := bridgeclient.New(bridgeclient.Config{URL: opts.StreamBridgeURL}); err != nil {
+			return fmt.Errorf("controller: --stream-bridge-url: %w", err)
+		}
 	}
 	registerer := opts.Registerer
 	if registerer == nil {
@@ -138,7 +160,24 @@ func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Regi
 	if err := numbers.Setup(mgr, numbers.Config{
 		Client: c, Namespace: ns, Names: names, Settings: s, Recorder: recorder, Log: log.WithName("numbers"),
 	}); err != nil {
-		return fmt.Errorf("controller: the Person and Stream reconcilers: %w", err)
+		return fmt.Errorf("controller: the Person reconciler: %w", err)
+	}
+	// The stream bridge is polled only when the settings name one
+	// (streamBridge.enabled in the chart); without it every routed Stream
+	// is Unavailable and nothing is polled.
+	var bridge streamstate.Source
+	if s.StreamBridge != "" {
+		bc, err := bridgeclient.New(bridgeclient.Config{URL: opts.StreamBridgeURL, Log: log.WithName("bridgeclient")})
+		if err != nil {
+			return fmt.Errorf("controller: --stream-bridge-url: %w", err)
+		}
+		bridge = bc
+	}
+	if err := streamstate.Setup(mgr, streamstate.Config{
+		Client: c, Namespace: ns, Names: names, Settings: s, Bridge: bridge,
+		Recorder: recorder, Metrics: m, Log: log.WithName("streams"),
+	}); err != nil {
+		return fmt.Errorf("controller: the Stream reconciler: %w", err)
 	}
 	return nil
 }

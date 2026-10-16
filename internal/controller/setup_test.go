@@ -29,6 +29,8 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/controller/settings"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/builtin"
+	bridgeapi "github.com/ChristopherJMiller/patchbay/internal/streambridge/api"
+	"github.com/ChristopherJMiller/patchbay/internal/streams"
 )
 
 // fakeAgent is the agent's control API as the controller sees it: it
@@ -92,12 +94,64 @@ func (a *fakeAgent) counts() (ok, refused int) {
 	return a.authOK, a.refused
 }
 
+// fakeBridge is the stream bridge's control API as the controller sees it:
+// GET /v1/observations reports every stream of the compiled
+// <fullname>-streams as loaded and idle, as the bridge does once the
+// kubelet has synced the mounted ConfigMap.
+type fakeBridge struct {
+	namespace string
+	names     install.Names
+	started   time.Time
+
+	mu    sync.Mutex
+	polls int
+}
+
+func (b *fakeBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.Path != bridgeapi.PathObservations {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	b.mu.Lock()
+	b.polls++
+	b.mu.Unlock()
+	now := time.Now().UTC()
+	doc := bridgeapi.Observations{
+		GeneratedAt: now,
+		Bridge:      bridgeapi.BridgeStatus{Version: "test", StartedAt: b.started, FFmpeg: "ffmpeg version test"},
+		Streams:     []bridgeapi.StreamObservations{},
+		Pools:       []bridgeapi.PoolObservations{},
+	}
+	if compiled, err := install.ReadStreams(r.Context(), testClient, b.namespace, b.names); err == nil {
+		doc.Bridge.StreamsVersion = compiled.Version
+		doc.Bridge.StreamsLoadedAt = &now
+		for id, s := range compiled.Streams {
+			doc.Streams = append(doc.Streams, bridgeapi.StreamObservations{
+				UUID: id, Name: s.Name, Number: s.Number, Source: s.Source, Pool: s.Pool,
+			})
+		}
+		for _, p := range compiled.Pools {
+			doc.Pools = append(doc.Pools, bridgeapi.PoolObservations{Name: p.Name, Max: p.Max, Sessions: []bridgeapi.PoolSession{}})
+		}
+	} else {
+		doc.Bridge.StreamsError = err.Error()
+	}
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+func (b *fakeBridge) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.polls
+}
+
 // TestSetupWiresEverything runs the whole controller, as cmd/patchbay
-// builds it, against envtest and a fake agent: it mints the install's
-// Secrets, compiles a Phone into pbx-secrets and pbx-config, polls the
-// agent with the token it minted, decides the Phone Unseen from that
-// document, reports the agent's unknown phone, and counts the Phone in
-// its metrics.
+// builds it, against envtest, a fake agent and a fake stream bridge: it
+// mints the install's Secrets, compiles a Phone into pbx-secrets and
+// pbx-config, polls the agent with the token it minted, decides the Phone
+// Unseen from that document, reports the agent's unknown phone, compiles a
+// Stream into <fullname>-streams, polls the bridge and decides the Stream
+// Idle, and counts the Phone and the Stream in its metrics.
 func TestSetupWiresEverything(t *testing.T) {
 	needEnvtest(t)
 	ctx := context.Background()
@@ -123,10 +177,13 @@ func TestSetupWiresEverything(t *testing.T) {
 		}}
 	ts := httptest.NewServer(agent)
 	t.Cleanup(ts.Close)
+	bridge := &fakeBridge{namespace: ns, names: names, started: time.Now().UTC().Truncate(time.Second)}
+	bs := httptest.NewServer(bridge)
+	t.Cleanup(bs.Close)
 
 	opts := controller.Options{
 		Namespace: ns, MetricsAddr: "0", ProbeAddr: "0",
-		Fullname: fullname, AgentURL: ts.URL, Registerer: prometheus.NewRegistry(),
+		Fullname: fullname, AgentURL: ts.URL, StreamBridgeURL: bs.URL, Registerer: prometheus.NewRegistry(),
 	}
 	registry := opts.Registerer.(*prometheus.Registry)
 	mgr, err := controller.NewManager(testCfg, opts)
@@ -151,6 +208,13 @@ func TestSetupWiresEverything(t *testing.T) {
 		Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "0200E2E00001", Number: "100", Label: "Desk"},
 	}
 	if err := testClient.Create(ctx, phone); err != nil {
+		t.Fatal(err)
+	}
+	radio := &v1alpha1.Stream{
+		ObjectMeta: metav1.ObjectMeta{Name: "radio", Namespace: ns},
+		Spec:       v1alpha1.StreamSpec{Number: "750", Name: "Radio", Source: "https://radio.invalid/live-128-mp3"},
+	}
+	if err := testClient.Create(ctx, radio); err != nil {
 		t.Fatal(err)
 	}
 	id := drivers.DeviceID(drivers.KindPhone, "desk")
@@ -222,6 +286,30 @@ func TestSetupWiresEverything(t *testing.T) {
 		return false, fmt.Sprint(seen)
 	})
 
+	// The Stream: compiled into <fullname>-streams (before pbx-config, which
+	// holds its number), then decided Idle from the bridge's observations.
+	eventually(t, "the Stream compiled into "+names.StreamsConfigMap, func() (bool, string) {
+		doc, err := install.ReadStreams(ctx, testClient, ns, names)
+		if err != nil {
+			return false, err.Error()
+		}
+		s, ok := doc.Streams[streams.UUID(radio.Name)]
+		return ok && s.Source == radio.Spec.Source && s.Number == "750", fmt.Sprintf("%+v", doc)
+	})
+	eventually(t, "the Stream decided Idle", func() (bool, string) {
+		var s v1alpha1.Stream
+		if err := testClient.Get(ctx, client.ObjectKeyFromObject(radio), &s); err != nil {
+			return false, err.Error()
+		}
+		ready := meta.FindStatusCondition(s.Status.Conditions, v1alpha1.ConditionReady)
+		return s.Status.State == "Idle" && ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == v1alpha1.ReasonIdle &&
+				ready.ObservedGeneration == s.Generation,
+			fmt.Sprintf("state %q, ready %+v", s.Status.State, ready)
+	})
+	if bridge.count() == 0 {
+		t.Error("the bridge was never polled")
+	}
+
 	// The metrics: the Phone by state, the config version, the agent.
 	rec := httptest.NewRecorder()
 	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -230,6 +318,8 @@ func TestSetupWiresEverything(t *testing.T) {
 		`patchbay_devices{kind="Phone",state="Unseen"} 1`,
 		`patchbay_config_version_info{version="` + compiled.Index.Version + `"} 1`,
 		`patchbay_agent_reachable 1`,
+		`patchbay_streams{state="Idle"} 1`,
+		`patchbay_stream_bridge_reachable 1`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("metrics lack %s:\n%s", want, text)
@@ -262,6 +352,7 @@ func TestSetupRefusesBadInput(t *testing.T) {
 		{"settings of another install", controller.Options{Namespace: "ns", Fullname: "patchbay"}, other, reg, "settings"},
 		{"no namespace", controller.Options{Fullname: "patchbay"}, s, reg, "namespace"},
 		{"no registry", controller.Options{Namespace: "ns", Fullname: "patchbay"}, s, nil, "registry"},
+		{"a stream bridge URL that is not one", controller.Options{Namespace: "ns", Fullname: "patchbay", StreamBridgeURL: "patchbay-streams:9093"}, s, reg, "--stream-bridge-url"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Setup fails before it touches the manager, so nil is safe.

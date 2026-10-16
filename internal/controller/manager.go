@@ -63,6 +63,13 @@ type Options struct {
 	// address on the default port (install.AgentURL).
 	AgentURL string
 
+	// StreamBridgeURL is the stream bridge's control API, which the Stream
+	// reconciler polls for its observations. "" is the bridge Service's
+	// address on the default control port (install.StreamBridgeURL) when
+	// the settings name a stream bridge (compile.Settings.StreamBridge);
+	// without one there is no bridge to poll and it is ignored.
+	StreamBridgeURL string
+
 	// Registerer takes the controller's own metrics. Nil is
 	// controller-runtime's metrics.Registry, which the manager serves on
 	// MetricsAddr; a process can register there only once.
