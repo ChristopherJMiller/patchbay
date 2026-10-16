@@ -165,6 +165,12 @@ func TestReporter(t *testing.T) {
 		logged.WriteString(prefix + args + "\n")
 	}, funcr.Options{})
 	r := newTestReporter(path, log)
+	// Not the 1 s deadline: on a loaded machine (make test, -race) a write
+	// that times out reconnects while the old connection still holds whole
+	// events, and the fake agent's two readers then interleave them, which
+	// read as events out of order (TestReporterNeverBlocks covers the
+	// timeout).
+	r.writeTimeout = time.Minute
 	runReporter(t, r)
 
 	for i := range 100 {
