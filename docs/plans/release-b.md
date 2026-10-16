@@ -1178,7 +1178,9 @@ it in its own files and it is listed below, unedited.
   `the source is not an audio stream the bridge reads (…)`.
 - **ffmpeg exits 0 when its source closes or stalls past `-rw_timeout`**, so
   status 0 without ctx ending is a failure: `ffmpeg exited with status 0:
-  the source ended`.
+  the source ended`. (§13 R5: a live source that closes made ffmpeg log
+  "Error during demuxing: Input/output error", which replaced "the source
+  ended"; it now follows it in parentheses.)
 - **A pool's new session waits for the pool's stopped decoders to exit**,
   then `PreemptSettle`, after any stop (a grace stop or a failure, not only
   a preemption), so the device has freed the tuner first.
@@ -1196,7 +1198,7 @@ it in its own files and it is listed below, unedited.
 - The control API's loopback exemption copies the agent's, but the bridge
   runs in the pod network, where the kubelet's probes come from the node's
   address: the 32/8 caps leave the probes room unless something in the
-  cluster holds all 32.
+  cluster holds all 32 (accepted, §11 and §13 R2).
 
 **routing** (`internal/compile`, `internal/controller/{bundle,settings,bridgeclient,streamstate,numbers,metrics}`, 11 commits)
 - **The `CallRefused` note is the bridge's message alone**, as the contract
@@ -1395,7 +1397,7 @@ beside it covers everything up to that point.
 | Both hang up; the tuner is free within ~10 s | e2e `TestStreamTuner/shared` (open streams 0 within 10 s) (I); `TestGrace` (BR) | `[real]` `status.json` (B3) |
 | Both tuners busy → "unavailable", Stream `Failing` | e2e `TestStreamTuner/refused` (fake DVR holds both: prompt, `SourceFailed`, 503) (I); `TestFFmpeg503`, `TestStartFails` (BR); `TestDecide` row 7 (RT) | `[real]` Plex recording two shows (B4) |
 | A second channel while one plays → "not available", Stream says why | e2e `TestStreamTuner/limit` (I); `TestPoolLimit`, `TestPoolRace` (BR); `TestDecide` row 8 (RT) | `[real]` 705 then 707 |
-| The time limit ends a call | e2e `TestStreamRadio` (20 s in e2e) (I); goldens and `TestRealAsteriskStreams` (the dialplan line) (RT); §3 (4 s) | `[real]` a short `callLimit` on the house for one test call (B8) |
+| The time limit ends a call | e2e `TestStreamRadio` (20 s in e2e) (I); goldens and `TestRealAsteriskStreams` (the dialplan line; `transferred`: a blind transfer keeps it) (RT); `TestServeCallLimit` (the bridge's ceiling, §13 R1); §3 (4 s) | `[real]` a short `callLimit` on the house for one test call (B8) |
 | Internet radio, no tuner limit | e2e `TestStreamRadio` (two at once) (I); `TestRadioHasNoLimit` (BR) | `[real]` 750–755 (B7) |
 | AudioSocket sample rate answered by test | §3 (the pinned image, 2026-10-16); `TestRealAsteriskStreams` (RT); `make asterisk-check` | `[real]` B5 |
 | CI green, image published | `make …` (all); CI's image, publish and release jobs (PK) | the first `v0.2.0` tag |
@@ -1416,8 +1418,9 @@ The inputs most likely to break a real user, and what pins each.
    taking the other tuner.** Exactly one may start (`TestPoolRace`); the
    HDHomeRun's 503 is a clear `Failing` (`TestFFmpeg503`, e2e refused).
 3. **A phone left off the hook.** The time limit ends it (e2e
-   `TestStreamRadio`, §3), and a refused or failed call never lingers
-   (`TestServeRefusalIsHangup`).
+   `TestStreamRadio`, §3), also after a transfer (`TestRealAsteriskStreams`
+   `transferred`; the bridge's ceiling, `TestServeCallLimit`: §13 R1), and
+   a refused or failed call never lingers (`TestServeRefusalIsHangup`).
 4. **A tuner device named two ways.** `http://hdhomerun.lan:5004/…` is not
    in a pool listing `192.168.0.58`: the Pool column shows it empty
    (`TestPoolMatching`, docs/streams.md).
@@ -1453,8 +1456,21 @@ The inputs most likely to break a real user, and what pins each.
 - **No playlist resolution**: a retired SomaFM host makes its Stream
   `Failing` until the URL is edited (§2(d)).
 - **`Failing` stays until a call plays the stream**: the controller never
-  probes a source.
-- **Anyone in the cluster can read the bridge's observations** (§2(g)).
+  probes a source. While it is `Failing`, a call refused for a busy pool
+  sends no `CallRefused` Event (only `refused_calls_total` counts it), so
+  the refusal never hides the source's failure (§13 R3).
+- **Anyone in the cluster can reach both bridge ports** (§2(g), §13 R2):
+  read the observations on 9093; join any stream, or start a tuner stream
+  and hold the pool's tuner, on 9092 (a UUID is public; the bridge's
+  ceiling ends such a call 5 s past the time limit, but a client can dial
+  again); hold the 64 AudioSocket calls and refuse every phone's stream
+  call; or hold the control port's 32 connections, which the kubelet's
+  probes (from the node, not the pod's loopback) count against: the
+  bridge turns unready and restarts, and the Streams read `Unknown`. No
+  NetworkPolicy is shipped; docs/streams.md says what one would admit.
+- **An attended transfer of a stream call into an application** (consult
+  the echo test, then complete) keeps neither of Asterisk's limits; the
+  bridge ends it 5 s past the limit (§13 R1).
 - **Wideband is not pinned by CI**: the e2e fakephone speaks G.711, so the
   16 kHz path rests on §3 and B5.
 - **ffmpeg's patch level floats** within Alpine 3.24 between image
@@ -1543,3 +1559,113 @@ No router change: Asterisk reaches the bridge inside the cluster, and the
 bridge pod reaches the HDHomeRun and SomaFM as any pod reaches the LAN and
 the internet (B11). The six SomaFM channels are Chris's examples; by
 listeners on 2026-10-16 they rank 1, 2, 3, 7, 8 and 12 of SomaFM's.
+
+---
+
+## 13. Review fixes
+
+The review of B as built (2026-10-16, at `981de2a`) made seven findings;
+three were one problem (the transfer), so six are listed. Each was checked
+here before anything changed: reproduced by a test where one could be
+written, otherwise read in the code.
+
+| # | Finding (severity) | Checked | Done |
+|---|---|---|---|
+| R1 | A transferred stream call escapes the time limit (major) | reproduced: asterisk-check, a blind REFER of a 713 call to 600 ran the stand-in bridge's 40 s against a 10 s limit | Dial's `S()` on the AudioSocket leg (`e46222c`); the bridge's own ceiling (`400cbc1`) |
+| R2 | Any pod can reach both bridge ports: hold the tuner, fill the calls, shut out the probes (minor) | read: true | accepted and recorded (§11, docs/streams.md "Who can reach the bridge", CLAUDE.md); the ceiling bounds one direct call |
+| R3 | A TunerBusy refusal hides a source failure, so a broken stream reads Idle (minor) | reproduced: tests in the bridge and in Decide | fixed in both (`3a44a6f`) |
+| R4 | No metric counts a session that ends after it played (minor) | read: true | `patchbay_stream_bridge_session_ends_total{reason}` (`6f2f068`) |
+| R5 | A live source that closes reads "Error during demuxing: Input/output error", which no troubleshooting row matches (nit) | reproduced: ffmpeg 9.0.1, chunked and HTTP/1.0 answers | the message (`44f39b4`), docs/streams.md's row |
+| R6 | `TestReporter` (release A) flakes under load (nit) | the mechanism reproduced: a 200 µs write deadline fails it the same way in 4 of 10 runs | test only (`df709e7`) |
+
+**R1. The time limit after a transfer.** `TIMEOUT(absolute)` is the
+channel's it is set on: the caller's. A phone that blind-transfers a
+stream call (a REFER, which the 7945's Transfer key sends) leaves with that
+channel, and the AudioSocket leg goes on with no limit; transferred to the
+echo test it played into `Echo()` with nobody on the line.
+
+- `Dial(AudioSocket/…/c(slin16),,gS(<limit>))`: `S()` sets the hangup time
+  on the dialled channel when it answers, and a blind transfer moves that
+  channel, so it keeps it. `TestRealAsteriskStreams/transferred` (the
+  check's SIP client gained a REFER): the stand-in plays 40 s, Asterisk
+  closes its connection at 10.0 s; before the change, 40.0 s. Both limits
+  are the same number of seconds: the caller's is set before the dial and
+  the leg's at its answer, so the caller's passes first, and an
+  untransferred call still ends without going on to "not available" (the
+  `time limit` case never reaches priority 4, in every asterisk-check run
+  in §13's verification).
+- **An attended transfer into an application is not covered by `S()`.**
+  Probed once with the same harness (not kept as a test, which would pin
+  Asterisk's gap): the phone calls 713, then 600, and REFERs the first
+  call with `Replaces` naming the second. Asterisk's bridge core moves the
+  AudioSocket leg into the channel that was running `Echo()` (a
+  masquerade: the log shows `Echo` exiting on `AudioSocket/…`), and that
+  channel holds neither limit: the call lasted the stand-in's 40.0 s with
+  `S(10)` compiled. An attended transfer to a phone (both calls bridged)
+  moves channels between bridges, which keeps `S()`; that was not tested.
+- So the bridge has a ceiling of its own, whatever Asterisk did with the
+  call and whoever dialled: `streams.json` carries `callLimitSeconds`
+  (a contract change: `internal/streams.Document.CallLimitSeconds`, 0 to
+  `MaxCallLimitSeconds` = 24 h, omitted when zero, which means none;
+  Compile always sets it from `streams.callLimit`), and the server ends a
+  call `streambridge.CallLimitSlack` (5 s, also new) after it, counted from
+  its join: a hangup frame, then the close. Asterisk's limits fire first on
+  every call it still holds, so this meets only the calls it lost; each is
+  logged with the peer's address and counted in
+  `patchbay_stream_bridge_call_limit_ends_total`. `TestServeCallLimit`,
+  `TestServeNoCallLimit`, `TestStreamDocument`; every golden's
+  `streams.json` gained the field.
+- Chris's decision ("Asterisk ends the call") holds for every call
+  Asterisk can still see; the bridge's ceiling is the backstop.
+
+**R2. Who can reach the bridge.** True as reported: 9092 checks nothing
+about its peer and a stream's UUID is public; `MaxCalls` counts a
+connection from its accept; on 9093 the loopback exemption helps only the
+operator's port-forward, because the kubelet probes a pod-network pod
+from the node. Accepted for B, with the house's cluster trusted, and
+written down in §11, docs/streams.md and CLAUDE.md (which said "loopback
+exempt" as if that protected the probes). Not done, each with its cost:
+an opt-in NetworkPolicy (untestable here, and the PBX is a host-network
+pod, so it is an `ipBlock` of its node; docs/streams.md says what one
+would admit); probes on an uncapped third port (a new port, flag and chart
+change for a cluster-internal attacker); a peer check on 9092 (the bridge
+does not know the PBX node's address). The ceiling (R1) bounds how long
+one direct call lasts; a client can dial again.
+
+**R3. A refusal never hides a broken source.** The bridge (`join`) and the
+controller (the fold) now let a TunerBusy refusal replace the last failure
+only when that is not a SourceFailed or SourceEnded no call has played
+past. The house case: FOX 13's channel is gone after a rescan (404,
+`Failing`); 713 is dialled while 705 plays and refused; when 705 hangs up,
+FOX 13 stays `Failing` with its 404, not `Idle`. Cost: while a Stream is
+`Failing`, a refused call sends no `CallRefused` Event (the refusal is in
+`refused_calls_total`). `TestTunerBusyKeepsSourceFailure` (bridge),
+`TestRefusalKeepsSourceFailure` (Decide); `TestEventsOncePerFailure`
+had pinned the old behaviour ("Refused: CallRefused, and Idle" right after
+a SourceEnded) and now expects `Failing` kept, then `CallRefused` after a
+play.
+
+**R4. Session ends.** `patchbay_stream_bridge_session_ends_total{reason}`
+counts each session once when it stops: `source_ended` (it closed or
+stalled after it played: the rate to alert on for a station that keeps
+dropping), `source_failed`, `idle` (the grace ran out), `preempted` (its
+tuner went to another source of its pool), `stopping`. All five series
+exist from the start (`TestSessionEnds`). docs/streams.md lists it, the
+ceiling's counter, and what to alert on.
+
+**R5. "The source ended".** ffmpeg exits 0 when a source closes; for a live
+answer (chunked, or HTTP/1.0 with no length, as the HDHomeRun and Icecast
+send) 9.0.1 logs `Error during demuxing: Input/output error`, which became
+the whole reason. A status-0 exit now reads `ffmpeg exited with status 0:
+the source ended (<ffmpeg's line>)` (`TestFFmpegLiveSourceEnds`, both
+answers), and docs/streams.md's SourceEnded row quotes it.
+
+**R6. `TestReporter`.** Release A code, unchanged since `v0.1.0`. Under
+load a write reached the reporter's 1 s deadline; the reporter reconnected
+while the old connection still held whole unread events, and the fake
+agent's two readers interleaved them into one channel: out of order, none
+lost (the real agent also serves connections concurrently, so a slow agent
+could see the same reordering across a reconnect; release A's behaviour,
+unchanged). The test is about order and overflow, not timeouts
+(`TestReporterNeverBlocks` covers those), so it writes with a 1 min
+deadline.

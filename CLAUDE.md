@@ -68,11 +68,12 @@ the bounds on status and Event text), `internal/controller/agentview` (the polle
 `internal/controller/ctrltest` (the shared envtest harness),
 `internal/cli/env.go` (the CLI's seams) and `test/e2e/fakephone/script`
 (what `fakephone run` does and reports, and the fake stream source). Release
-B added (docs/plans/release-b.md §4): `internal/streams` (the stream
-document streams.json, its UUIDs, `CheckSource`, the audio format),
+B added (docs/plans/release-b.md §4, and §13's review fixes): `internal/streams`
+(the stream document streams.json with its call limit, its UUIDs,
+`CheckSource`, the audio format),
 `internal/streambridge/{doc,options,source}.go` (the bridge's `Options`,
-flags, defaults, timings and bounds, the `Source`/`Decoder` seam,
-`FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
+flags, defaults, timings and bounds, `CallLimitSlack` among them, the
+`Source`/`Decoder` seam, `FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
 kinds and frame), `internal/streambridge/api` (the bridge's control API
 JSON), the stream settings and `Bundle.Streams` in `internal/compile`
 (`streams_contract_test.go`), and install's streams ConfigMap, names and
@@ -303,12 +304,14 @@ departs from it, the departure is recorded here (and in the code's docs).
   error; it becomes NeedsTrustReset by the 3 min `.sgn` rule (e2e
   `TestPhoneLifecycle/reset`; plan §11).
 
-Release B (streams; docs/plans/release-b.md, its §6.5 "as built"):
+Release B (streams; docs/plans/release-b.md, its §6.5 "as built" and §13
+review fixes):
 
 - **Streams dial the AudioSocket channel driver, at 16 kHz** (§9 has
   `AudioSocket(<uuid>, <bridge>)`, the application, and 8 kHz): a
   Stream's number runs `Answer()`, `Set(TIMEOUT(absolute)=<limit>)`,
-  `Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,g)`, then "not available".
+  `Dial(AudioSocket/<bridge>/<uuid>/c(slin16),,gS(<limit>))`, then "not
+  available".
   Tested against the pinned Asterisk 22.11 (plan §3): the channel driver
   carries 16 kHz both ways (kind `0x12`, 640 bytes per 20 ms) and continues
   the dialplan after a refusal, a close or an unreachable bridge; the
@@ -337,7 +340,12 @@ Release B (streams; docs/plans/release-b.md, its §6.5 "as built"):
   lost to a reset; `Dial` continues either way.
 - **The time limit and tuner pools are settings** (§9 has neither; Chris,
   2026-10-16): `streams.callLimit` (default 2 h, whole seconds from 10 s
-  to 24 h; Asterisk's `TIMEOUT(absolute)`, no prompt) and
+  to 24 h, no prompt; Asterisk's `TIMEOUT(absolute)` on the caller and
+  `Dial`'s `S()` on the AudioSocket leg, which a blind transfer keeps;
+  and the bridge ends any call still open `CallLimitSlack` (5 s) past
+  streams.json's `callLimitSeconds`, for the calls Asterisk loses track
+  of, an attended transfer into an application, and for direct clients:
+  plan §13 R1) and
   `streams.tunerPools` (`{name, hosts, max}`: a Stream whose source's host
   is a pool's counts against it; at most `max` sources of a pool play at
   once; a draining session gives way, otherwise the call is refused,
@@ -358,13 +366,18 @@ Release B (streams; docs/plans/release-b.md, its §6.5 "as built"):
   (`listeners`, `tunerPool`, `lastPlayed`, `lastFailure`) so it survives a
   bridge restart; each new failure is one `SourceFailed` (Warning) or
   `CallRefused` (Normal) Event. A `TunerBusy` refusal never makes a Stream
-  `Failing`.
+  `Failing`, nor replaces a source failure no call has played past (in
+  the bridge and in the fold; no `CallRefused` Event then: plan §13 R3).
 - **The bridge's control API on 9093 is unauthenticated** (§9 says only
   "the bridge exposes observations"): `/v1/observations`, `/healthz`,
   `/readyz`, `/metrics`, read only. Nothing in it is secret (sources hold
   no credentials); anyone in the cluster can see what is playing. Capped
-  at 32 connections, 8 per source, loopback exempt, idle ones closed after
-  15 s.
+  at 32 connections, 8 per source, idle ones closed after 15 s; loopback
+  is outside the 32, which helps only the operator's port-forward: the
+  kubelet probes from the node, so something in the cluster holding all
+  32 fails the probes. AudioSocket on 9092 checks no peer either (a
+  stream's UUID is public). Both accepted, no NetworkPolicy shipped (plan
+  §11, §13 R2; docs/streams.md "Who can reach the bridge").
 - **The bridge image is a second Dockerfile target on Alpine** (§6 has
   one image): `ghcr.io/christopherjmiller/patchbay-stream-bridge`,
   patchbay plus Alpine 3.24's ffmpeg, Apache-2.0 AND GPL-3.0-or-later;

@@ -16,15 +16,15 @@ spec: {number: "705", name: KING 5, source: "http://192.168.0.58:5004/auto/v5.1"
 Contents: [How a call works](#how-a-stream-call-works) ·
 [Sources](#sources) · [Tuner pools](#tuner-pools) ·
 [The time limit](#the-time-limit) · [States](#states-and-conditions) ·
-[Troubleshooting](#troubleshooting) · [The image](#the-bridge-image-and-its-licences) ·
-[The house](#the-house-luma-homeops)
+[Troubleshooting](#troubleshooting) · [Who can reach the bridge](#who-can-reach-the-bridge) ·
+[The image](#the-bridge-image-and-its-licences) · [The house](#the-house-luma-homeops)
 
 ## How a stream call works
 
 ```
 phone --SIP/RTP--> Asterisk (PBX pod, host network)
                      705: Answer(), Set(TIMEOUT(absolute)=<limit>),
-                          Dial(AudioSocket/<fullname>-streams.<ns>.svc:9092/<uuid>/c(slin16),,g)
+                          Dial(AudioSocket/<fullname>-streams.<ns>.svc:9092/<uuid>/c(slin16),,gS(<limit>))
                      --TCP 9092, AudioSocket--> stream bridge (<fullname>-streams, pod network)
                                                   one ffmpeg per source --HTTP(S)--> tuner / Icecast
                      when Dial returns: "not available"
@@ -59,6 +59,8 @@ phone --SIP/RTP--> Asterisk (PBX pod, host network)
    audio within 15 s of starting), every caller of that session gets a
    hangup frame and hears "not available", and each Stream that had a
    caller records the failure.
+8. Asterisk ends the call at the time limit ([below](#the-time-limit));
+   the bridge ends any call still open 5 s after it.
 
 The bridge is one Deployment (`<fullname>-streams`, one replica,
 `Recreate`: two bridges would hold two tuners for one channel) with a
@@ -176,11 +178,30 @@ bounds how long that can last.
 ## The time limit
 
 Every stream call ends after `streams.callLimit` (default `2h`; whole
-seconds from `10s` to `24h`): the dialplan sets Asterisk's
-`TIMEOUT(absolute)` right after answering, and Asterisk hangs up at it. So a
-phone left off the hook cannot hold a tuner for ever. It applies to every
-Stream, radio included. There is no warning before it (a prompt would be a
-new sound in every voice; a later change).
+seconds from `10s` to `24h`), so a phone left off the hook cannot hold a
+tuner for ever. It applies to every Stream, radio included. There is no
+warning before it (a prompt would be a new sound in every voice; a later
+change). Three things enforce it:
+
+- Asterisk, on the caller: the dialplan sets `TIMEOUT(absolute)` right
+  after answering, and Asterisk hangs up at it.
+- Asterisk, on the stream's own leg: `Dial(…,,gS(<limit>))` puts the same
+  limit on the AudioSocket channel, from its answer. A phone that
+  **transfers** a stream call (the 7945's Transfer key, to another phone
+  or to the echo test) leaves with its own channel and its
+  `TIMEOUT(absolute)`; the stream's leg keeps `S()`, so the transferred
+  call still ends at the limit (`make asterisk-check`,
+  `TestRealAsteriskStreams/transferred`).
+- The bridge: `streams.json` carries the limit (`callLimitSeconds`), and
+  the bridge ends any call still open **5 s after it** (a hangup frame,
+  then the close), however the call got there. This covers what Asterisk
+  loses track of: an *attended* transfer into an application (consult the
+  echo test, then complete the transfer) moves the stream's leg into a
+  channel that holds neither limit (tested against the pinned Asterisk:
+  the call ran until the source stopped), and a client in the cluster
+  that dials the bridge itself. Such an end is logged (`call ended past
+  its time limit`, with the peer's address) and counted in
+  `patchbay_stream_bridge_call_limit_ends_total`, which should stay 0.
 
 ## States and conditions
 
@@ -208,7 +229,12 @@ wins). `status.state` is for display; tools read the `Ready` condition.
 - `Failing` stays until a call plays the stream again: the controller
   never probes a source. A `TunerBusy` refusal never makes a Stream
   `Failing`; it is history in `lastFailure` and an Event, and `Busy` says
-  whether the pool is full now.
+  whether the pool is full now. Nor does a refusal hide a broken source:
+  while a Stream's last failure is its source's and nothing has played it
+  since, a refused call leaves that failure in `lastFailure` (the bridge
+  keeps it too) and sends no `CallRefused` Event, so the Stream stays
+  `Failing` when the pool frees up (its source was never tried again);
+  `refused_calls_total{reason="tuner_busy"}` still counts the refusal.
 - Each new failure is one Event on the Stream: `SourceFailed` (Warning,
   `<reason>: <message>`) for a source that failed or ended, `CallRefused`
   (Normal, the bridge's message) for a refusal. A state change is a
@@ -239,10 +265,11 @@ Stream kiro7 (707): Busy (pool hdhomerun)
 | `Failing: … Server returned 404 Not Found` | The channel or mount does not exist (a retired SomaFM host, a channel the tuner has not found). | Fix the URL (`lineup.json`, `channels.json`). |
 | `Failing: … the source is not an audio stream the bridge reads (…)` | The URL is a web page, a playlist without the extension, or a format outside the demuxer list ("Format not on whitelist", "Invalid data found when processing input"; a short web page ends as "Input/output error"). | Use the direct stream URL. |
 | `Failing:` a certificate, DNS or connection error | ffmpeg could not verify the https certificate against the image's CA bundle, resolve the host, or connect. | Check the URL from another pod; a NetworkPolicy may block the bridge's egress. |
-| `Failing: … the source ended` / `SourceEnded` | The source closed the stream, or sent nothing for 10 s, while it played. | The next call starts it again. |
+| `Failing: … ffmpeg exited with status 0: the source ended (…)` / `SourceEnded` | The source closed the stream, or sent nothing for 10 s, while it played. ffmpeg's own line follows in parentheses: a live source (an HDHomeRun, an Icecast mount) that closes reads `(Error during demuxing: Input/output error)`, a stall `(Error during demuxing: Connection timed out)` or `no audio came from the source for 10s`. This is not the "not an audio stream" row: the stream played first. | The next call starts it again. A station that does this often shows in `session_ends_total{reason="source_ended"}`. |
 | `Unknown`, `cannot reach the stream bridge` | The bridge pod is down, restarting or not Ready; its calls dropped. | `kubectl -n <ns> get pods -l app.kubernetes.io/component=stream-bridge` and its log. |
 | A stream number plays "not available" | The bridge refused the call or its source failed: the Stream's `lastFailure` and its Events say which. A call to a Stream the bridge has not loaded yet (`Pending`) is refused as an unknown stream (`unknownCalls` in its observations). | As the failure says. |
-| A call ends by itself after the time limit | `streams.callLimit` (2h at home). | Redial; raise the limit if it is too short. |
+| A call ends by itself after the time limit | `streams.callLimit` (2h at home), transferred calls included. | Redial; raise the limit if it is too short. |
+| The bridge logs `call ended past its time limit`; `call_limit_ends_total` grows | A call outlived the limit by 5 s, so the bridge ended it: one transferred into an application by an attended transfer, or a client in the cluster dialling the bridge itself (the log names its address). | The first is harmless. Otherwise find the client (see [Who can reach the bridge](#who-can-reach-the-bridge)). |
 
 **The bridge's own view.** Its observations hold every loaded stream and
 pool, each session's state and listeners, the last failure per stream, and
@@ -261,12 +288,53 @@ kubectl -n <ns> logs deploy/<fullname>-streams   # one line per call and per ses
 `patchbay_stream_bridge_calls{stream}` (open calls per loaded stream),
 `patchbay_stream_bridge_sessions{pool}` (running decoders; `none` for no
 pool), `patchbay_stream_bridge_session_starts_total{result="played|failed"}`,
+`patchbay_stream_bridge_session_ends_total{reason="source_ended|source_failed|idle|preempted|stopping"}`
+(each session once, when it stops),
 `patchbay_stream_bridge_refused_calls_total{reason="unknown_stream|tuner_busy|bridge_full"}`,
+`patchbay_stream_bridge_call_limit_ends_total` (calls the bridge ended past
+the time limit),
 `patchbay_stream_bridge_frames_dropped_total`,
 `patchbay_stream_bridge_underrun_frames_total` (silence sent while
 playing), `patchbay_stream_bridge_streams_version_info{version}`,
 `patchbay_stream_bridge_streams_load_failures_total`. The controller:
 `patchbay_streams{state}` and `patchbay_stream_bridge_reachable`.
+
+What to alert on: `patchbay_stream_bridge_reachable == 0` (streams are
+down); `patchbay_streams{state="Failing"} > 0` (a source is broken until
+a call plays it); `rate(patchbay_stream_bridge_session_ends_total{reason="source_ended"}[1h])`
+above a few an hour (a station or the tuner keeps dropping mid-call:
+`Failing` alone clears on the next good play); and
+`increase(patchbay_stream_bridge_call_limit_ends_total[1d]) > 0` if a
+client dialling the bridge itself would worry you. patchbay ships no
+alert rules.
+
+## Who can reach the bridge
+
+The bridge's two ports answer anyone who can reach its Service or pod in
+the cluster; patchbay ships no NetworkPolicy. Accepted for release B
+(plan §11), because the bridge holds nothing secret (sources carry no
+credentials) and the cluster is the house's:
+
+- **9093, the observations**: anyone can read what is playing and to how
+  many. The connections are capped at 32, 8 per source address; the
+  operator's `kubectl port-forward` arrives on the pod's loopback, which
+  is outside the 32, but the kubelet's probes come from the node, not the
+  pod's loopback, and count: something in the cluster holding all 32
+  (four pods of 8, re-dialled) shuts the probes out, so the bridge turns
+  unready (every stream plays "not available") and its liveness probe
+  restarts it, and the controller's polls fail (Streams `Unknown`).
+- **9092, AudioSocket**: there is no check of who connects, and a
+  stream's UUID is public (`uuid5` of its name, also listed on 9093).
+  Anyone can join a stream directly, or start a tuner stream and hold the
+  pool's tuner; the bridge ends each such call 5 s past the time limit,
+  but a client can dial again. Holding the bridge's 64 calls (a connection
+  counts from its accept, before its UUID; 5 s to send one) refuses every
+  phone's stream call.
+
+If your CNI enforces NetworkPolicy, you can admit 9092 only from the PBX
+(a host-network pod, so its connections come from its node's address: an
+`ipBlock` of that address) and 9093 only from the controller and your
+Prometheus. patchbay has not tested such a policy.
 
 ## The bridge image and its licences
 
