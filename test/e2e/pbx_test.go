@@ -381,11 +381,11 @@ func TestResyncNotify(t *testing.T) {
 func killAgent(ctx context.Context, t *testing.T) {
 	t.Helper()
 	before := agentRestarts(ctx, t)
-	id, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "ps", "--name", "^agent$", "--state", "Running", "-q")
+	id, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "--timeout", crictlTimeout, "ps", "--name", "^agent$", "--state", "Running", "-q")
 	if err != nil || strings.TrimSpace(id) == "" {
 		t.Fatalf("finding the agent container: %v %q", err, id)
 	}
-	if _, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "stop", "--timeout", "0", strings.TrimSpace(id)); err != nil {
+	if _, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "--timeout", crictlTimeout, "stop", "--timeout", "0", strings.TrimSpace(id)); err != nil {
 		t.Fatal(err)
 	}
 	err = wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {

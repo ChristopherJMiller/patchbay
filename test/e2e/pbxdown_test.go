@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -81,12 +82,21 @@ func TestPBXDown(t *testing.T) {
 	testenv.Test(t, f)
 }
 
+// crictlTimeout is crictl's own request timeout (its default is 2 s).
+// Under the parallel suite the runtime can take longer than that to answer
+// a stop it carries out anyway: crictl then reports DeadlineExceeded for a
+// container that did stop.
+const crictlTimeout = "30s"
+
 // keepAsteriskDown stops the asterisk container whenever it is running,
-// until ctx is done.
+// until ctx is done. A stop that reports an error is tried again on the
+// next pass (the container may well have stopped); it fails only if
+// Asterisk was never stopped.
 func keepAsteriskDown(ctx context.Context) error {
 	stopped := 0
+	var lastErr error
 	for {
-		id, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "ps", "--name", "^asterisk$", "--state", "Running", "-q")
+		id, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "--timeout", crictlTimeout, "ps", "--name", "^asterisk$", "--state", "Running", "-q")
 		if ctx.Err() != nil {
 			break
 		}
@@ -94,10 +104,13 @@ func keepAsteriskDown(ctx context.Context) error {
 			return err
 		}
 		if id = strings.TrimSpace(id); id != "" {
-			if _, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "stop", "--timeout", "0", id); err != nil && ctx.Err() == nil {
-				return err
+			if _, err := h.run(ctx, "docker", "exec", h.nodeName, "crictl", "--timeout", crictlTimeout, "stop", "--timeout", "0", id); err != nil {
+				if ctx.Err() == nil {
+					lastErr = err
+				}
+			} else {
+				stopped++
 			}
-			stopped++
 		}
 		select {
 		case <-ctx.Done():
@@ -108,6 +121,9 @@ func keepAsteriskDown(ctx context.Context) error {
 		}
 	}
 	if stopped == 0 {
+		if lastErr != nil {
+			return fmt.Errorf("Asterisk was never stopped: %w", lastErr)
+		}
 		return errors.New("Asterisk was never found running")
 	}
 	return nil
