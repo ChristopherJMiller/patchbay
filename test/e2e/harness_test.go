@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -47,6 +48,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/controller"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/settings"
+	bridgeapi "github.com/ChristopherJMiller/patchbay/internal/streambridge/api"
 )
 
 const (
@@ -85,11 +87,12 @@ var (
 
 // harness holds what the setup learned and the clients the tests share.
 type harness struct {
-	root       string // repository root
-	kubeconfig string // <root>/.e2e/kubeconfig, the only kubeconfig used
-	diagDir    string // <root>/.e2e/diagnostics
-	reuse      bool   // PATCHBAY_E2E_REUSE=1: keep an existing cluster
-	keep       bool   // PATCHBAY_E2E_KEEP=1: do not delete the cluster at the end
+	root       string    // repository root
+	kubeconfig string    // <root>/.e2e/kubeconfig, the only kubeconfig used
+	diagDir    string    // <root>/.e2e/diagnostics
+	started    time.Time // when the suite started (a reused cluster's older pods are a previous run's)
+	reuse      bool      // PATCHBAY_E2E_REUSE=1: keep an existing cluster
+	keep       bool      // PATCHBAY_E2E_KEEP=1: do not delete the cluster at the end
 
 	asteriskImage string            // the chart's Asterisk image, as loaded (tag, no digest)
 	imageIDs      map[string]string // local image -> docker image ID
@@ -222,6 +225,7 @@ func newHarness() (*harness, error) {
 	}
 	h := &harness{
 		root:       root,
+		started:    time.Now(),
 		kubeconfig: filepath.Join(root, ".e2e", "kubeconfig"),
 		diagDir:    filepath.Join(root, ".e2e", "diagnostics"),
 		reuse:      os.Getenv("PATCHBAY_E2E_REUSE") == "1",
@@ -377,11 +381,12 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 	return ctx, nil
 }
 
-// loadImages loads the locally built images, and the digest-pinned Asterisk
-// image pulled on the host, into the kind node. `make e2e-images` builds and
-// pulls them; kind load is a no-op for an image already present.
+// loadImages loads the locally built images (patchbay, the stream bridge,
+// the tools), and the digest-pinned Asterisk image pulled on the host, into
+// the kind node. `make e2e-images` builds and pulls them; kind load is a
+// no-op for an image already present.
 func (h *harness) loadImages(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-	for _, img := range []string{patchbayImage, toolsImage, h.asteriskImage} {
+	for _, img := range []string{patchbayImage, streamBridgeImage, toolsImage, h.asteriskImage} {
 		id, err := h.run(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", img)
 		if err != nil {
 			return ctx, fmt.Errorf("image %s is missing locally: run `nix develop -c make e2e-images` (make e2e does): %w", img, err)
@@ -396,9 +401,11 @@ func (h *harness) loadImages(ctx context.Context, _ *envconf.Config) (context.Co
 
 // install creates the namespace and installs the chart with the e2e values
 // plus what only runtime knows (node, address, the allowed network, image
-// IDs), then the site resources (siteResources) once the CRDs are served.
+// IDs), then the site resources (siteResources, with the site Streams)
+// once the CRDs are served, and the fake stream sources (deployFakeSources).
 // The controller then mints the install's Secrets and compiles the site,
-// and the PBX pod starts on that bundle (waitForRollout, ready).
+// and the PBX pod and the stream bridge start on what it compiled
+// (waitForRollout, ready).
 func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Context, error) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: namespace,
@@ -439,6 +446,9 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 				"e2e.patchbay.chrismiller.xyz/asterisk-image-id": h.imageIDs[h.asteriskImage],
 			},
 		},
+		"streamBridge": map[string]any{"podAnnotations": map[string]string{
+			"e2e.patchbay.chrismiller.xyz/image-id": h.imageIDs[streamBridgeImage],
+		}},
 		// Only the pod network, where the phones run, may register: the
 		// compiled ACL refuses every other source (TestRegister's
 		// host-network REGISTER).
@@ -467,7 +477,11 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 			return ctx, fmt.Errorf("site resource %s: %w", obj.GetName(), err)
 		}
 	}
-	log.Printf("site resources written: Phones %s and %s, Softphone %s, Person %s", deskName, kitchenName, laptopName, personName)
+	log.Printf("site resources written: Phones %s and %s, Softphone %s, Person %s, Streams %s, %s, %s and %s",
+		deskName, kitchenName, laptopName, personName, tunerAName, tunerBName, radioAName, radioBName)
+	if err := deployFakeSources(ctx); err != nil {
+		return ctx, fmt.Errorf("the fake stream sources: %w", err)
+	}
 	return ctx, nil
 }
 
@@ -535,10 +549,14 @@ func (h *harness) notePriorPBX(ctx context.Context) error {
 	return nil
 }
 
-// waitForRollout waits until both Deployments have fully rolled out, the
-// way `kubectl rollout status` does. On a timeout it saves diagnostics.
+// waitForRollout waits until the chart's Deployments (the controller, the
+// PBX, the stream bridge) have fully rolled out, the way `kubectl rollout
+// status` does, then the fake stream sources. On a timeout it saves
+// diagnostics. The bridge waits for the controller's first compile (its
+// <fullname>-streams volume is not optional), as the PBX pod waits for
+// the agent token.
 func (h *harness) waitForRollout(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-	for _, name := range []string{controllerDeployment, pbxDeployment} {
+	for _, name := range []string{controllerDeployment, pbxDeployment, names.StreamBridge} {
 		start := time.Now()
 		var last string
 		err := wait.PollUntilContextTimeout(ctx, 2*time.Second, rolloutTimeout, true, func(ctx context.Context) (bool, error) {
@@ -563,6 +581,12 @@ func (h *harness) waitForRollout(ctx context.Context, _ *envconf.Config) (contex
 		}
 		log.Printf("deployment %s rolled out in %s", name, time.Since(start).Round(time.Second))
 	}
+	start := time.Now()
+	if err := fakeSourcesReady(ctx, rolloutTimeout); err != nil {
+		path := h.saveDiagnostics(context.WithoutCancel(ctx), "setup-"+fakeSourcesName)
+		return ctx, fmt.Errorf("%w; diagnostics: %s", err, path)
+	}
+	log.Printf("deployment %s rolled out in %s", fakeSourcesName, time.Since(start).Round(time.Second))
 	return ctx, nil
 }
 
@@ -619,6 +643,8 @@ func (h *harness) saveDiagnostics(ctx context.Context, label string) string {
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--tail=300"},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--previous", "--tail=100"},
 		{"logs", "--namespace", namespace, "-l", fakephoneSelector, "--prefix", "--tail=100"},
+		{"logs", "--namespace", namespace, "-l", fakeSourcesLabel + "=" + fakeSourcesName, "--prefix", "--tail=100"},
+		{"get", "--raw", "/api/v1/namespaces/" + namespace + "/services/http:" + names.StreamBridge + ":" + strconv.Itoa(bridgeapi.DefaultControlPort) + "/proxy" + bridgeapi.PathObservations},
 		{"get", "events", "--all-namespaces", "--sort-by=.lastTimestamp"},
 	} {
 		out, err := h.kubectl(ctx, args...)

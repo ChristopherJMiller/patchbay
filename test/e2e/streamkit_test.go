@@ -540,16 +540,6 @@ func proxyStatus(body []byte, err error) (int, []byte, error) {
 	return 0, body, err
 }
 
-// The integrator's stream tests (docs/plans/release-b.md §6.4) and the
-// harness use these; until they land, this keeps the unused linter quiet.
-// Remove it once each has a caller.
-var _ = []any{
-	streamBridgeImage, deployFakeSources, fakeSourcesReady, fakeSourceStatus, tryFakeSourceStatus,
-	occupyTuners, bridgeObservations, tryBridgeObservations, streamObservation, poolObservation,
-	waitStream, streamReady, callStream, startStreamCall, waitStreamCall, parseCallEnd, parseFirstTone,
-	e2eStreams, e2eTunerPool,
-}
-
 // TestStreamKit checks the kit against itself and the e2e values, without
 // the cluster: the site Streams' sources are ones the CRD and the bridge
 // accept, the tuner ones are on test/e2e/values.yaml's tuner pool's host

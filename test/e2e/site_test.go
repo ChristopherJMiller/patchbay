@@ -71,10 +71,12 @@ var (
 )
 
 // siteResources are the install's Phones desk and kitchen, Softphone
-// laptop and Person chris (301: desk, then laptop), as the harness writes
-// them.
+// laptop, Person chris (301: desk, then laptop) and the site Streams
+// (e2eStreams: tuner-a, tuner-b, radio-a, radio-b), as the harness writes
+// them. The Streams are written at install, with the rest, so the kubelet
+// has synced the bridge's <fullname>-streams long before the stream tests.
 func siteResources() []client.Object {
-	return []client.Object{
+	objs := []client.Object{
 		&v1alpha1.Phone{
 			ObjectMeta: metav1.ObjectMeta{Name: deskName, Namespace: namespace},
 			Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: deskMAC, Number: deskNumber, Label: deskLabel},
@@ -94,6 +96,10 @@ func siteResources() []client.Object {
 			}},
 		},
 	}
+	for _, s := range e2eStreams() {
+		objs = append(objs, &s)
+	}
+	return objs
 }
 
 // applyResource creates obj, or, if it exists, puts its spec back to obj's
@@ -119,6 +125,10 @@ func (h *harness) applyResource(ctx context.Context, obj client.Object) error {
 		c.Spec = want.Spec
 	case *v1alpha1.Person:
 		c := cur.(*v1alpha1.Person)
+		same = equality.Semantic.DeepEqual(c.Spec, want.Spec)
+		c.Spec = want.Spec
+	case *v1alpha1.Stream:
+		c := cur.(*v1alpha1.Stream)
 		same = equality.Semantic.DeepEqual(c.Spec, want.Spec)
 		c.Spec = want.Spec
 	default:
