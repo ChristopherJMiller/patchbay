@@ -19,7 +19,8 @@ import (
 
 // TestE2ELoad: the e2e build's test load, uploaded from
 // cisco79x5.E2ELoadFile, is stored and served, as e2e will do through the
-// agent; Cisco's own load, all pending, is refused (412).
+// agent; a body that is not Cisco's file is refused under Cisco's own load
+// by its pinned SHA-256 (422), and nothing is stored.
 func TestE2ELoad(t *testing.T) {
 	reg, err := builtin.Registry()
 	if err != nil {
@@ -51,7 +52,10 @@ func TestE2ELoad(t *testing.T) {
 			t.Errorf("Status: %s not present", f.Name)
 		}
 	}
-	if code, _ := d.Put(context.Background(), cisco79x5.DefaultLoad, "apps45.9-4-2SR4-3.sbn", bytes.NewReader([]byte("x"))); code != http.StatusPreconditionFailed {
-		t.Errorf("Cisco's pending file = %d, want 412", code)
+	if code, resp := d.Put(context.Background(), cisco79x5.DefaultLoad, "apps45.9-4-2SR4-3.sbn", bytes.NewReader([]byte("x"))); code != http.StatusUnprocessableEntity || resp.Stored {
+		t.Errorf("a wrong body for Cisco's file = %d %+v, want 422, not stored", code, resp)
+	}
+	if present(d.Status(), cisco79x5.DefaultLoad, "apps45.9-4-2SR4-3.sbn") {
+		t.Error("Status: the refused file is present")
 	}
 }
