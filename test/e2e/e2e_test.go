@@ -93,6 +93,13 @@ func TestCRDs(t *testing.T) {
 			if stream.Spec.Number != "705" {
 				t.Errorf("Stream king5 read back as %+v", stream.Spec)
 			}
+			var radio v1alpha1.Stream
+			if err := r.Get(ctx, "groovesalad", ns, &radio); err != nil {
+				t.Fatal(err)
+			}
+			if radio.Spec.Number != "750" || !strings.HasPrefix(radio.Spec.Source, "https://") {
+				t.Errorf("Stream groovesalad read back as %+v", radio.Spec)
+			}
 			return ctx
 		}).
 		Assess("a ring target naming both a phone and a softphone is rejected (CEL)", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {

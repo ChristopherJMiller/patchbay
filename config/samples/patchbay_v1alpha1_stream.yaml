@@ -1,4 +1,6 @@
-# Release B: dialling 705 plays live HDHomeRun audio.
+# Release B: dialling a Stream's number plays a live source (docs/streams.md).
+# A TV channel from an HDHomeRun: the tuner pool in the chart's
+# streams.tunerPools that lists 192.168.0.58 limits how many play at once.
 apiVersion: patchbay.chrismiller.xyz/v1alpha1
 kind: Stream
 metadata:
@@ -7,3 +9,14 @@ spec:
   number: "705"
   name: KING 5
   source: http://192.168.0.58:5004/auto/v5.1
+---
+# Internet radio: a direct stream URL (SomaFM's Icecast mount), never the
+# .pls playlist that lists it; no tuner, so no pool limits it.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Stream
+metadata:
+  name: groovesalad
+spec:
+  number: "750"
+  name: Groove Salad
+  source: https://ice2.somafm.com/groovesalad-128-mp3
