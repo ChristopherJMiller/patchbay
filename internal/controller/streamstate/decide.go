@@ -142,7 +142,8 @@ type Verdict struct {
 //  7. Failing: its last failure is SourceFailed or SourceEnded and newer
 //     than lastPlayed (SourceFailed);
 //  8. Busy: its pool runs Max sessions with listeners, none on its source
-//     (TunerBusy); a TunerBusy failure alone never makes it Failing;
+//     (TunerBusy); a TunerBusy failure alone never makes it Failing, nor
+//     replaces the source failure row 7 holds;
 //  9. Idle (Ready True).
 //
 // It is pure: no I/O, no clock but Now.
@@ -261,8 +262,11 @@ func observation(doc bridgeapi.Observations, id string) *bridgeapi.StreamObserva
 
 // fold copies the observation into the status fields: listeners (none
 // without an observation), the compiled pool, the later lastPlayed, and
-// the observation's lastFailure when it is newer than the status's. It
-// reports whether that failure is new. Times are compared as status keeps
+// the observation's lastFailure when it is newer than the status's,
+// except a TunerBusy refusal while the status holds a source failure no
+// call has played past (the stream stays Failing; the bridge keeps that
+// failure too: docs/plans/release-b.md §13). It reports whether that
+// failure is new. Times are compared as status keeps
 // them, to the second (metav1.Time's precision), so a failure is copied,
 // and its Event emitted, once.
 func (v *Verdict) fold(pool string, obs *bridgeapi.StreamObservations) (newFailure bool) {
@@ -285,6 +289,9 @@ func (v *Verdict) fold(pool string, obs *bridgeapi.StreamObservations) (newFailu
 	at := statusTime(f.At)
 	if !known || (v.LastFailure != nil && !at.After(v.LastFailure.At.Time)) {
 		return false
+	}
+	if reason == v1alpha1.StreamFailureTunerBusy && failing(v.LastFailure, v.LastPlayed) {
+		return false // a refusal never hides a broken source that no call has played since
 	}
 	v.LastFailure = &v1alpha1.StreamFailure{At: at, Reason: reason, Message: install.Text(f.Message, install.MaxStatusMessage)}
 	return true

@@ -275,10 +275,27 @@ func TestEventsOncePerFailure(t *testing.T) {
 		t.Errorf("events %q; want one SourceFailed", e)
 	}
 
-	// Refused: CallRefused, and Idle (a refusal is history).
+	// Refused while its source is still broken: nothing changes, no Event
+	// (a refusal never hides a source failure; docs/plans/release-b.md §13).
 	busy := "pool hdhomerun (1 at a time) is playing kiro7 (707)"
 	u.bridge.edit(func(o *bridgeapi.Observations) {
 		stream(o, "king5").LastFailure = &bridgeapi.Failure{At: t0.Add(time.Minute), Reason: bridgeapi.FailureTunerBusy, Message: busy}
+	})
+	u.poll()
+	u.reconcile("king5")
+	if e := u.rec.take(); len(e) != 0 {
+		t.Errorf("a refusal of a failing stream: events %q, want none", e)
+	}
+	if st := u.stream("king5").Status; st.State != streamstate.StateFailing || st.LastFailure == nil || st.LastFailure.Reason != v1alpha1.StreamFailureSourceEnded {
+		t.Errorf("a refusal of a failing stream: %s, lastFailure %+v; want Failing, SourceEnded kept", st.State, st.LastFailure)
+	}
+
+	// Played since, then refused: CallRefused, and Idle (a refusal is
+	// history).
+	u.bridge.edit(func(o *bridgeapi.Observations) {
+		s := stream(o, "king5")
+		s.LastPlayed = at(t0.Add(30 * time.Second))
+		s.LastFailure = &bridgeapi.Failure{At: t0.Add(2 * time.Minute), Reason: bridgeapi.FailureTunerBusy, Message: busy}
 	})
 	u.poll()
 	u.reconcile("king5")

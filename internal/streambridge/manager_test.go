@@ -494,3 +494,51 @@ func TestStopAll(t *testing.T) {
 	}
 	m.stopAll() // twice is fine
 }
+
+// TestTunerBusyKeepsSourceFailure: a TunerBusy refusal never replaces a
+// source failure no call has played past, so a stream whose source is
+// broken stays Failing in status after the pool frees up (its source was
+// never tried again); the refusal is still counted. After a play, a
+// refusal is the newest failure as before.
+func TestTunerBusyKeepsSourceFailure(t *testing.T) {
+	clk := clocktesting.NewFakeClock(epoch)
+	src := newFakeSource().failStart(srcKiro, errors.New("ffmpeg exited with status 8: Server returned 404 Not Found"))
+	m, reg := testManager(t, src, clk, doc(t, []streams.Pool{hdhomerun}, king5, kiro7, komo4))
+	broken := join(t, m, kiro7)
+	eventually(t, "kiro7's source to fail", func() bool { return ended(broken) })
+	if f := failure(t, m, "kiro7"); f.Reason != api.FailureSourceFailed {
+		t.Fatalf("kiro7's failure %+v, want SourceFailed", f)
+	}
+
+	clk.Step(time.Minute)
+	holder := join(t, m, king5)
+	popN(t, holder, 1)
+	for _, s := range []streams.Stream{kiro7, komo4} {
+		var busy *busyError
+		if _, err := m.join(streams.UUID(s.Name)); !errors.As(err, &busy) {
+			t.Fatalf("%s while king5 holds the pool: %v, want TunerBusy", s.Name, err)
+		}
+	}
+	if f := failure(t, m, "kiro7"); f.Reason != api.FailureSourceFailed || !strings.Contains(f.Message, "404") {
+		t.Errorf("kiro7's failure after a refusal: %+v, want its source's 404 kept", f)
+	}
+	if f := failure(t, m, "komo4"); f.Reason != api.FailureTunerBusy {
+		t.Errorf("komo4's failure %+v, want TunerBusy", f)
+	}
+	if v := gauge(t, reg, "patchbay_stream_bridge_refused_calls_total", "reason=tuner_busy"); v != 2 {
+		t.Errorf("refused tuner_busy %v, want both refusals", v)
+	}
+
+	// Once the stream has played since its failure, a refusal is recorded.
+	m.mu.Lock()
+	played := clk.Now()
+	m.mem(streams.UUID("kiro7")).lastPlayed = &played
+	m.mu.Unlock()
+	clk.Step(time.Second)
+	if _, err := m.join(streams.UUID("kiro7")); err == nil {
+		t.Fatal("kiro7 joined a full pool")
+	}
+	if f := failure(t, m, "kiro7"); f.Reason != api.FailureTunerBusy {
+		t.Errorf("a refusal after a play: %+v, want TunerBusy", f)
+	}
+}

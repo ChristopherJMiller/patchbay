@@ -500,3 +500,53 @@ func roundTrip(t *testing.T, s v1alpha1.StreamStatus) v1alpha1.StreamStatus {
 	}
 	return out
 }
+
+// TestRefusalKeepsSourceFailure: a TunerBusy refusal never replaces a
+// source failure that no call has played past. FOX 13's channel is gone
+// (404, Failing); a call to 713 is refused while KING 5 holds the tuner;
+// once the pool frees up, FOX 13 is still Failing with its 404, not Idle
+// (its source was never tried again), and no CallRefused Event is sent
+// (the bridge keeps the source failure too; refused_calls_total counts
+// the refusal).
+func TestRefusalKeepsSourceFailure(t *testing.T) {
+	in := input(t)
+	in.Stream = newStream("fox13", "713", foxSource)
+	gone := v1alpha1.StreamFailure{
+		At: metav1.NewTime(t0.Add(-10 * time.Minute)), Reason: v1alpha1.StreamFailureSourceFailed,
+		Message: "ffmpeg exited with status 8: Server returned 404 Not Found",
+	}
+	in.Stream.Status = v1alpha1.StreamStatus{State: streamstate.StateFailing, TunerPool: "hdhomerun", LastFailure: &gone}
+	refused := func(o *bridgeapi.Observations) {
+		stream(o, "fox13").LastFailure = &bridgeapi.Failure{
+			At: t0.Add(-time.Minute), Reason: bridgeapi.FailureTunerBusy, Message: "pool hdhomerun (1 at a time) is playing king5 (705)",
+		}
+	}
+	for name, busy := range map[string]bool{"the pool still full": true, "the pool free again": false} {
+		t.Run(name, func(t *testing.T) {
+			in := in
+			in.Snapshot.Document = loaded(in.Compiled)
+			refused(&in.Snapshot.Document)
+			if busy {
+				session(&in.Snapshot.Document, kingSource, bridgeapi.SessionPlaying, 1, "king5")
+			}
+			v := streamstate.Decide(in)
+			if v.State != streamstate.StateFailing || v.Ready.Reason != v1alpha1.ReasonSourceFailed ||
+				v.LastFailure == nil || v.LastFailure.Reason != v1alpha1.StreamFailureSourceFailed || !strings.Contains(v.Ready.Message, "404") {
+				t.Errorf("%s (%s: %s), lastFailure %+v; want Failing with the 404 kept", v.State, v.Ready.Reason, v.Ready.Message, v.LastFailure)
+			}
+			if evs := failures(v.Events); len(evs) != 0 {
+				t.Errorf("events %+v, want none for a refusal of a failing stream", evs)
+			}
+		})
+	}
+
+	// Once a call has played it since, a refusal is its newest failure.
+	refused(&in.Snapshot.Document)
+	in.Stream.Status.LastPlayed = ptime(t0.Add(-5 * time.Minute))
+	in.Stream.Status.State = streamstate.StateIdle
+	v := streamstate.Decide(in)
+	if v.LastFailure == nil || v.LastFailure.Reason != v1alpha1.StreamFailureTunerBusy || v.State != streamstate.StateIdle ||
+		!hasEvent(v.Events, corev1.EventTypeNormal, install.EventReasonCallRefused, "pool hdhomerun (1 at a time) is playing king5 (705)") {
+		t.Errorf("after a play: %s, lastFailure %+v, events %+v; want Idle, TunerBusy and CallRefused", v.State, v.LastFailure, v.Events)
+	}
+}

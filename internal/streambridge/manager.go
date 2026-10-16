@@ -92,6 +92,19 @@ type memory struct {
 	calls       uint64
 }
 
+// sourceFailing reports whether the stream's last failure is its source's
+// (SourceFailed or SourceEnded) and no call has played it since. A
+// TunerBusy refusal then leaves that failure in place (and is counted only
+// in refused_calls_total), so the stream stays Failing in status: the pool
+// freeing up does not make a broken source playable.
+func (mem *memory) sourceFailing() bool {
+	f := mem.lastFailure
+	if f == nil || f.Reason == api.FailureTunerBusy {
+		return false
+	}
+	return mem.lastPlayed == nil || f.At.After(*mem.lastPlayed)
+}
+
 // session is one source playing: one decoder.
 type session struct {
 	source, pool string
@@ -259,7 +272,9 @@ func (m *manager) join(id string) (*caller, error) {
 			}
 			if preempt == nil {
 				msg := busyMessage(st.Pool, max, held)
-				mem.lastFailure = &api.Failure{At: now, Reason: api.FailureTunerBusy, Message: msg}
+				if !mem.sourceFailing() { // a refusal never hides that the source is broken
+					mem.lastFailure = &api.Failure{At: now, Reason: api.FailureTunerBusy, Message: msg}
+				}
 				m.metrics.refused.WithLabelValues(refusedTunerBusy).Inc()
 				m.log.Info("call refused: the tuner pool is busy", "stream", st.Name, "number", st.Number, "pool", st.Pool, "message", msg)
 				return nil, &busyError{msg: msg}
