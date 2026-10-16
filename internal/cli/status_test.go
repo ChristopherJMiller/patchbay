@@ -145,7 +145,7 @@ func statusObjects() []client.Object {
 		Status: v1alpha1.StreamStatus{
 			State: "Failing",
 			LastFailure: &v1alpha1.StreamFailure{At: metav1.NewTime(testNow.Add(-30 * time.Second)), Reason: v1alpha1.StreamFailureSourceEnded,
-				Message: "ffmpeg exited with status 0: the source ended[2J"},
+				Message: "ffmpeg exited with status 0: the source ended\x1b[2J"},
 			Conditions: []metav1.Condition{
 				condition(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonSourceFailed, "2026-10-15T09:29:30Z: ffmpeg exited with status 0: the source ended"),
 				condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
