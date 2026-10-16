@@ -322,6 +322,13 @@ wording, has no third-party audio to license (espeak-ng's GPL covers the
 program, not its output), commits nothing binary, and is reproducible through
 the flake. The cost is a robotic voice, which is acceptable.
 
+*2026-10-15:* the voice is selectable. The image carries the prompts in
+espeak-ng and four public-domain Piper voices (ljspeech, kristin, norman,
+john), and the chart value `sounds.voice` (default `espeak`) picks the set
+the agent installs. Piper runs only at build time; voices fine-tuned from
+lessac (a research-only dataset) are excluded. docs/sounds.md has the
+licences.
+
 ### (d) Bundle → ConfigMap encoding under 1 MiB
 
 **Decision (landed, `internal/compile/configmap.go`):** one key per file, the
