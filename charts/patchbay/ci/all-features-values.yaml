@@ -45,3 +45,38 @@ phoneDefaults:
       start: "07:30"
       duration: 10h30m
       days: [Monday, Tuesday, Wednesday, Thursday, Friday]
+# The stream bridge with every branch: its image pinned, debug logs, a
+# placement, and two tuner pools with a call limit of their own.
+streamBridge:
+  image:
+    tag: "0.1.0"
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  ports:
+    control: 9193
+  logLevel: debug
+  podAnnotations:
+    example.com/note: lint-only
+  nodeSelector:
+    kubernetes.io/arch: amd64
+  tolerations:
+    - key: media
+      operator: Exists
+      effect: NoSchedule
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 1
+          preference:
+            matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [middle]
+streams:
+  callLimit: 90m
+  tunerPools:
+    - name: hdhomerun
+      hosts: ["192.0.2.58", "hdhomerun.example.com"]
+      max: 1
+    - name: second-tuner
+      hosts: ["tuner2.example.com"]
+      max: 2

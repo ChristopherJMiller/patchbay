@@ -397,30 +397,14 @@ func TestChartWithoutPersistence(t *testing.T) {
 }
 
 // TestChartPodMonitor: the PodMonitor scrapes the controller's metrics port
-// and the agent's /metrics on its control port.
+// and /metrics on the control port of the agent and of the stream bridge
+// (TestChartPodMonitorStreamBridge).
 func TestChartPodMonitor(t *testing.T) {
-	m := render(t, "podMonitor.enabled=true")
-	var pm struct {
-		Spec struct {
-			Selector struct {
-				MatchExpressions []struct {
-					Key    string   `json:"key"`
-					Values []string `json:"values"`
-				} `json:"matchExpressions"`
-			} `json:"selector"`
-			Endpoints []struct {
-				Port string `json:"port"`
-				Path string `json:"path"`
-			} `json:"podMetricsEndpoints"`
-		} `json:"spec"`
-	}
-	if err := yaml.Unmarshal(m.docs["PodMonitor/"+release], &pm); err != nil {
-		t.Fatal(err)
-	}
+	pm := podMonitor(t, render(t, "podMonitor.enabled=true"))
 	if got := fmt.Sprint(pm.Spec.Endpoints); got != "[{metrics /metrics} {control /metrics}]" {
 		t.Errorf("PodMonitor endpoints %s", got)
 	}
-	if got := fmt.Sprint(pm.Spec.Selector.MatchExpressions); got != "[{app.kubernetes.io/component [controller pbx]}]" {
+	if got := fmt.Sprint(pm.Spec.Selector.MatchExpressions); got != "[{app.kubernetes.io/component [controller pbx stream-bridge]}]" {
 		t.Errorf("PodMonitor selects %s", got)
 	}
 }

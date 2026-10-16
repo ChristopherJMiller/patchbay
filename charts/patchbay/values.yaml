@@ -131,13 +131,49 @@ sounds:
 # Off, no bridge is configured and every Stream's number plays "not
 # available". The chart renders its AudioSocket address,
 # <fullname>-streams.<namespace>.svc:<ports.audioSocket>, into the settings.
+#
+# The bridge is one Deployment, <fullname>-streams (one replica, Recreate:
+# two bridges would hold two tuners for one channel), and a Service of that
+# name. It mounts the <fullname>-streams ConfigMap, which the controller
+# compiles from the Streams (streams.json), so the pod waits in
+# ContainerCreating until the controller's first compile. It holds no
+# Kubernetes credentials, and serves its observations, metrics and probes
+# on the control port without a token (nothing in them is secret). A
+# restart of the bridge drops every stream call; phone calls are unaffected.
 streamBridge:
   enabled: true
+  # The bridge's image: patchbay plus Alpine's ffmpeg (the Dockerfile's
+  # stream-bridge target), Apache-2.0 AND GPL-3.0-or-later.
+  image:
+    repository: ghcr.io/christopherjmiller/patchbay-stream-bridge
+    # Defaults to the chart's appVersion.
+    tag: ""
+    # Pin by digest in production ("sha256:..."); a released chart does.
+    digest: ""
+    pullPolicy: IfNotPresent
   ports:
     # AudioSocket, from Asterisk to the bridge (design §9: 9092).
     audioSocket: 9092
     # The bridge's control API: observations for the controller, metrics.
     control: 9093
+  # zap log level: debug, info or error. One line per call and per source
+  # started, stopped or failed; never any audio.
+  logLevel: info
+  # One ffmpeg per source playing (at most 8 at once), each decoding to
+  # 16 kHz mono.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 512Mi
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # At shutdown the bridge hangs up every call and stops ffmpeg (2 s, then
+  # SIGKILL).
+  terminationGracePeriodSeconds: 10
 
 # Stream settings, rendered into settings.json's streams
 # (compile.StreamSettings); a change rolls only the controller.
@@ -285,8 +321,9 @@ firmware:
     # Keep the volume on `helm uninstall`; restaging firmware is manual.
     keep: true
 
-# A prometheus-operator PodMonitor for the controller's metrics and the
-# agent's (/metrics on its control port, no token).
+# A prometheus-operator PodMonitor for the controller's metrics, the
+# agent's and the stream bridge's (/metrics on their control ports, no
+# token).
 podMonitor:
   enabled: false
   # Without release: prometheus, this cluster's Prometheus ignores it.

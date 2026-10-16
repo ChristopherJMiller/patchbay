@@ -40,14 +40,16 @@ rules:
     resources: [phones/finalizers, softphones/finalizers]
     verbs: [update]
   # Its cache lists and watches every ConfigMap of the namespace (pbx-config,
-  # and the settings an Event may regard); it creates pbx-config, and
-  # updates only that one.
+  # <fullname>-streams, and the settings an Event may regard); it creates
+  # pbx-config and <fullname>-streams (streams.json, which the bundle
+  # reconciler writes first, with or without a stream bridge), and updates
+  # only those two.
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list, watch, create]
   - apiGroups: [""]
     resources: [configmaps]
-    resourceNames: [{{ $fullname }}-pbx-config]
+    resourceNames: [{{ $fullname }}-pbx-config, {{ include "patchbay.streamsName" . }}]
     verbs: [update]
   # Secrets: it creates and completes the device Secrets
   # (patchbay-<device ID>, one name per resource, so no resourceNames),
@@ -139,6 +141,11 @@ spec:
             - --fullname={{ $fullname }}
             - --settings-file=/etc/patchbay/settings/settings.json
             - --agent-url=http://{{ $fullname }}-agent.{{ .Release.Namespace }}.svc:{{ .Values.pbx.ports.control }}
+            {{- if .Values.streamBridge.enabled }}
+            # The bridge's control API (install.StreamBridgeURL): observations
+            # every 5 s, which decide each Stream's status.
+            - --stream-bridge-url=http://{{ include "patchbay.streamsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.streamBridge.ports.control }}
+            {{- end }}
             - --leader-elect={{ .Values.controller.leaderElect }}
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081

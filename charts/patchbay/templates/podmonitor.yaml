@@ -1,7 +1,8 @@
 {{- if .Values.podMonitor.enabled -}}
-# Scrapes the controller's metrics (its metrics port) and the agent's
-# (/metrics on the control port, which needs no token; design §7). Each
-# endpoint names a port only one of the two pods has. Needs the
+# Scrapes the controller's metrics (its metrics port), and the agent's and
+# the stream bridge's (/metrics on their control ports, which need no
+# token; design §7). Each endpoint names a port: metrics only the
+# controller has, control the PBX pod and the bridge. Needs the
 # prometheus-operator CRDs.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
@@ -21,7 +22,7 @@ spec:
     matchExpressions:
       - key: app.kubernetes.io/component
         operator: In
-        values: [controller, pbx]
+        values: [controller, pbx{{ if .Values.streamBridge.enabled }}, stream-bridge{{ end }}]
   podMetricsEndpoints:
     - port: metrics
       path: /metrics

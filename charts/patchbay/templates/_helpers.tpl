@@ -56,6 +56,22 @@ app.kubernetes.io/component: {{ .component }}
 {{- include "patchbay.imageRef" $img -}}
 {{- end -}}
 
+{{/* The stream bridge's image (patchbay + ffmpeg). The tag defaults to appVersion. */}}
+{{- define "patchbay.streamBridgeImage" -}}
+{{- $img := deepCopy .Values.streamBridge.image -}}
+{{- if not $img.tag -}}{{- $_ := set $img "tag" .Chart.AppVersion -}}{{- end -}}
+{{- include "patchbay.imageRef" $img -}}
+{{- end -}}
+
+{{/*
+The stream bridge's objects (Deployment, Service, ServiceAccount) and the
+ConfigMap the controller compiles streams.json into are all
+<fullname>-streams (install.Names.StreamBridge and .StreamsConfigMap).
+*/}}
+{{- define "patchbay.streamsName" -}}
+{{- printf "%s-streams" (include "patchbay.fullname" .) -}}
+{{- end -}}
+
 {{- define "patchbay.controllerServiceAccountName" -}}
 {{- printf "%s-controller" (include "patchbay.fullname" .) -}}
 {{- end -}}

@@ -264,8 +264,9 @@ func TestChartCLIFindsTheAgent(t *testing.T) {
 // TestChartControllerRole: least privilege. The controller reads its
 // resources and writes only their status (and their finalizers, for
 // blockOwnerDeletion); creates ConfigMaps and Secrets and updates them,
-// pbx-config by name; emits Events; holds the install's own Lease by
-// name; never deletes or patches a resource it manages.
+// pbx-config and <fullname>-streams by name; emits Events; holds the
+// install's own Lease by name; never deletes or patches a resource it
+// manages.
 func TestChartControllerRole(t *testing.T) {
 	role := get[rbacv1.Role](t, render(t), "Role", release+"-controller")
 	group := []string{"patchbay.chrismiller.xyz"}
@@ -275,7 +276,7 @@ func TestChartControllerRole(t *testing.T) {
 		{APIGroups: group, Resources: []string{"phones/status", "softphones/status", "people/status", "streams/status"}, Verbs: []string{"update"}},
 		{APIGroups: group, Resources: []string{"phones/finalizers", "softphones/finalizers"}, Verbs: []string{"update"}},
 		{APIGroups: core, Resources: []string{"configmaps"}, Verbs: []string{"get", "list", "watch", "create"}},
-		{APIGroups: core, Resources: []string{"configmaps"}, ResourceNames: []string{install.NewNames(release).ConfigMap}, Verbs: []string{"update"}},
+		{APIGroups: core, Resources: []string{"configmaps"}, ResourceNames: []string{install.NewNames(release).ConfigMap, install.NewNames(release).StreamsConfigMap}, Verbs: []string{"update"}},
 		{APIGroups: core, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "update"}},
 		{APIGroups: []string{"events.k8s.io"}, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},
 		{APIGroups: core, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},

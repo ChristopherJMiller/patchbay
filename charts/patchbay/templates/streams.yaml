@@ -1,0 +1,168 @@
+{{- if .Values.streamBridge.enabled -}}
+{{- $name := include "patchbay.streamsName" . -}}
+{{- $b := .Values.streamBridge -}}
+# The stream bridge (release B, design §9; docs/plans/release-b.md §6.3):
+# `patchbay stream-bridge`, which Asterisk dials over AudioSocket for a
+# Stream's number, plays the Stream's live source through one ffmpeg per
+# source, shared by everyone listening. It holds no Kubernetes credentials
+# (no token, no Role): its only input is streams.json from the
+# <fullname>-streams ConfigMap the controller compiles, mounted read-only;
+# its control port serves the controller its observations, unauthenticated
+# and read only (no secret is in them). The flag names and paths are
+# internal/streambridge's (Flag*, Default*); test/chart keeps them in step.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stream-bridge
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stream-bridge
+spec:
+  # Exactly one, never a value: two bridges would run two ffmpegs for one
+  # channel, two tuners, and the tuner pools' limits would break. Recreate,
+  # so an upgrade never runs two either (stream calls drop meanwhile).
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "stream-bridge") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "patchbay.labels" . | nindent 8 }}
+        app.kubernetes.io/component: stream-bridge
+      {{- with $b.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $b.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stream-bridge
+          image: {{ include "patchbay.streamBridgeImage" . | quote }}
+          imagePullPolicy: {{ $b.image.pullPolicy }}
+          args:
+            - stream-bridge
+            - --listen=:{{ $b.ports.audioSocket }}
+            - --control-listen=:{{ $b.ports.control }}
+            - --streams-file=/etc/patchbay/streams/streams.json
+            - --ffmpeg=/usr/bin/ffmpeg
+            - --zap-log-level={{ $b.logLevel }}
+          ports:
+            - name: audiosocket
+              containerPort: {{ $b.ports.audioSocket }}
+              protocol: TCP
+            - name: control
+              containerPort: {{ $b.ports.control }}
+              protocol: TCP
+          # Ready once it has loaded a streams.json and run ffmpeg -version.
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: control
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: control
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: control
+            periodSeconds: 20
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with $b.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # The whole ConfigMap volume, not a subPath: the kubelet swaps
+            # its ..data symlink on an update, which the bridge follows.
+            - name: streams
+              mountPath: /etc/patchbay/streams
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Compiled by the controller (the bundle reconciler, before
+        # pbx-config). Not optional: until it exists the pod waits in
+        # ContainerCreating (the kubelet retries the mount), as the PBX pod
+        # waits for the agent token.
+        - name: streams
+          configMap:
+            name: {{ $name }}
+            items:
+              - key: streams.json
+                path: streams.json
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+      {{- with $b.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $b.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Asterisk (on the PBX node's host network) dials audiosocket at the
+# address settings.json's streamBridge names; the controller polls control.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stream-bridge
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "stream-bridge") | nindent 4 }}
+  ports:
+    - name: audiosocket
+      port: {{ $b.ports.audioSocket }}
+      targetPort: audiosocket
+      protocol: TCP
+    - name: control
+      port: {{ $b.ports.control }}
+      targetPort: control
+      protocol: TCP
+{{- end }}

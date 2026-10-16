@@ -1,0 +1,10 @@
+# The stream bridge off (streamBridge.enabled: false): no bridge objects,
+# no --stream-bridge-url, settings.json without streamBridge, and every
+# Stream's number plays "not available".
+pbx:
+  nodeName: top
+  address: 192.0.2.10
+streamBridge:
+  enabled: false
+podMonitor:
+  enabled: true

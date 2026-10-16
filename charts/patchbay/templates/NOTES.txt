@@ -6,9 +6,9 @@ SIP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.sip }} and TFTP at {{ .Val
 The controller mints the install's Secrets (the agent token
 {{ include "patchbay.agentTokenSecretName" . }}, the AMI password, one per device) and
 compiles every Phone, Softphone, Person and Stream into
-{{ include "patchbay.fullname" . }}-pbx-secrets, then {{ include "patchbay.fullname" . }}-pbx-config. The PBX pod waits
-in ContainerCreating until the token exists, and Asterisk starts once the
-agent has applied the first bundle. Nothing to create by hand.
+{{ include "patchbay.streamsName" . }} (streams.json), {{ include "patchbay.fullname" . }}-pbx-secrets, then {{ include "patchbay.fullname" . }}-pbx-config.
+The PBX pod waits in ContainerCreating until the token exists, and Asterisk
+starts once the agent has applied the first bundle. Nothing to create by hand.
 
 Add phones as resources (config/samples has one of each), then:
   patchbay status -n {{ .Release.Namespace }}
@@ -19,16 +19,31 @@ Check the PBX:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "patchbay.fullname" . }}-pbx -c asterisk -- \
     asterisk -C /var/lib/patchbay/config/current/asterisk/asterisk.conf -rx 'pjsip show endpoints'
+{{- if .Values.streamBridge.enabled }}
+
+Streams (TV from a tuner, internet radio) play through the stream bridge,
+deploy/{{ include "patchbay.streamsName" . }} (one replica): dialling a Stream's number plays its
+source, and each call ends after streams.callLimit ({{ .Values.streams.callLimit }}). The bridge
+starts once the controller has compiled {{ include "patchbay.streamsName" . }}. See what plays:
+  kubectl -n {{ .Release.Namespace }} get streams -o wide
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "patchbay.streamsName" . }} {{ .Values.streamBridge.ports.control }}
+  curl -s http://127.0.0.1:{{ .Values.streamBridge.ports.control }}/v1/observations
+{{- else }}
+
+The stream bridge is off (streamBridge.enabled=false): every Stream's number
+plays "not available".
+{{- end }}
 
 The controller's own install objects are not Helm's: `helm uninstall` leaves
 them. Once the controller is gone, remove them by name:
-  kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config
+  kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config {{ include "patchbay.streamsName" . }}
   kubectl -n {{ .Release.Namespace }} delete secret {{ include "patchbay.fullname" . }}-pbx-secrets {{ include "patchbay.fullname" . }}-ami {{ include "patchbay.agentTokenSecretName" . }}
 Not by label: each device's Secret (patchbay-<id>: its SIP password, a
 softphone's provisioning token) carries the same labels, and goes with its
-Phone or Softphone. The CRDs, and so the Phones, survive uninstall; delete
-the device Secrets too and every phone needs re-provisioning after a
-reinstall (a 7945 a power-cycle, a softphone `qr --reissue`).
+Phone or Softphone. The CRDs, and so the Phones and Streams, survive
+uninstall; delete the device Secrets too and every phone needs
+re-provisioning after a reinstall (a 7945 a power-cycle, a softphone
+`qr --reissue`).
 
 Runbook (symptoms, causes, what to do): docs/operations.md in the patchbay
 repository.
