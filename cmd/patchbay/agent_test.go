@@ -117,8 +117,13 @@ type agentFixture struct {
 	done   chan error
 }
 
-// newAgentFixture starts the agent. Without sounds the image's prompts are
-// missing; change, if not nil, edits the options first.
+// promptAudio is what the fixture's image holds for one prompt file of one
+// voice.
+func promptAudio(voice, name string) string { return "audio " + name + " in " + voice }
+
+// newAgentFixture starts the agent. With sounds the image carries every
+// prompt in every voice (<src>/<voice>/<name>), without them none;
+// change, if not nil, edits the options first.
 func newAgentFixture(t *testing.T, withSounds bool, change func(*agentOptions)) *agentFixture {
 	t.Helper()
 	// A short directory: a unix socket's path is limited to 108 bytes.
@@ -129,9 +134,14 @@ func newAgentFixture(t *testing.T, withSounds bool, change func(*agentOptions)) 
 	t.Cleanup(func() { _ = os.RemoveAll(sock) })
 	persistent, src := t.TempDir(), t.TempDir()
 	if withSounds {
-		for _, name := range sounds.Files() {
-			if err := os.WriteFile(filepath.Join(src, name), []byte("audio "+name), 0o600); err != nil {
+		for _, voice := range sounds.Voices {
+			if err := os.Mkdir(filepath.Join(src, voice), 0o700); err != nil {
 				t.Fatal(err)
+			}
+			for _, name := range sounds.Files() {
+				if err := os.WriteFile(filepath.Join(src, voice, name), []byte(promptAudio(voice, name)), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
@@ -147,7 +157,7 @@ func newAgentFixture(t *testing.T, withSounds bool, change func(*agentOptions)) 
 			listen: freeAddr(t), namespace: testNamespace, bundleConfigMap: testConfigMap, secrets: testSecret,
 			liveDir: t.TempDir(), firmwareDir: filepath.Join(persistent, "firmware"),
 			stateDir: filepath.Join(persistent, "state"), soundsDir: t.TempDir(), soundsSrc: src,
-			fetchSocket: filepath.Join(sock, "fetches.sock"), fsGroup: -1,
+			soundsVoice: sounds.DefaultVoice, fetchSocket: filepath.Join(sock, "fetches.sock"), fsGroup: -1,
 			deviceHTTPListen: freeAddr(t), amiAddress: freeAddr(t), sipBind: "192.168.0.240:5060",
 		},
 		bundle: b, logs: &logBuffer{}, values: house.Values(), done: make(chan error, 1),
@@ -257,8 +267,8 @@ func TestAgentWiring(t *testing.T) {
 		t.Errorf("observations without the token: %d, want 401", code)
 	}
 	for _, name := range sounds.Files() {
-		if _, err := os.Stat(filepath.Join(f.opts.soundsDir, name)); err != nil {
-			t.Errorf("prompt %s not installed: %v", name, err)
+		if b, err := os.ReadFile(filepath.Join(f.opts.soundsDir, name)); err != nil || string(b) != promptAudio(sounds.DefaultVoice, name) {
+			t.Errorf("prompt %s: %q, %v; want the %s voice's installed", name, b, err, sounds.DefaultVoice)
 		}
 	}
 
@@ -381,6 +391,85 @@ func TestAgentRefusesAnotherSIPBind(t *testing.T) {
 	}
 	if code, body := f.do(http.MethodGet, api.PathReadyz, nil, false); code != http.StatusServiceUnavailable {
 		t.Errorf("/readyz = %d %q, want 503", code, body)
+	}
+}
+
+// TestAgentSoundsVoice: --sounds-voice defaults to espeak and its help
+// lists every voice.
+func TestAgentSoundsVoice(t *testing.T) {
+	cmd, _, err := newRootCmd().Find([]string{"agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl := cmd.Flags().Lookup("sounds-voice")
+	if fl == nil {
+		t.Fatal("the agent has no --sounds-voice")
+	}
+	if fl.DefValue != "espeak" {
+		t.Errorf("--sounds-voice defaults to %q, want espeak", fl.DefValue)
+	}
+	if !strings.Contains(fl.Usage, strings.Join(sounds.Voices, ", ")) {
+		t.Errorf("--sounds-voice's help %q does not list the voices", fl.Usage)
+	}
+}
+
+// TestAgentRefusesAnUnknownVoice: the agent does not start with a voice
+// the image does not carry, naming it and the voices, before it reads any
+// kubeconfig.
+func TestAgentRefusesAnUnknownVoice(t *testing.T) {
+	t.Setenv(agentTokenEnv, "test-token")
+	for _, bad := range []string{"lessac", "", "../espeak"} {
+		_, err := run(t, context.Background(), append(slices.Clone(agentArgs), "--sounds-voice", bad)...)
+		if err == nil {
+			t.Fatalf("--sounds-voice %q: the agent started", bad)
+		}
+		for _, want := range []string{"--sounds-voice", `"` + bad + `"`, strings.Join(sounds.Voices, ", ")} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("--sounds-voice %q: %v, want it to say %s", bad, err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "kubeconfig") {
+			t.Errorf("--sounds-voice %q: %v; the voice must be refused before any kubeconfig", bad, err)
+		}
+	}
+}
+
+// TestAgentInstallsTheChosenVoice: the prompts installed are the chosen
+// voice's, under the names the dialplan plays, and the agent is ready.
+func TestAgentInstallsTheChosenVoice(t *testing.T) {
+	voice := sounds.Voices[len(sounds.Voices)-1]
+	f := newAgentFixture(t, true, func(o *agentOptions) { o.soundsVoice = voice })
+	f.eventually("ready", func() (bool, string) {
+		code, body := f.do(http.MethodGet, api.PathReadyz, nil, false)
+		return code == http.StatusOK, fmt.Sprint(code, " ", body)
+	})
+	for _, name := range sounds.Files() {
+		if b, err := os.ReadFile(filepath.Join(f.opts.soundsDir, name)); err != nil || string(b) != promptAudio(voice, name) {
+			t.Errorf("prompt %s: %q, %v; want the %s voice's", name, b, err, voice)
+		}
+	}
+}
+
+// TestAgentNotReadyWithoutTheVoice: an image that lacks the chosen voice
+// (only the others are there) keeps the agent unready, and /readyz names a
+// missing prompt.
+func TestAgentNotReadyWithoutTheVoice(t *testing.T) {
+	f := newAgentFixture(t, true, func(o *agentOptions) {
+		if err := os.RemoveAll(filepath.Join(o.soundsSrc, sounds.DefaultVoice)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	f.eventually("config live", func() (bool, string) {
+		code, body := f.do(http.MethodGet, api.PathObservations, nil, true)
+		var obs api.Observations
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &obs) != nil {
+			return false, fmt.Sprint(code, " ", body)
+		}
+		return obs.Agent.AppliedVersion == f.bundle.Version, fmt.Sprintf("%+v", obs.Agent)
+	})
+	if code, body := f.do(http.MethodGet, api.PathReadyz, nil, false); code != http.StatusServiceUnavailable ||
+		!strings.Contains(body, compile.SoundNoEmergency) {
+		t.Fatalf("/readyz = %d %q, want 503 naming a missing prompt", code, body)
 	}
 }
 

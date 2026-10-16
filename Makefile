@@ -148,7 +148,7 @@ build: ## Build bin/patchbay.
 GO_TAGS ?=
 
 .PHONY: sounds
-sounds: ## Render the sound prompts into build/sounds (espeak-ng + ffmpeg; the image copies them).
+sounds: ## Render the sound prompts in every voice into build/sounds/<voice> (espeak-ng + ffmpeg; the image copies them).
 	hack/gen-sounds.sh build/sounds
 
 .PHONY: image

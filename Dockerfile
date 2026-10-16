@@ -42,9 +42,10 @@ LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/pat
       org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=build /out/patchbay /patchbay
-# The sound prompts, rendered by `make sounds` (hack/gen-sounds.sh) before
-# the build; the agent installs them into the sounds volume at start and
-# is not ready without them.
+# The sound prompts in every voice, <voice>/<name>.{ulaw,g722}, rendered by
+# `make sounds` (hack/gen-sounds.sh) before the build; the agent installs
+# one voice (--sounds-voice) into the sounds volume at start and is not
+# ready without it.
 COPY build/sounds/ /usr/share/patchbay/sounds/
 USER 65532:65532
 ENTRYPOINT ["/patchbay"]

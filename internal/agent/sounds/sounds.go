@@ -1,14 +1,15 @@
 // Package sounds installs the PBX's sound prompts (docs/plans/release-a.md
-// §2(c), W2.9).
+// §2(c), W2.9; docs/sounds.md).
 //
 // The Asterisk image ships no prompts, and recordings are never committed,
 // so the patchbay image carries prompts generated at build time
-// (hack/gen-sounds.sh: espeak-ng text-to-speech from text in the repo) under
-// DefaultSource. At start the agent copies them into the sounds volume,
-// mounted at compile.SoundsDir in the agent (read-write) and in Asterisk
-// (read-only), where the compiled dialplan plays them by absolute path. The
-// agent reports ready only once every prompt is there (Check), so Asterisk
-// never answers 911 with a missing announcement.
+// (hack/gen-sounds.sh: text-to-speech from text in the repo) under
+// DefaultSource, in every voice of Voices, a directory each. At start the
+// agent copies the voice it is given (--sounds-voice) into the sounds
+// volume, mounted at compile.SoundsDir in the agent (read-write) and in
+// Asterisk (read-only), where the compiled dialplan plays them by absolute
+// path. The agent reports ready only once every prompt is there (Check), so
+// Asterisk never answers 911 with a missing announcement.
 package sounds
 
 import (
@@ -18,13 +19,38 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 )
 
-// DefaultSource is where the image carries the generated prompts (the
-// Dockerfile copies build/sounds/ there).
+// DefaultSource is where the image carries the generated prompts, each
+// voice in <DefaultSource>/<voice>/ (the Dockerfile copies build/sounds/
+// there).
 const DefaultSource = "/usr/share/patchbay/sounds"
+
+// DefaultVoice is the voice the agent installs unless told otherwise:
+// espeak-ng's, the prompts' first voice.
+const DefaultVoice = "espeak"
+
+// Voices are the voices the image carries the prompts in: an allowlist,
+// and nothing else is accepted (CheckVoice). hack/gen-sounds.sh renders
+// exactly these (the tests compare its --list). Each one's licence lets a
+// public image carry what it says (docs/sounds.md):
+//
+//   - espeak: espeak-ng's own en-us voice, never an mbrola mb-* voice
+//     (whose data has a licence of its own). espeak-ng's GPL-3.0 covers the
+//     program, which runs only at build time, not its output.
+var Voices = []string{DefaultVoice}
+
+// CheckVoice reports an error, listing Voices, unless voice is one of them.
+func CheckVoice(voice string) error {
+	if slices.Contains(Voices, voice) {
+		return nil
+	}
+	return fmt.Errorf("sounds: unknown voice %q: the voices are %s", voice, strings.Join(Voices, ", "))
+}
 
 // FileMode is every installed prompt's mode: Asterisk runs as another uid
 // and reads them as "other".
@@ -49,26 +75,32 @@ func Files() []string {
 	return out
 }
 
-// Install copies every prompt file from src into dst, each one written to a
+// Install copies every prompt file of voice, from src/<voice>, into dst
+// under the names the dialplan plays (Files), each one written to a
 // temporary file in dst and renamed into place with FileMode, so Asterisk
 // never plays a half-written prompt and an agent restart (dst survives it)
-// simply replaces them. It fails, naming the file, if one is missing or
-// empty in src, and checks dst afterwards (Check).
-func Install(src, dst string) error {
+// simply replaces them. It refuses a voice outside Voices (CheckVoice),
+// fails, naming the file, if one is missing or empty in src/<voice>, and
+// checks dst afterwards (Check).
+func Install(src, voice, dst string) error {
+	if err := CheckVoice(voice); err != nil {
+		return err
+	}
+	from := filepath.Join(src, voice)
 	var errs []error
 	for _, name := range Files() {
-		if err := install(filepath.Join(src, name), dst, name); err != nil {
+		if err := install(filepath.Join(from, name), dst, name); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("sounds: installing the prompts from %s: %w", src, err)
+		return fmt.Errorf("sounds: installing the %s prompts from %s: %w", voice, from, err)
 	}
 	return Check(dst)
 }
 
 func install(from, dst, name string) (err error) {
-	in, err := os.Open(from) //nolint:gosec // G304: the path is the agent's own flag plus a fixed prompt name.
+	in, err := os.Open(from) //nolint:gosec // G304: the path is the agent's own flag, an allowed voice and a fixed prompt name.
 	if err != nil {
 		return err
 	}

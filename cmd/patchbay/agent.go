@@ -53,6 +53,7 @@ type agentOptions struct {
 	stateDir    string
 	soundsDir   string
 	soundsSrc   string
+	soundsVoice string
 	fetchSocket string
 	fsGroup     int
 
@@ -82,8 +83,9 @@ func newAgentCmd(g *globalFlags) *cobra.Command {
   - serves the control API (--listen, bearer token) and /metrics.
 
 It reports ready once the first config version is live and the sound prompts
-are installed (--sounds-src into --sounds-dir), so Asterisk starts only on
-valid config. It applies only versions compiled for --sip-bind, the
+are installed (--sounds-voice, from --sounds-src into --sounds-dir), so
+Asterisk starts only on valid config. It refuses to start with a voice the
+image does not carry. It applies only versions compiled for --sip-bind, the
 address and port this pod's Asterisk binds: a reload cannot move them.`,
 		Args: cobra.NoArgs,
 	}
@@ -98,7 +100,9 @@ address and port this pod's Asterisk binds: a reload cannot move them.`,
 	f.StringVar(&o.stateDir, "state-dir", layout.StateDir,
 		"the agent's persistent state (spent provisioning tokens), on the firmware volume")
 	f.StringVar(&o.soundsDir, "sounds-dir", compile.SoundsDir, "where the sound prompts are installed for Asterisk")
-	f.StringVar(&o.soundsSrc, "sounds-src", sounds.DefaultSource, "where the image carries the sound prompts")
+	f.StringVar(&o.soundsSrc, "sounds-src", sounds.DefaultSource, "where the image carries the sound prompts, a directory per voice")
+	f.StringVar(&o.soundsVoice, "sounds-voice", sounds.DefaultVoice,
+		"the sound prompts' voice: one of "+strings.Join(sounds.Voices, ", "))
 	f.StringVar(&o.fetchSocket, "fetch-socket", layout.FetchSocket, "the unix socket the file server reports its fetches to")
 	f.IntVar(&o.fsGroup, "fs-group", layout.DefaultFSGroup,
 		"the group every live config file gets (the pod's fsGroup, Asterisk's group)")
@@ -166,6 +170,9 @@ func (o agentOptions) check() error {
 			errs = append(errs, err)
 		}
 	}
+	if err := sounds.CheckVoice(o.soundsVoice); err != nil {
+		errs = append(errs, fmt.Errorf("--sounds-voice: %w", err))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
@@ -179,8 +186,10 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	// The prompts first: the agent is not ready without them, and Asterisk
 	// starts only once it is. A failure is reported by /readyz, so the pod
 	// says why it never becomes ready instead of restarting in a loop.
-	if err := sounds.Install(o.soundsSrc, o.soundsDir); err != nil {
-		log.Error(err, "the sound prompts are not installed; not ready")
+	if err := sounds.Install(o.soundsSrc, o.soundsVoice, o.soundsDir); err != nil {
+		log.Error(err, "the sound prompts are not installed; not ready", "voice", o.soundsVoice)
+	} else {
+		log.Info("sound prompts installed", "voice", o.soundsVoice)
 	}
 
 	reg, err := builtin.Registry()
