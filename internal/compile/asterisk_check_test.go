@@ -167,6 +167,7 @@ func startAsterisk(t *testing.T, env checkEnv, name string, b compile.Bundle, se
 		"--tmpfs", "/var/run/asterisk:" + tmpfs,
 		"--tmpfs", "/var/spool/asterisk:" + tmpfs,
 		"--tmpfs", "/var/log/asterisk:" + tmpfs,
+		"--tmpfs", recordDir + ":" + tmpfs,
 		"--mount", "type=bind,source=" + live + ",target=" + compile.LiveDir + ",readonly",
 		"--mount", "type=bind,source=" + env.clientDir + ",target=" + clientDir + ",readonly",
 		"--entrypoint", "/usr/sbin/asterisk",

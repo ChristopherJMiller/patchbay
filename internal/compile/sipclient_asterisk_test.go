@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,6 +33,9 @@ const sipClientEnv = "PATCHBAY_CHECK_SIP_CLIENT"
 func TestMain(m *testing.M) {
 	if mode := os.Getenv(sipClientEnv); mode != "" {
 		os.Exit(runSIPClient(mode))
+	}
+	if dir := os.Getenv(audioSocketEnv); dir != "" {
+		os.Exit(runAudioSocketServer(dir))
 	}
 	os.Exit(m.Run())
 }
@@ -47,6 +51,10 @@ type sipClient struct {
 	expires   int // REGISTER: the expiry asked for
 	target    string
 	contact   string // the Contact host: 127.0.0.1 unless SIP_CONTACT_HOST says otherwise
+	// hold is how long an answered call stays up before the client sends
+	// BYE (SIP_HOLD, a Go duration; zero: at once). A BYE from the PBX
+	// first ends it.
+	hold time.Duration
 }
 
 func clientFromEnv() (sipClient, error) {
@@ -59,22 +67,26 @@ func clientFromEnv() (sipClient, error) {
 		target:    os.Getenv("SIP_TARGET"),
 		contact:   cmp.Or(os.Getenv("SIP_CONTACT_HOST"), "127.0.0.1"),
 	}
-	var err1, err2 error
+	var err1, err2, err3 error
 	c.port, err1 = strconv.Atoi(os.Getenv("SIP_PORT"))
 	c.expires, err2 = strconv.Atoi(os.Getenv("SIP_EXPIRES"))
-	return c, errors.Join(err1, err2)
+	if h := os.Getenv("SIP_HOLD"); h != "" {
+		c.hold, err3 = time.ParseDuration(h)
+	}
+	return c, errors.Join(err1, err2, err3)
 }
 
 // runSIPClient prints "status=<code> challenged=<bool> expires=<granted>"
-// for a REGISTER, or "status=<code>" for a call, and exits 0 when the
-// exchange completed (whatever the status) or 2 when it could not.
+// for a REGISTER, or "status=<code>" for a call (with SIP_HOLD,
+// "status=<code> endedBy=<local|remote> held=<seconds>"), and exits 0 when
+// the exchange completed (whatever the status) or 2 when it could not.
 func runSIPClient(mode string) int {
 	c, err := clientFromEnv()
 	if err != nil {
 		fmt.Println("error:", err)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second+c.hold)
 	defer cancel()
 	switch mode {
 	case "register":
@@ -93,7 +105,8 @@ func runSIPClient(mode string) int {
 
 // agent starts a user agent listening on 127.0.0.1:port over UDP and TCP,
 // as a phone does, and a client sending from it.
-func (c sipClient) agent(ctx context.Context) (*sipgo.Client, sip.ContactHeader, func(), error) {
+// onBye, when set, answers the BYEs the PBX sends.
+func (c sipClient) agent(ctx context.Context, onBye sipgo.RequestHandler) (*sipgo.Client, sip.ContactHeader, func(), error) {
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("patchbay-asterisk-check"), sipgo.WithUserAgentHostname("127.0.0.1"))
 	if err != nil {
 		return nil, sip.ContactHeader{}, nil, err
@@ -105,6 +118,9 @@ func (c sipClient) agent(ctx context.Context) (*sipgo.Client, sip.ContactHeader,
 	srv.OnOptions(func(req *sip.Request, tx sip.ServerTransaction) {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusOK, "OK", nil))
 	})
+	if onBye != nil {
+		srv.OnBye(onBye)
+	}
 	client, err := sipgo.NewClient(ua, sipgo.WithClientHostname("127.0.0.1"), sipgo.WithClientPort(c.port))
 	if err != nil {
 		return nil, sip.ContactHeader{}, nil, err
@@ -141,7 +157,7 @@ func (c sipClient) aor() sip.Uri {
 }
 
 func (c sipClient) register(ctx context.Context) error {
-	client, contact, stop, err := c.agent(ctx)
+	client, contact, stop, err := c.agent(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -175,12 +191,18 @@ func (c sipClient) register(ctx context.Context) error {
 }
 
 func (c sipClient) call(ctx context.Context) error {
-	client, contact, stop, err := c.agent(ctx)
+	var cache atomic.Pointer[sipgo.DialogClientCache]
+	client, contact, stop, err := c.agent(ctx, func(req *sip.Request, tx sip.ServerTransaction) {
+		if d := cache.Load(); d == nil || d.ReadBye(req, tx) != nil {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "Call/Transaction Does Not Exist", nil))
+		}
+	})
 	if err != nil {
 		return err
 	}
 	defer stop()
 	dialogs := sipgo.NewDialogClientCache(client, contact)
+	cache.Store(dialogs)
 	from := &sip.FromHeader{Address: c.aor(), Params: sip.NewParams()}
 	from.Params.Add("tag", sip.GenerateTagN(16))
 	to := &sip.ToHeader{Address: c.uri(c.target)}
@@ -205,10 +227,27 @@ func (c sipClient) call(ctx context.Context) error {
 	if err := d.Ack(ctx); err != nil {
 		return err
 	}
-	if err := d.Bye(ctx); err != nil {
+	if c.hold <= 0 {
+		if err := d.Bye(ctx); err != nil {
+			return err
+		}
+		fmt.Printf("status=%d\n", status)
+		return nil
+	}
+	start := time.Now()
+	endedBy := "local"
+	select {
+	case <-d.Context().Done():
+		endedBy = "remote"
+	case <-time.After(c.hold):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	held := time.Since(start)
+	if err := d.Bye(ctx); err != nil { // nil once the PBX has ended the dialog
 		return err
 	}
-	fmt.Printf("status=%d\n", status)
+	fmt.Printf("status=%d endedBy=%s held=%.1f\n", status, endedBy, held.Seconds())
 	return nil
 }
 
