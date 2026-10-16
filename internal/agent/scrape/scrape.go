@@ -11,10 +11,15 @@
 // changes.
 //
 // The results follow api.WebScrape's rule, which the cisco79x5 driver's
-// fold relies on: a scrape succeeds only if all three pages were read and
-// parsed, and then At is when the last page was read; a failed scrape
-// carries its own At and Error and adopts nothing it read, only the
-// previous success's fields.
+// fold relies on: /DeviceInformationX, which carries the load, decides. A
+// scrape succeeds when it was read and parsed, and then At is when the
+// last page was read or given up on; a failed scrape carries its own At
+// and Error and adopts nothing it read, only the previous success's
+// fields. /NetworkConfigurationX and /DeviceLogX are best effort (a real
+// CP-7945G breaks off the first and serves the second empty): one that
+// cannot be read leaves its field nil and is logged, never failing the
+// scrape, and a /NetworkConfigurationX that breaks off keeps the fields
+// completed before the break.
 //
 // The phones are on the voice VLAN and answer whatever they like, so every
 // request is bounded: 5 s per page, at most 256 KiB per page, no redirects,
@@ -198,9 +203,9 @@ func (s *Scraper) Run(ctx context.Context) error {
 			d := s.begin(t, now)
 			wg.Go(func() {
 				defer func() { <-slots }()
-				w := s.scrape(ctx, t, d)
+				w, lacking := s.scrape(ctx, t, d)
 				if s.end(t.Device, d) && ctx.Err() == nil {
-					s.logResult(t, w)
+					s.logResult(t, w, lacking)
 					s.recorder.RecordScrape(t.Device, w)
 				}
 			})
@@ -213,12 +218,17 @@ func (s *Scraper) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Scraper) logResult(t sensor.ScrapeTarget, w api.WebScrape) {
-	if w.Error != "" {
+// logResult logs a failed scrape and a success that went without part of
+// a best-effort page (V(1)), and any other success (V(2)).
+func (s *Scraper) logResult(t sensor.ScrapeTarget, w api.WebScrape, lacking []string) {
+	switch {
+	case w.Error != "":
 		s.log.V(1).Info("scrape failed", "device", t.Device, "address", t.Address, "error", w.Error)
-		return
+	case len(lacking) > 0:
+		s.log.V(1).Info("scraped without part of a page", "device", t.Device, "address", t.Address, "lacking", lacking)
+	default:
+		s.log.V(2).Info("scraped", "device", t.Device, "address", t.Address)
 	}
-	s.log.V(2).Info("scraped", "device", t.Device, "address", t.Address)
 }
 
 // due returns the targets to read now, never scraped first and then the
@@ -290,11 +300,12 @@ func (s *Scraper) end(id string, d *device) bool {
 	return s.devices[id] == d
 }
 
-// Scrape reads t's three pages once and returns the result merged per
-// api.WebScrape's rule: on success every field is from this scrape and At
-// is when the last page was read; on failure At is when it failed, Error
-// says why, and the fields are the previous success's (nil if none). It
-// records nothing; it remembers a success for the next merge.
+// Scrape reads t's pages once and returns the result merged per
+// api.WebScrape's rule: on success every field is from this scrape (nil
+// for a best-effort page it could not read) and At is when the last page
+// was read or given up on; on failure At is when it failed, Error says
+// why, and the fields are the previous success's (nil if none). It records
+// nothing; it remembers a success for the next merge.
 func (s *Scraper) Scrape(ctx context.Context, t sensor.ScrapeTarget) api.WebScrape {
 	s.mu.Lock()
 	d := s.devices[t.Device]
@@ -303,11 +314,14 @@ func (s *Scraper) Scrape(ctx context.Context, t sensor.ScrapeTarget) api.WebScra
 		s.devices[t.Device] = d
 	}
 	s.mu.Unlock()
-	return s.scrape(ctx, t, d)
+	w, _ := s.scrape(ctx, t, d)
+	return w
 }
 
-func (s *Scraper) scrape(ctx context.Context, t sensor.ScrapeTarget, d *device) api.WebScrape {
-	w, err := s.read(ctx, t.Address)
+// scrape is Scrape; it also returns what a success went without (read's
+// lacking).
+func (s *Scraper) scrape(ctx context.Context, t sensor.ScrapeTarget, d *device) (api.WebScrape, []string) {
+	w, lacking, err := s.read(ctx, t.Address)
 	at := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -315,7 +329,7 @@ func (s *Scraper) scrape(ctx context.Context, t sensor.ScrapeTarget, d *device) 
 		w.At, w.Address = at, t.Address
 		kept := clone(w)
 		d.success = &kept
-		return w
+		return w, lacking
 	}
 	out := api.WebScrape{At: at, Address: t.Address, Error: sanitize(err.Error(), maxErrorLength)}
 	if d.success != nil {
@@ -323,7 +337,7 @@ func (s *Scraper) scrape(ctx context.Context, t sensor.ScrapeTarget, d *device) 
 		out.DeviceInformation, out.NetworkConfiguration, out.DeviceLog =
 			prev.DeviceInformation, prev.NetworkConfiguration, prev.DeviceLog
 	}
-	return out
+	return out, nil
 }
 
 // clone deep-copies a scrape, so what the scraper keeps and what it hands
@@ -341,11 +355,17 @@ func clone(w api.WebScrape) api.WebScrape {
 	return w
 }
 
-// read fetches and parses the three pages, stopping at the first failure.
-func (s *Scraper) read(ctx context.Context, address string) (api.WebScrape, error) {
+// read fetches and parses the pages. /DeviceInformationX decides: when it
+// cannot be read the scrape fails, and nothing else is fetched. The other
+// two are best effort: one that cannot be read is left nil, one that
+// breaks off keeps what came before the break, and lacking says (bounded
+// text) what the scrape went without. An empty /DeviceLogX is an empty
+// log, not something lacking. A context that ends during the scrape fails
+// it, since its best-effort pages were not given their chance.
+func (s *Scraper) read(ctx context.Context, address string) (w api.WebScrape, lacking []string, err error) {
 	addr, err := scrapeable(address)
 	if err != nil {
-		return api.WebScrape{}, err
+		return api.WebScrape{}, nil, err
 	}
 	host := addr.String()
 	if addr.Is6() {
@@ -354,27 +374,30 @@ func (s *Scraper) read(ctx context.Context, address string) (api.WebScrape, erro
 	if s.port != DefaultPort {
 		host = net.JoinHostPort(addr.String(), strconv.Itoa(s.port))
 	}
-	var w api.WebScrape
 	b, err := s.get(ctx, host, PathDeviceInformation)
 	if err == nil {
 		w.DeviceInformation, err = ParseDeviceInformation(b)
 	}
 	if err != nil {
-		return w, fmt.Errorf("%s: %w", PathDeviceInformation, err)
+		return api.WebScrape{}, nil, fmt.Errorf("%s: %w", PathDeviceInformation, err)
 	}
-	if b, err = s.get(ctx, host, PathNetworkConfiguration); err == nil {
-		w.NetworkConfiguration, err = ParseNetworkConfiguration(b)
+	lack := func(path string, err error) {
+		lacking = append(lacking, sanitize(path+": "+err.Error(), maxErrorLength))
 	}
-	if err != nil {
-		return w, fmt.Errorf("%s: %w", PathNetworkConfiguration, err)
+	if b, err := s.get(ctx, host, PathNetworkConfiguration); err != nil {
+		lack(PathNetworkConfiguration, err)
+	} else if w.NetworkConfiguration, err = ParseNetworkConfiguration(b); err != nil {
+		lack(PathNetworkConfiguration, err)
 	}
-	if b, err = s.get(ctx, host, PathDeviceLog); err == nil {
-		w.DeviceLog, err = ParseDeviceLog(b)
+	if b, err := s.get(ctx, host, PathDeviceLog); err != nil {
+		lack(PathDeviceLog, err)
+	} else if w.DeviceLog, err = ParseDeviceLog(b); err != nil {
+		lack(PathDeviceLog, err)
 	}
-	if err != nil {
-		return w, fmt.Errorf("%s: %w", PathDeviceLog, err)
+	if err := ctx.Err(); err != nil {
+		return api.WebScrape{}, nil, err
 	}
-	return w, nil
+	return w, lacking, nil
 }
 
 // scrapeable parses a target address and refuses one that cannot be a

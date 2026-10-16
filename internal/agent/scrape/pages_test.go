@@ -1,7 +1,10 @@
 package scrape_test
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,7 +16,34 @@ import (
 // The fixtures are generated here from the documented field lists
 // (docs/research/2026-10-14-cisco-7945-capabilities.md §6, release-a.md
 // W2.7), through the exported page shapes or by hand for the variants a
-// marshaller cannot produce. None is copied from a phone.
+// marshaller cannot produce. The one exception is capture's.
+
+// capture is one page a real CP-7945G (hardware revision 13, SIP
+// 9.4(2)SR4-3) served on 2026-10-15, byte for byte except its serial
+// number, which is FCH00000000 here (in serialNumber and udi). Its
+// /NetworkConfigurationX breaks off where the phone's own renderer throws
+// a NullPointerException, and its /DeviceLogX is empty.
+func capture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "cp7945g-sip-9.4.2sr4-3", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// What the scraper keeps of capture's pages.
+var (
+	captureInfo = api.DeviceInformation{
+		VersionID:        "*SIP45.9-4-2SR4-3S*",
+		AppLoadID:        "jar45sip.9-4-2SR4-3.sbn",
+		BootLoadID:       "tnp45.9-3-1-CR17.bin",
+		HardwareRevision: "13.0",
+		SerialNumber:     "FCH00000000",
+		ModelNumber:      "CP-7945G",
+	}
+	captureNC = api.NetworkConfiguration{CallManager1: "192.168.0.240   Active"}
+)
 
 func page(t *testing.T, v any) []byte {
 	t.Helper()
@@ -113,22 +143,114 @@ var notPages = map[string]string{
 	"a root with a suffix": `<ROOTXY/>`,
 }
 
+// TestParseRefusesWhatIsNotThePage: every parser fails on these. Only the
+// /NetworkConfigurationX parser keeps anything, and only from a page that
+// broke off after its root element started (ErrIncomplete); an empty
+// /DeviceLogX is an empty log (TestParseDeviceLog).
 func TestParseRefusesWhatIsNotThePage(t *testing.T) {
 	parsers := []struct {
 		root, other string
-		parse       func([]byte) (any, error)
+		parse       func([]byte) (kept bool, err error)
+		emptyIsPage bool
 	}{
-		{"DeviceInformation", "NetworkConfiguration", func(b []byte) (any, error) { return scrape.ParseDeviceInformation(b) }},
-		{"NetworkConfiguration", "DeviceLog", func(b []byte) (any, error) { return scrape.ParseNetworkConfiguration(b) }},
-		{"DeviceLog", "DeviceInformation", func(b []byte) (any, error) { return scrape.ParseDeviceLog(b) }},
+		{"DeviceInformation", "NetworkConfiguration", func(b []byte) (bool, error) {
+			got, err := scrape.ParseDeviceInformation(b)
+			return got != nil, err
+		}, false},
+		{"NetworkConfiguration", "DeviceLog", func(b []byte) (bool, error) {
+			got, err := scrape.ParseNetworkConfiguration(b)
+			return got != nil, err
+		}, false},
+		{"DeviceLog", "DeviceInformation", func(b []byte) (bool, error) {
+			got, err := scrape.ParseDeviceLog(b)
+			return got != nil, err
+		}, true},
+	}
+	// The bodies in which the page's root element starts, so the
+	// /NetworkConfigurationX parser keeps what came before the break.
+	rootStarts := map[string]bool{
+		"unclosed": true, "mismatched": true, "two roots": true, "invalid UTF-8": true,
+		"an undefined entity": true, "text after the root": true,
 	}
 	for name, tmpl := range notPages {
 		for _, p := range parsers {
+			if p.emptyIsPage && strings.TrimSpace(tmpl) == "" {
+				continue
+			}
 			body := strings.NewReplacer("ROOT", p.root, "OTHER", p.other).Replace(tmpl)
-			if got, err := p.parse([]byte(body)); err == nil {
-				t.Errorf("%s: the %s parser accepted %q: %+v", name, p.root, body, got)
+			kept, err := p.parse([]byte(body))
+			if err == nil {
+				t.Errorf("%s: the %s parser accepted %q", name, p.root, body)
+				continue
+			}
+			partial := p.root == "NetworkConfiguration" && rootStarts[name]
+			if kept != partial || errors.Is(err, scrape.ErrIncomplete) != partial {
+				t.Errorf("%s: the %s parser kept something: %v, error %v; want kept and ErrIncomplete only from a page that broke off",
+					name, p.root, kept, err)
 			}
 		}
+	}
+}
+
+// TestParseCapture: the real CP-7945G's pages. /DeviceInformationX is
+// whole; /NetworkConfigurationX keeps every element completed before the
+// break; the empty /DeviceLogX is an empty log.
+func TestParseCapture(t *testing.T) {
+	info, err := scrape.ParseDeviceInformation(capture(t, "DeviceInformationX.xml"))
+	if err != nil || *info != captureInfo {
+		t.Errorf("DeviceInformationX: %+v, %v\nwant %+v", info, err, captureInfo)
+	}
+	nc, err := scrape.ParseNetworkConfiguration(capture(t, "NetworkConfigurationX.xml"))
+	if !errors.Is(err, scrape.ErrIncomplete) || !strings.Contains(err.Error(), "unexpected EOF") {
+		t.Errorf("NetworkConfigurationX: error %v, want ErrIncomplete at an unexpected EOF", err)
+	}
+	if nc == nil || *nc != captureNC {
+		t.Errorf("NetworkConfigurationX: %+v, want %+v", nc, captureNC)
+	}
+	log, err := scrape.ParseDeviceLog(capture(t, "DeviceLogX.xml"))
+	if err != nil || log != nil {
+		t.Errorf("DeviceLogX: %q, %v; want an empty log", log, err)
+	}
+}
+
+// TestParseNetworkConfigurationIncomplete: a page that breaks off keeps
+// the fields of the elements completed before the break, never the text
+// of one the break cut, and says so (ErrIncomplete).
+func TestParseNetworkConfigurationIncomplete(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want api.NetworkConfiguration
+	}{
+		{"cut after a whole element", `<NetworkConfiguration><AdminVLANId>5</AdminVLANId><CallManager1>192.168.0.240  Active</CallManager1>`,
+			api.NetworkConfiguration{AdminVLAN: "5", CallManager1: "192.168.0.240  Active"}},
+		{"cut inside a field: that field is not read", `<NetworkConfiguration><AdminVLANId>5</AdminVLANId><CallManager1>192.168.0.240`,
+			api.NetworkConfiguration{AdminVLAN: "5"}},
+		{"cut inside a field's later twin: the whole first one stands", `<NetworkConfiguration><CallManager1/><CallManager1>192.168.0.240  Active</CallManager1><CallManager1>junk`,
+			api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"}},
+		{"cut as the phone does", "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<NetworkConfiguration><AdminVLANId>9</AdminVLANId>" +
+			"<EnergywisePowerLevel>java.lang.NullPointerException",
+			api.NetworkConfiguration{AdminVLAN: "9"}},
+		{"cut before any field", `<NetworkConfiguration>`, api.NetworkConfiguration{}},
+		{"broken by a bad tag", `<NetworkConfiguration><AdminVLANId>5</AdminVLANId><CallManager1>x</CallManager2></NetworkConfiguration>`,
+			api.NetworkConfiguration{AdminVLAN: "5"}},
+		{"followed by junk", `<NetworkConfiguration><AdminVLANId>5</AdminVLANId></NetworkConfiguration><html/>`,
+			api.NetworkConfiguration{AdminVLAN: "5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := scrape.ParseNetworkConfiguration([]byte(tc.body))
+			if !errors.Is(err, scrape.ErrIncomplete) {
+				t.Errorf("error %v, want ErrIncomplete", err)
+			}
+			if got == nil || *got != tc.want {
+				t.Errorf("got %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+	// Strict where the load lives: /DeviceInformationX that breaks off is
+	// no page at all.
+	if got, err := scrape.ParseDeviceInformation([]byte(`<DeviceInformation><versionID>SIP45.9-4-2SR4-3S</versionID><appLoadID>jar`)); got != nil || err == nil {
+		t.Errorf("a DeviceInformationX that breaks off: %+v, %v", got, err)
 	}
 }
 
@@ -204,6 +326,9 @@ func TestParseDeviceLog(t *testing.T) {
 			[]string{"caf\u00e9"}},
 		{"the X-suffixed root", `<devicelogx><status>a</status></devicelogx>`, []string{"a"}},
 		{"empty log", `<DeviceLog></DeviceLog>`, nil},
+		// The real CP-7945G answers 200 with nothing at all (capture).
+		{"an empty body is an empty log", ``, nil},
+		{"so is white space", " \r\n\t", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := scrape.ParseDeviceLog([]byte(tc.body))

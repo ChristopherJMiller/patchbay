@@ -18,15 +18,20 @@ import (
 // (docs/research/2026-10-14-cisco-7945-capabilities.md §6; the plan's
 // W2.7), never copied from a phone, and hold only what this package reads.
 // The e2e fake phone serves them (MarshalPage), so it serves exactly what
-// the parsers read. Which element names a real 79x5 uses is a bench check
-// (docs/plans/release-a.md §8): the parsers match names case-insensitively,
-// accept the aliases listed on each field, and accept the root element
-// with or without a trailing "X".
+// the parsers read. The parsers match names case-insensitively, accept the
+// aliases listed on each field, and accept the root element with or
+// without a trailing "X". A real CP-7945G on SIP 9.4(2)SR4-3 (2026-10-15,
+// docs/plans/release-a.md §8) uses the first name of each field and roots
+// without the "X"; it wraps versionID in asterisks (*SIP45.9-4-2SR4-3S*),
+// which the parser keeps as the phone gives it; it breaks off its own
+// /NetworkConfigurationX mid-element (ParseNetworkConfiguration keeps what
+// came before) and serves /DeviceLogX empty (an empty log).
 
 // DeviceInformationX is /DeviceInformationX.
 type DeviceInformationX struct {
 	XMLName xml.Name `xml:"DeviceInformation"`
-	// VersionID is the running load's ID (SIP45.9-4-2SR4-3S).
+	// VersionID is the running load's ID: SIP45.9-4-2SR4-3S, which a real
+	// 7945 wraps in asterisks (*SIP45.9-4-2SR4-3S*).
 	VersionID string `xml:"versionID"`
 	// AppLoadID is the running application image (jar45sip.9-4-2SR4-3.sbn).
 	AppLoadID string `xml:"appLoadID"`
@@ -84,6 +89,11 @@ var (
 	elementStatus         = "status"
 )
 
+// ErrIncomplete is what ParseNetworkConfiguration's error wraps when the
+// page breaks off after its root element has started: it then also
+// returns the fields of the elements completed before the break.
+var ErrIncomplete = errors.New("incomplete page")
+
 // maxLogLines is how many of the newest /DeviceLogX lines a scrape keeps.
 const maxLogLines = 20
 
@@ -116,23 +126,37 @@ func ParseDeviceInformation(b []byte) (*api.DeviceInformation, error) {
 	}, nil
 }
 
-// ParseNetworkConfiguration reads /NetworkConfigurationX.
+// ParseNetworkConfiguration reads /NetworkConfigurationX. A page that
+// breaks off once its root element has started still gives the fields of
+// the elements completed before the break, never the text of one the
+// break cut: it returns them with an error wrapping ErrIncomplete. A real
+// CP-7945G on SIP 9.4(2)SR4-3 always does that: its renderer throws a
+// NullPointerException at <EnergywisePowerLevel>, after every field read
+// here. Any other error returns no fields.
 func ParseNetworkConfiguration(b []byte) (*api.NetworkConfiguration, error) {
 	root, err := parsePage(b, rootNetworkConfiguration)
-	if err != nil {
+	if root == nil {
 		return nil, err
 	}
-	return &api.NetworkConfiguration{
+	nc := &api.NetworkConfiguration{
 		AdminVLAN:    root.field(fieldAdminVLAN),
 		CallManager1: root.field(fieldCallManager1),
-	}, nil
+	}
+	if err != nil {
+		return nc, fmt.Errorf("%w: %w", ErrIncomplete, err)
+	}
+	return nc, nil
 }
 
 // ParseDeviceLog reads /DeviceLogX: the text of its status elements (at
 // any depth), or of every leaf element when it has none, one line per line
 // of text, trimmed, empty lines dropped; the last maxLogLines, oldest
-// first (in document order).
+// first (in document order). An empty body (or only white space) is an
+// empty log: a real CP-7945G on SIP 9.4(2)SR4-3 serves one.
 func ParseDeviceLog(b []byte) ([]string, error) {
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil, nil
+	}
 	root, err := parsePage(b, rootDeviceLog)
 	if err != nil {
 		return nil, err
@@ -170,13 +194,17 @@ type node struct {
 	text     strings.Builder
 	parts    []any // the element's content in order: string or *node
 	children []*node
+	complete bool // its end tag was read
 }
 
-// field is the text of the first child element whose name is one of names
-// and whose text is not blank, sanitized to MaxField bytes and trimmed, or
-// "".
+// field is the text of the first complete child element whose name is one
+// of names and whose text is not blank, sanitized to MaxField bytes and
+// trimmed, or "".
 func (n *node) field(names []string) string {
 	for _, c := range n.children {
+		if !c.complete {
+			continue
+		}
 		for _, name := range names {
 			if c.name == name {
 				if v := strings.TrimSpace(sanitize(strings.TrimSpace(c.text.String()), MaxField)); v != "" {
@@ -217,7 +245,9 @@ func (n *node) walk(f func(*node)) {
 // parsePage parses one page: a well-formed XML document whose single root
 // element is root (case-insensitively, with or without a trailing "x"),
 // in UTF-8, ISO-8859-1 or US-ASCII. Anything else, an HTML page included,
-// is an error.
+// is an error. An error once the root element has started (the page
+// breaks off, or goes on past its root) also returns the root, with every
+// element read so far; only those marked complete were read whole.
 func parsePage(b []byte, root string) (*node, error) {
 	d := xml.NewDecoder(bytes.NewReader(b))
 	d.Strict = true
@@ -232,14 +262,14 @@ func parsePage(b []byte, root string) (*node, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("not XML: %w", err)
+			return top, fmt.Errorf("not XML: %w", err)
 		}
 		switch tok := tok.(type) {
 		case xml.StartElement:
 			n := &node{name: strings.ToLower(tok.Name.Local)}
 			if len(stack) == 0 {
 				if top != nil {
-					return nil, errors.New("more than one root element")
+					return top, errors.New("more than one root element")
 				}
 				if n.name != root && n.name != root+"x" {
 					return nil, fmt.Errorf("the root element is <%s>, not <%s>", sanitize(tok.Name.Local, 64), root)
@@ -252,11 +282,12 @@ func parsePage(b []byte, root string) (*node, error) {
 			}
 			stack = append(stack, n)
 		case xml.EndElement:
+			stack[len(stack)-1].complete = true
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) == 0 {
 				if len(bytes.TrimSpace(bytes.ReplaceAll(tok, []byte("\ufeff"), nil))) > 0 {
-					return nil, errors.New("text outside the root element")
+					return top, errors.New("text outside the root element")
 				}
 				continue
 			}

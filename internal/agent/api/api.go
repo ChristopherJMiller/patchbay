@@ -282,11 +282,17 @@ type Registration struct {
 // WebScrape is one scrape of a phone's own web pages, fetched by the agent
 // from the IP in the fetch log, so it works before the phone registers.
 //
-// A scrape reads all three pages; it succeeds only if every one was read
-// and parsed. A failed scrape adopts nothing, not even a page it did read:
-// it carries the previous successful scrape's fields (none if there was
-// none) with its own At and Error. The cisco79x5 driver reads a scrape only
-// when Error is empty and At is not before the phone's last config fetch or
+// /DeviceInformationX decides a scrape: it carries the load. The scrape
+// succeeds when that page was read and parsed; a failed scrape adopts
+// nothing: it carries the previous successful scrape's fields (none if
+// there was none) with its own At and Error. /NetworkConfigurationX and
+// /DeviceLogX are best effort and never fail a scrape (a real CP-7945G on
+// SIP 9.4(2)SR4-3 breaks off the first mid-page and serves the second
+// empty): in a successful scrape, NetworkConfiguration is nil when its
+// page could not be read and holds only the fields completed before the
+// break when the page broke off, and DeviceLog is nil when /DeviceLogX is
+// empty or could not be read. The cisco79x5 driver reads a scrape only when
+// Error is empty and At is not before the phone's last config fetch or
 // firmware download (a "fresh scrape").
 //
 // The pages are whatever answers at the phone's address, so every field
@@ -294,8 +300,8 @@ type Registration struct {
 // at most 128 bytes and a log line at most 256 (scrape.MaxField,
 // scrape.MaxLogLine).
 type WebScrape struct {
-	// At is when the scrape finished: when its last page was read, or when
-	// it failed.
+	// At is when the scrape finished: when its last page was read or given
+	// up on, or when it failed.
 	At time.Time `json:"at"`
 
 	// Address is the IP address that was scraped.
@@ -318,14 +324,16 @@ type WebScrape struct {
 
 // DeviceInformation is the subset of /DeviceInformationX the state machine
 // reads. The element names are the XML twin's (appLoadID, versionID, ...).
-// What a 79x5 puts in each is not yet confirmed on the real phone (a bench
-// check, docs/plans/release-a.md §8), so the agent reports both load fields
-// as the phone gives them and the driver accepts either.
+// The agent reports both load fields as the phone gives them; the driver
+// normalises them and accepts either (docs/plans/release-a.md §8: a real
+// CP-7945G on SIP 9.4(2)SR4-3 reports versionID *SIP45.9-4-2SR4-3S* and
+// appLoadID jar45sip.9-4-2SR4-3.sbn).
 type DeviceInformation struct {
 	// VersionID is the running load's ID, the name the SEP file's
 	// loadInformation and the firmware manifest use, e.g. SIP45.9-4-2SR4-3S,
 	// or SCCP45.9-4-2SR4-3S on SCCP firmware (the "Version" line of the
-	// phone's Device Information page).
+	// phone's Device Information page). A real 7945 wraps it in asterisks,
+	// *SIP45.9-4-2SR4-3S*, and it is reported so.
 	VersionID string `json:"versionID,omitempty"`
 	// AppLoadID is the running application image, a file of the load, e.g.
 	// jar45sip.9-4-2SR4-3.sbn, or jar45sccp.9-4-2SR4-3.sbn on SCCP firmware.

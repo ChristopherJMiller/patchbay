@@ -246,12 +246,16 @@ type ScrapeTargets interface {
 // The scraper builds w by these rules, which the cisco79x5 driver relies on
 // (its fold reads only a "fresh scrape"):
 //   - a scrape reads /DeviceInformationX, /NetworkConfigurationX and
-//     /DeviceLogX; it succeeds only if all three were read and parsed;
-//   - success: At is when the last page was read, Error is empty, and
-//     every field comes from this scrape;
+//     /DeviceLogX; it succeeds only if /DeviceInformationX (the load) was
+//     read and parsed; the other two are best effort;
+//   - success: At is when the last page was read or given up on, Error is
+//     empty, and every field comes from this scrape: a best-effort page
+//     that could not be read is nil (never an older scrape's), and a
+//     /NetworkConfigurationX that broke off holds the fields before the
+//     break;
 //   - failure: At is when it failed, Error says why, and nothing from this
-//     scrape is adopted, not even a page that was read: the fields are the
-//     previous successful scrape's (nil if there was none).
+//     scrape is adopted: the fields are the previous successful scrape's
+//     (nil if there was none).
 type ScrapeRecorder interface {
 	RecordScrape(device string, w api.WebScrape)
 }

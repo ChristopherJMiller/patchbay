@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/scrape"
@@ -181,6 +182,30 @@ func TestScrapeSuccess(t *testing.T) {
 	}
 }
 
+// TestScrapeCapture: a phone that serves exactly the real CP-7945G's three
+// pages is scraped: its /DeviceInformationX is adopted as it is (the
+// asterisks around versionID are the driver's to strip), its
+// /NetworkConfigurationX up to where the phone's renderer crashed, and its
+// empty /DeviceLogX is an empty log. Nothing of that is an error.
+func TestScrapeCapture(t *testing.T) {
+	c := &clock{t: t0}
+	p := newPhone(t)
+	p.serve("/DeviceInformationX", c, t0.Add(time.Second), capture(t, "DeviceInformationX.xml"))
+	p.serve("/NetworkConfigurationX", c, t0.Add(2*time.Second), capture(t, "NetworkConfigurationX.xml"))
+	p.serve("/DeviceLogX", c, t0.Add(3*time.Second), capture(t, "DeviceLogX.xml"))
+	s := newScraper(t, scrape.Config{Client: p.client(), Now: c.Now})
+
+	got := s.Scrape(context.Background(), desk)
+	info, nc := captureInfo, captureNC
+	want := api.WebScrape{At: t0.Add(3 * time.Second), Address: desk.Address, DeviceInformation: &info, NetworkConfiguration: &nc}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Scrape =\n%+v\nwant\n%+v", got, want)
+	}
+	if len(p.requests()) != 3 {
+		t.Errorf("requests %q, want all three pages", p.requests())
+	}
+}
+
 func TestScrapeAddressAndPort(t *testing.T) {
 	for _, tc := range []struct {
 		addr string
@@ -210,26 +235,28 @@ func TestScrapeAddressAndPort(t *testing.T) {
 	}
 }
 
-// TestScrapeFailureAdoptsNothing: a failed scrape carries the previous
-// success's fields (none the first time), its own At and Address, and an
-// Error; nothing it read is adopted, even a page it parsed.
+// TestScrapeFailureAdoptsNothing: /DeviceInformationX decides a scrape (it
+// carries the load). When it cannot be read the scrape fails at once,
+// without the other pages, and carries the previous success's fields
+// (none the first time), its own At and Address, and an Error.
 func TestScrapeFailureAdoptsNothing(t *testing.T) {
 	c := &clock{t: t0}
 	p := newPhone(t)
-	other := api.DeviceInformation{VersionID: "SIP45.9-3-1SR1-1S", ModelNumber: "CP-7945G"}
-	p.serve("/DeviceInformationX", c, t0.Add(time.Second), page(t, infoX(other)))
-	p.serve("/NetworkConfigurationX", c, time.Time{}, page(t, scrape.NetworkConfigurationX{AdminVLANID: "99"}))
-	p.status("/DeviceLogX", http.StatusInternalServerError)
+	p.healthy(c, fullInfo, deskNC, deskLog)
+	p.status("/DeviceInformationX", http.StatusInternalServerError)
 	s := newScraper(t, scrape.Config{Client: p.client(), Now: c.Now})
 
 	first := s.Scrape(context.Background(), desk)
-	want := api.WebScrape{At: t0.Add(time.Second), Address: desk.Address}
-	if first.Error == "" || !strings.Contains(first.Error, "DeviceLogX") || !strings.Contains(first.Error, "500") {
-		t.Errorf("first failure's Error = %q, want it to name /DeviceLogX and 500", first.Error)
+	want := api.WebScrape{At: t0, Address: desk.Address}
+	if first.Error == "" || !strings.Contains(first.Error, "DeviceInformationX") || !strings.Contains(first.Error, "500") {
+		t.Errorf("first failure's Error = %q, want it to name /DeviceInformationX and 500", first.Error)
 	}
 	first.Error = ""
 	if !reflect.DeepEqual(first, want) {
 		t.Errorf("first failure = %+v, want nothing adopted: %+v", first, want)
+	}
+	if r := p.requests(); !slices.Equal(r, []string{"GET 192.0.2.10/DeviceInformationX"}) {
+		t.Errorf("requests %q, want only /DeviceInformationX", r)
 	}
 
 	p.healthy(c, fullInfo, deskNC, deskLog)
@@ -242,30 +269,28 @@ func TestScrapeFailureAdoptsNothing(t *testing.T) {
 	ok.NetworkConfiguration.AdminVLAN = "scribbled"
 	ok.DeviceLog[0] = "scribbled"
 
+	info := func(body string) func() {
+		return func() { p.serve("/DeviceInformationX", c, time.Time{}, []byte(body)) }
+	}
+	status := func(code int) func() { return func() { p.status("/DeviceInformationX", code) } }
 	for name, fail := range map[string]func(){
-		"DeviceLogX 500": func() {
-			p.serve("/DeviceInformationX", c, time.Time{}, page(t, infoX(other)))
-			p.status("/DeviceLogX", http.StatusInternalServerError)
-		},
-		"NetworkConfigurationX is HTML": func() {
-			p.serve("/DeviceInformationX", c, time.Time{}, page(t, infoX(other)))
-			p.serve("/NetworkConfigurationX", c, time.Time{}, []byte(`<html><body>Network Configuration</body></html>`))
-		},
-		"DeviceInformationX malformed": func() {
-			p.serve("/DeviceInformationX", c, time.Time{}, []byte(`<DeviceInformation><versionID>x`))
-		},
-		"DeviceLogX 404":            func() { p.status("/DeviceLogX", http.StatusNotFound) },
-		"NetworkConfigurationX 503": func() { p.status("/NetworkConfigurationX", http.StatusServiceUnavailable) },
-		"DeviceLogX 204":            func() { p.status("/DeviceLogX", http.StatusNoContent) },
+		"500":                    status(http.StatusInternalServerError),
+		"404":                    status(http.StatusNotFound),
+		"503":                    status(http.StatusServiceUnavailable),
+		"204":                    status(http.StatusNoContent),
+		"an empty 200":           info(``),
+		"HTML":                   info(`<html><body>Device Information</body></html>`),
+		"breaks off":             info(`<DeviceInformation><versionID>x`),
+		"another page's root":    info(`<NetworkConfiguration><AdminVLANId>99</AdminVLANId></NetworkConfiguration>`),
+		"the capture, cut short": info(string(capture(t, "DeviceInformationX.xml")[:400])),
 	} {
-		p.serve("/DeviceInformationX", c, time.Time{}, page(t, infoX(other)))
 		p.serve("/NetworkConfigurationX", c, time.Time{}, page(t, scrape.NetworkConfigurationX{AdminVLANID: "99"}))
 		p.serve("/DeviceLogX", c, time.Time{}, page(t, scrape.DeviceLogX{Status: []string{"other"}}))
 		fail()
 		c.Set(t0.Add(time.Hour))
 		got := s.Scrape(context.Background(), sensor.ScrapeTarget{Device: desk.Device, Address: "192.0.2.11"})
-		if got.Error == "" {
-			t.Errorf("%s: no Error", name)
+		if got.Error == "" || !strings.Contains(got.Error, "DeviceInformationX") {
+			t.Errorf("%s: Error %q, want it to name /DeviceInformationX", name, got.Error)
 			continue
 		}
 		want := deskScrape(got.At)
@@ -279,9 +304,88 @@ func TestScrapeFailureAdoptsNothing(t *testing.T) {
 	}
 
 	// Another device has no previous success of its own.
-	p.status("/DeviceLogX", http.StatusInternalServerError)
+	p.status("/DeviceInformationX", http.StatusInternalServerError)
 	if got := s.Scrape(context.Background(), sensor.ScrapeTarget{Device: "phone-lab", Address: desk.Address}); got.DeviceInformation != nil || got.Error == "" {
 		t.Errorf("another device adopted phone-desk's success: %+v", got)
+	}
+}
+
+// TestScrapeBestEffortPages: /NetworkConfigurationX and /DeviceLogX are
+// best effort. One that cannot be read leaves its field empty (nil, never
+// the previous success's: that may predate what the phone runs now) and
+// the scrape succeeds with everything else it read; a page that breaks
+// off keeps what came before the break.
+func TestScrapeBestEffortPages(t *testing.T) {
+	c := &clock{t: t0}
+	p := newPhone(t)
+	s := newScraper(t, scrape.Config{Client: p.client(), Now: c.Now})
+	other := api.DeviceInformation{VersionID: "SIP45.9-3-1SR1-1S", ModelNumber: "CP-7945G"}
+	otherNC := &api.NetworkConfiguration{AdminVLAN: "99"}
+	otherLog := []string{"other"}
+	nc := func(fail func()) func() { return fail }
+	serveNC := func(body string) func() {
+		return func() { p.serve("/NetworkConfigurationX", c, time.Time{}, []byte(body)) }
+	}
+	serveLog := func(body string) func() {
+		return func() { p.serve("/DeviceLogX", c, time.Time{}, []byte(body)) }
+	}
+	redirect := func(path string) func() {
+		return func() {
+			p.handle(path, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/elsewhere", http.StatusFound) })
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		fail func()
+		nc   *api.NetworkConfiguration
+		log  []string
+	}{
+		{"NetworkConfigurationX 503", nc(func() { p.status("/NetworkConfigurationX", http.StatusServiceUnavailable) }), nil, otherLog},
+		{"NetworkConfigurationX 404", nc(func() { p.status("/NetworkConfigurationX", http.StatusNotFound) }), nil, otherLog},
+		{"NetworkConfigurationX 204", nc(func() { p.status("/NetworkConfigurationX", http.StatusNoContent) }), nil, otherLog},
+		{"NetworkConfigurationX is HTML", serveNC(`<html><body>Network Configuration</body></html>`), nil, otherLog},
+		{"NetworkConfigurationX redirects", redirect("/NetworkConfigurationX"), nil, otherLog},
+		{"NetworkConfigurationX breaks off", serveNC(`<NetworkConfiguration><AdminVLANId>7</AdminVLANId><CallManager1>192.168`),
+			&api.NetworkConfiguration{AdminVLAN: "7"}, otherLog},
+		{"NetworkConfigurationX as the real phone serves it", serveNC(string(capture(t, "NetworkConfigurationX.xml"))), &captureNC, otherLog},
+		{"DeviceLogX 500", func() { p.status("/DeviceLogX", http.StatusInternalServerError) }, otherNC, nil},
+		{"DeviceLogX 404", func() { p.status("/DeviceLogX", http.StatusNotFound) }, otherNC, nil},
+		{"DeviceLogX 204", func() { p.status("/DeviceLogX", http.StatusNoContent) }, otherNC, nil},
+		{"DeviceLogX is HTML", serveLog(`<html><body>Status Messages</body></html>`), otherNC, nil},
+		{"DeviceLogX breaks off", serveLog(`<DeviceLog><status>a</status><status>b`), otherNC, nil},
+		{"DeviceLogX redirects", redirect("/DeviceLogX"), otherNC, nil},
+		{"DeviceLogX is empty", serveLog(``), otherNC, nil},
+		{"both", func() {
+			p.status("/NetworkConfigurationX", http.StatusInternalServerError)
+			p.status("/DeviceLogX", http.StatusInternalServerError)
+		}, nil, nil},
+	} {
+		// A full success first: a page that fails now must not show it.
+		p.healthy(c, fullInfo, deskNC, deskLog)
+		if ok := s.Scrape(context.Background(), desk); ok.Error != "" {
+			t.Fatalf("%s: the success before: %s", tc.name, ok.Error)
+		}
+		p.serve("/DeviceInformationX", c, t0.Add(time.Hour), page(t, infoX(other)))
+		p.serve("/NetworkConfigurationX", c, time.Time{}, page(t, scrape.NetworkConfigurationX{AdminVLANID: "99"}))
+		p.serve("/DeviceLogX", c, time.Time{}, page(t, scrape.DeviceLogX{Status: otherLog}))
+		tc.fail()
+		before := len(p.requests())
+
+		got := s.Scrape(context.Background(), desk)
+		info := other
+		want := api.WebScrape{At: t0.Add(time.Hour), Address: desk.Address, DeviceInformation: &info,
+			NetworkConfiguration: tc.nc, DeviceLog: tc.log}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s:\n got %+v\nwant %+v", tc.name, got, want)
+		}
+		if r := p.requests()[before:]; len(r) != 3 {
+			t.Errorf("%s: requests %q, want all three pages", tc.name, r)
+		}
+		for _, r := range p.requests() {
+			if strings.Contains(r, "elsewhere") {
+				t.Errorf("%s: a redirect was followed: %s", tc.name, r)
+			}
+		}
 	}
 }
 
@@ -320,9 +424,9 @@ func TestRefusedAddresses(t *testing.T) {
 
 func TestBodyLimit(t *testing.T) {
 	const limit = 256 << 10
-	padded := func(n int) []byte {
-		head := `<?xml version="1.0"?><DeviceLog><status>a</status><!--`
-		tail := `--></DeviceLog>`
+	padded := func(root, inner string, n int) []byte {
+		head := `<?xml version="1.0"?><` + root + `>` + inner + `<!--`
+		tail := `--></` + root + `>`
 		return []byte(head + strings.Repeat("x", n-len(head)-len(tail)) + tail)
 	}
 	c := &clock{t: t0}
@@ -330,13 +434,23 @@ func TestBodyLimit(t *testing.T) {
 	s := newScraper(t, scrape.Config{Client: p.client(), Now: c.Now})
 
 	p.healthy(c, fullInfo, deskNC, deskLog)
-	p.serve("/DeviceLogX", c, time.Time{}, padded(limit))
-	if got := s.Scrape(context.Background(), desk); got.Error != "" {
-		t.Errorf("a page of exactly 256 KiB: %s", got.Error)
+	p.serve("/DeviceLogX", c, time.Time{}, padded("DeviceLog", "<status>a</status>", limit))
+	if got := s.Scrape(context.Background(), desk); got.Error != "" || !slices.Equal(got.DeviceLog, []string{"a"}) {
+		t.Errorf("a page of exactly 256 KiB: %q, Error %q", got.DeviceLog, got.Error)
 	}
-	p.serve("/DeviceLogX", c, time.Time{}, padded(limit+1))
-	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "DeviceLogX") {
-		t.Errorf("a page of 256 KiB + 1: Error %q", got.Error)
+	// A best-effort page over the limit is not read; the scrape stands.
+	p.serve("/DeviceLogX", c, time.Time{}, padded("DeviceLog", "<status>a</status>", limit+1))
+	if got := s.Scrape(context.Background(), desk); got.Error != "" || got.DeviceLog != nil {
+		t.Errorf("a log page of 256 KiB + 1: %q, Error %q; want the scrape without it", got.DeviceLog, got.Error)
+	}
+	p.serve("/NetworkConfigurationX", c, time.Time{}, padded("NetworkConfiguration", "<AdminVLANId>5</AdminVLANId>", limit+1))
+	if got := s.Scrape(context.Background(), desk); got.Error != "" || got.NetworkConfiguration != nil {
+		t.Errorf("a network page of 256 KiB + 1: %+v, Error %q; want the scrape without it", got.NetworkConfiguration, got.Error)
+	}
+	// /DeviceInformationX over the limit fails the scrape.
+	p.serve("/DeviceInformationX", c, time.Time{}, padded("DeviceInformation", "<versionID>SIP45.9-4-2SR4-3S</versionID>", limit+1))
+	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "DeviceInformationX") {
+		t.Errorf("a device page of 256 KiB + 1: Error %q", got.Error)
 	}
 	// A page that never ends fails at the limit, not at the timeout.
 	p.handle("/DeviceInformationX", func(w http.ResponseWriter, r *http.Request) {
@@ -390,44 +504,69 @@ func TestTimeout(t *testing.T) {
 	s := newScraper(t, scrape.Config{Client: p.client(), Now: c.Now})
 	s.SetPageTimeout(100 * time.Millisecond)
 
-	// A phone that never answers.
-	p.handle("/NetworkConfigurationX", func(http.ResponseWriter, *http.Request) {
+	silent := func(http.ResponseWriter, *http.Request) {
 		select {
 		case <-release:
 		case <-time.After(10 * time.Second):
 		}
-	})
-	start := time.Now()
-	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "NetworkConfigurationX") {
-		t.Errorf("a silent phone: Error %q", got.Error)
 	}
-	// A phone that trickles its page.
-	p.serve("/NetworkConfigurationX", c, time.Time{}, page(t, deskNC))
-	p.handle("/DeviceLogX", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/xml")
-		for _, b := range []byte(`<DeviceLog><status>slow</status></DeviceLog>`) {
-			if _, err := w.Write([]byte{b}); err != nil {
-				return
-			}
-			w.(http.Flusher).Flush()
-			select {
-			case <-release:
-				return
-			case <-time.After(50 * time.Millisecond):
+	trickle := func(body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/xml")
+			for _, b := range []byte(body) {
+				if _, err := w.Write([]byte{b}); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
 			}
 		}
-	})
-	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "DeviceLogX") {
+	}
+	start := time.Now()
+	// Best-effort pages that never answer, or trickle: each is given up on
+	// after its timeout, and the scrape stands without them.
+	p.handle("/NetworkConfigurationX", silent)
+	p.handle("/DeviceLogX", trickle(`<DeviceLog><status>slow</status></DeviceLog>`))
+	got := s.Scrape(context.Background(), desk)
+	if got.Error != "" || got.DeviceInformation == nil || got.NetworkConfiguration != nil || got.DeviceLog != nil {
+		t.Errorf("silent and trickling best-effort pages: %+v", got)
+	}
+	// A silent or trickling /DeviceInformationX fails it.
+	p.handle("/DeviceInformationX", silent)
+	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "DeviceInformationX") {
+		t.Errorf("a silent phone: Error %q", got.Error)
+	}
+	p.handle("/DeviceInformationX", trickle(string(page(t, infoX(fullInfo)))))
+	if got := s.Scrape(context.Background(), desk); got.Error == "" || !strings.Contains(got.Error, "DeviceInformationX") {
 		t.Errorf("a trickling phone: Error %q", got.Error)
 	}
 	if d := time.Since(start); d > 3*time.Second {
-		t.Errorf("two timeouts of 100 ms took %v", d)
+		t.Errorf("four timeouts of 100 ms took %v", d)
 	}
 	// The caller's context bounds a scrape too.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if got := s.Scrape(ctx, desk); got.Error == "" {
 		t.Error("a cancelled context: the scrape succeeded")
+	}
+	// A context that ends after /DeviceInformationX fails the scrape: the
+	// best-effort pages were not given their chance.
+	p.healthy(c, fullInfo, deskNC, deskLog)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	p.handle("/NetworkConfigurationX", func(_ http.ResponseWriter, r *http.Request) {
+		cancel()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	})
+	if got := s.Scrape(ctx, desk); got.Error == "" {
+		t.Errorf("a context cancelled mid-scrape: the scrape succeeded: %+v", got)
 	}
 }
 
@@ -641,6 +780,50 @@ func TestRunRecordsEachScrape(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// TestRunLogsIncompletePages: a scrape that went without part of a
+// best-effort page succeeds and is recorded, and the log (V(1)) says what
+// it went without; the empty /DeviceLogX is not worth a line.
+func TestRunLogsIncompletePages(t *testing.T) {
+	c := &clock{t: t0}
+	p := newPhone(t)
+	p.serve("/DeviceInformationX", c, time.Time{}, capture(t, "DeviceInformationX.xml"))
+	p.serve("/NetworkConfigurationX", c, time.Time{}, capture(t, "NetworkConfigurationX.xml"))
+	p.serve("/DeviceLogX", c, time.Time{}, capture(t, "DeviceLogX.xml"))
+	var (
+		mu     sync.Mutex
+		logged []string
+	)
+	log := funcr.New(func(_, args string) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, args)
+	}, funcr.Options{Verbosity: 1})
+	tg := &targets{}
+	tg.set(desk)
+	rec := make(chanRecorder, 16)
+	s := scrape.New(scrape.Config{Targets: tg, Recorder: rec, Client: p.client(), Now: c.Now, Tick: 5 * time.Millisecond, Log: log})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	select {
+	case got := <-rec:
+		if got.w.Error != "" || got.w.NetworkConfiguration == nil || *got.w.NetworkConfiguration != captureNC {
+			t.Errorf("recorded %+v", got.w)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing was recorded")
+	}
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 || !strings.Contains(logged[0], "phone-desk") ||
+		!strings.Contains(logged[0], "/NetworkConfigurationX: incomplete page") || !strings.Contains(logged[0], "unexpected EOF") ||
+		strings.Contains(logged[0], "DeviceLogX") {
+		t.Errorf("logged %q; want one line naming phone-desk and the break in /NetworkConfigurationX", logged)
 	}
 }
 
