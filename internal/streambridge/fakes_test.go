@@ -250,7 +250,13 @@ func fed(frames <-chan []byte) producer {
 // eventually polls cond for up to 5 s of real time.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	eventuallyWithin(t, 5*time.Second, what, cond)
+}
+
+// eventuallyWithin polls cond for up to d of real time.
+func eventuallyWithin(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -309,7 +315,8 @@ func doc(t *testing.T, pools []streams.Pool, list ...streams.Stream) streams.Doc
 }
 
 // testManager is a manager on src and clk (a fake clock at epoch if nil)
-// with its own registry, the document loaded, stopped when the test ends.
+// with its own registry, the document loaded (unless it is the zero
+// Document), stopped when the test ends.
 func testManager(t *testing.T, src Source, clk clock.WithTicker, d streams.Document) (*manager, *prometheus.Registry) {
 	t.Helper()
 	if clk == nil {
@@ -320,7 +327,9 @@ func testManager(t *testing.T, src Source, clk clock.WithTicker, d streams.Docum
 	if err := m.register(reg); err != nil {
 		t.Fatal(err)
 	}
-	m.setDocument(d)
+	if d.Version != "" {
+		m.setDocument(d)
+	}
 	t.Cleanup(m.stopAll)
 	return m, reg
 }
