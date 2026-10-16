@@ -1669,3 +1669,33 @@ could see the same reordering across a reconnect; release A's behaviour,
 unchanged). The test is about order and overflow, not timeouts
 (`TestReporterNeverBlocks` covers those), so it writes with a 1 min
 deadline.
+
+**Verification after the fixes** (on `695931a`, this workstation,
+2026-10-16):
+
+- `make generate`: no diff. `make check-generated fmt vet lint test
+  check-hygiene vulncheck build`: exit 0 (96 packages ok, golangci-lint 0
+  issues, helm lint passes, hygiene ok on 748 files, govulncheck: no
+  vulnerabilities); the tree unchanged. `go mod tidy -diff` empty;
+  `actionlint` clean; `go test -race -count=3 ./internal/streambridge/...`
+  ok.
+- `make asterisk-check`: every golden, `TestRealAsteriskACL`,
+  `TestRealAsteriskStreams` (now with `transferred`) and
+  `TestRealAsteriskAMI` pass; `TestRealAsteriskStreams` passed six times
+  after the fix, the untransferred and the transferred call each closed
+  by Asterisk at 10.000-10.001 s, never reaching "not available".
+- `make e2e` from scratch (no kind cluster before or after): PASS in
+  636 s, all 22 tests, release A's included. Radio first tones 0.11-0.23 s;
+  a tuner session's 1.55-1.61 s (its 1.5 s lock included); the long radio
+  call ended by the PBX at 20.008 s (the e2e limit, ahead of the bridge's
+  25 s ceiling); the tuner freed 1.6 s after the calls ended; the bridge's
+  memory peak 116.1 MiB; the added Stream Idle 95 s after it was created,
+  the slowest kubelet sync so far (TestStreamAdded allows 150 s).
+- Each new test fails with its fix taken out (`TestServeCallLimit`,
+  `TestTunerBusyKeepsSourceFailure`, `TestSessionEnds`,
+  `TestRefusalKeepsSourceFailure`, `TestFFmpegLiveSourceEnds`, and
+  `TestRealAsteriskStreams/transferred` before `e46222c`).
+- No e2e test for a transfer: the fakephone's one-shot call has no
+  transfer, and the asterisk-check case runs the real REFER through
+  res_pjsip_refer in the pinned image, where the behaviour lives. The
+  bridge's ceiling has unit tests only.
