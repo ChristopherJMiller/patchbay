@@ -27,6 +27,19 @@ spec:
         - jsonPath: .status.state
           name: State
           type: string
+        - jsonPath: .status.listeners
+          name: Listeners
+          type: integer
+        - jsonPath: .status.conditions[?(@.type=="Ready")].status
+          name: Ready
+          type: string
+        - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+          name: Reason
+          type: string
+        - jsonPath: .status.tunerPool
+          name: Pool
+          priority: 1
+          type: string
         - jsonPath: .spec.source
           name: Source
           priority: 1
@@ -65,9 +78,8 @@ spec:
               properties:
                 name:
                   description: |-
-                    Name is the stream's display and caller ID name. No control
-                    characters (line breaks included); anything else is escaped wherever
-                    it is rendered.
+                    Name is the stream's display name. No control characters (line
+                    breaks included); anything else is escaped wherever it is rendered.
                   maxLength: 64
                   minLength: 1
                   pattern: ^[^\x00-\x1F\x7F-\x9F]*$
@@ -82,24 +94,44 @@ spec:
                   type: string
                 source:
                   description: |-
-                    Source is the absolute URL the stream bridge reads audio from, for
-                    example an HDHomeRun channel (http://192.168.0.58:5004/auto/v5.1).
-                    The controller never probes it: a probe would hold a tuner.
+                    Source is the live audio the stream bridge plays: an http or https
+                    URL of a stream its decoder (ffmpeg) reads directly, for example an
+                    HDHomeRun channel (http://192.168.0.58:5004/auto/v5.1) or an Icecast
+                    mount (https://ice2.somafm.com/groovesalad-128-mp3). Not a playlist:
+                    put one of a .pls or .m3u file's stream URLs here (an HLS .m3u8 is a
+                    stream, and is fine). No credentials: the source is shown in status,
+                    Events and logs. A source whose host is one of a tuner pool's hosts
+                    (settings streams.tunerPools) counts against that pool's limit. The
+                    controller never probes it: a probe would hold a tuner.
                   maxLength: 2048
+                  minLength: 1
+                  pattern: ^[^\s\x00-\x1F\x7F]+$
                   type: string
                   x-kubernetes-validations:
                     - message: source must be an absolute URL with a scheme and host
                       rule: isURL(self) && url(self).getScheme() != '' && url(self).getHost() != ''
+                    - message: 'source must be an http or https URL: the stream bridge reads only those'
+                      rule: '!isURL(self) || url(self).getScheme() in [''http'', ''https'']'
+                    - message: 'source must not carry credentials (user@ or user:password@): it is shown in status, Events and logs'
+                      rule: '!self.matches(''^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@'')'
+                    - message: 'source is a playlist (.pls or .m3u): use one of the stream URLs it lists'
+                      rule: '!self.matches(''(?i)^[a-z][a-z0-9+.-]*://[^/?#]*/[^?#]*[.](pls|m3u)([?#].*)?$'')'
               required:
                 - name
                 - number
                 - source
               type: object
             status:
-              description: StreamStatus is written only by the controller.
+              description: |-
+                StreamStatus is written only by the controller, from the compiled
+                bundle and the stream bridge's observations (it never probes a source).
               properties:
                 conditions:
-                  description: 'Conditions: NumberConflict, plus the stream conditions of release B.'
+                  description: |-
+                    Conditions: Ready (True when dialling it now should play: reason
+                    Idle or Playing; otherwise TunerBusy, SourceFailed, InvalidSource,
+                    BridgePending, NoStreamBridge, NumberConflict or NumberNotInPlan;
+                    Unknown with BridgeUnreachable) and NumberConflict.
                   items:
                     description: Condition contains details for one aspect of the current state of this API Resource.
                     properties:
@@ -157,6 +189,45 @@ spec:
                   x-kubernetes-list-map-keys:
                     - type
                   x-kubernetes-list-type: map
+                lastFailure:
+                  description: |-
+                    LastFailure is its most recent failure: its source would not start or
+                    stopped, or a call was refused because its tuner pool was busy. It is
+                    kept across stream bridge restarts; a later LastPlayed means the
+                    stream works again.
+                  properties:
+                    at:
+                      description: At is when it happened.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        Message says it for a person (the decoder's error, or what held the
+                        tuner pool).
+                      maxLength: 2048
+                      type: string
+                    reason:
+                      description: Reason is what happened.
+                      enum:
+                        - SourceFailed
+                        - SourceEnded
+                        - TunerBusy
+                      type: string
+                  required:
+                    - at
+                    - reason
+                  type: object
+                lastPlayed:
+                  description: LastPlayed is when a call on it last began to hear its source.
+                  format: date-time
+                  type: string
+                listeners:
+                  description: |-
+                    Listeners is how many calls are playing it, as of the controller's
+                    last look at the stream bridge.
+                  format: int32
+                  minimum: 0
+                  type: integer
                 observedGeneration:
                   description: ObservedGeneration is the .metadata.generation this status describes.
                   format: int64
@@ -164,7 +235,14 @@ spec:
                 state:
                   description: |-
                     State is a one-word summary for humans and `kubectl get` (Idle,
-                    Playing, Failing). It is not a contract; tools read Conditions.
+                    Playing, Busy, Failing, Pending, Unavailable, Invalid, Unknown). It
+                    is not a contract; tools read Conditions.
+                  type: string
+                tunerPool:
+                  description: |-
+                    TunerPool is the tuner pool its source counts against (settings
+                    streams.tunerPools, matched by the source's host), or empty when it
+                    needs no tuner.
                   type: string
               type: object
           required:

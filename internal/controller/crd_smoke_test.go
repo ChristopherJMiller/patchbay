@@ -170,8 +170,19 @@ func TestSchemaRejects(t *testing.T) {
 			Number: "301", Name: "Chris\r", Rings: []v1alpha1.RingTarget{{Phone: "desk"}}}}, "spec.name"},
 		{"stream name with a line break", &v1alpha1.Stream{ObjectMeta: om("lf"), Spec: v1alpha1.StreamSpec{
 			Number: "705", Name: "KING\n5", Source: "http://192.168.0.58:5004/auto/v5.1"}}, "spec.name"},
-		{"stream source not a URL", stream("nourl", "king 5"), "source must be an absolute URL"},
+		{"stream source not a URL", stream("nourl", "king5"), "source must be an absolute URL"},
 		{"stream source relative", stream("relative", "/auto/v5.1"), "source must be an absolute URL"},
+		// Release B (docs/plans/release-b.md §2(d)): the bridge's decoder
+		// reads only http and https streams, never a playlist, and a
+		// source is shown everywhere, so it holds no credentials.
+		{"stream source with a space", stream("space", "http://192.168.0.58:5004/auto/v5.1 x"), "spec.source"},
+		{"stream source rtsp", stream("rtsp", "rtsp://192.168.0.58/auto/v5.1"), "source must be an http or https URL"},
+		{"stream source a file", stream("file", "file:///etc/passwd"), "source must be an absolute URL"},
+		{"stream source with a password", stream("password", "http://admin:hunter2@192.168.0.58:5004/auto/v5.1"),
+			"source must not carry credentials"},
+		{"stream source with a user", stream("user", "https://chris@example.com/live"), "source must not carry credentials"},
+		{"stream source a .pls playlist", stream("pls", "https://api.somafm.com/groovesalad256.pls"), "source is a playlist"},
+		{"stream source a .M3U playlist", stream("m3u", "http://example.com/Radio.M3U"), "source is a playlist"},
 		// design §4 writes `number: 100`; the schema wants a string (CLAUDE.md,
 		// "Deviations from the design").
 		{"number as a bare YAML integer", bareNumberPhone(ns), "spec.number in body must be of type string"},
@@ -209,6 +220,49 @@ func TestSchemaAcceptsPunctuation(t *testing.T) {
 	var got v1alpha1.Phone
 	if err := testClient.Get(ctx, client.ObjectKeyFromObject(p), &got); err != nil || got.Spec.Label != label {
 		t.Fatalf("label round trip: %q, %v", got.Spec.Label, err)
+	}
+}
+
+// TestSchemaStreamSources is the other half of the source rules: the
+// stream URLs a house uses are accepted (an HDHomeRun channel, SomaFM's
+// Icecast mounts, an HLS playlist, an upper-case scheme, an IPv6 host, a
+// query), and so are the status fields the controller writes.
+func TestSchemaStreamSources(t *testing.T) {
+	needEnvtest(t)
+	ctx := context.Background()
+	ns := newNamespace(t)
+	for i, src := range []string{
+		"http://192.168.0.58:5004/auto/v5.1",
+		"https://ice2.somafm.com/groovesalad-128-mp3",
+		"https://example.com/live/playlist.m3u8",
+		"HTTPS://Example.com/Live",
+		"http://[2001:db8::1]:8000/radio",
+		"http://fake-tuner.patchbay-e2e.svc:5004/auto/v7.1?hz=1300",
+	} {
+		s := &v1alpha1.Stream{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("s%d", i), Namespace: ns},
+			Spec:       v1alpha1.StreamSpec{Number: v1alpha1.Number(fmt.Sprintf("7%02d", i)), Name: "Stream", Source: src},
+		}
+		if err := testClient.Create(ctx, s); err != nil {
+			t.Errorf("create a Stream with source %q: %v", src, err)
+			continue
+		}
+		if i > 0 {
+			continue
+		}
+		at := metav1.NewTime(time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC))
+		s.Status = v1alpha1.StreamStatus{
+			State: "Busy", ObservedGeneration: 1, Listeners: 2, TunerPool: "hdhomerun", LastPlayed: &at,
+			LastFailure: &v1alpha1.StreamFailure{At: at, Reason: v1alpha1.StreamFailureTunerBusy, Message: "pool hdhomerun (1 at a time) is playing kiro7"},
+		}
+		if err := testClient.Status().Update(ctx, s); err != nil {
+			t.Fatalf("status update: %v", err)
+		}
+		bad := s.DeepCopy()
+		bad.Status.LastFailure.Reason = "Gremlins"
+		if err := testClient.Status().Update(ctx, bad); !apierrors.IsInvalid(err) {
+			t.Errorf("a failure reason outside the enum: %v, want Invalid", err)
+		}
 	}
 }
 

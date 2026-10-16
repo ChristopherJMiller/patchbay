@@ -149,9 +149,43 @@ const (
 	// "not available".
 	ReasonMissingRingTargets = "MissingRingTargets"
 	// ReasonNoStreamBridge is Ready False on a Stream that holds its
-	// number: release A has no stream bridge, so its number plays "not
-	// available".
+	// number while the install has no stream bridge (the chart's
+	// streamBridge.enabled is false): its number plays "not available".
 	ReasonNoStreamBridge = "NoStreamBridge"
+)
+
+// Reasons of a Stream's Ready condition (release B, docs/plans/release-b.md
+// §5.3), which the controller decides from the compiled streams and the
+// stream bridge's observations. Ready is True when dialling the stream now
+// should play.
+const (
+	// ReasonIdle is Ready True: nobody is listening, and its last attempt,
+	// if any, played.
+	ReasonIdle = "Idle"
+	// ReasonPlaying is Ready True: calls are playing it (status.listeners).
+	ReasonPlaying = "Playing"
+	// ReasonTunerBusy is Ready False: its tuner pool is playing as many
+	// other sources as it may, so a call now hears "not available"; it
+	// clears when one of them ends.
+	ReasonTunerBusy = "TunerBusy"
+	// ReasonSourceFailed is Ready False: its source failed the last time a
+	// call tried it (status.lastFailure), and nothing has played since.
+	// The controller never probes a source, so it stays until a call
+	// plays it.
+	ReasonSourceFailed = "SourceFailed"
+	// ReasonInvalidSource is Ready False: its source breaks the source
+	// rule (an http or https stream URL, no credentials, not a playlist);
+	// the schema refuses such a source now, but a Stream written before
+	// the rule existed may hold one. It is not routed.
+	ReasonInvalidSource = "InvalidSource"
+	// ReasonBridgePending is Ready False: the stream bridge has not loaded
+	// the compiled streams.json that holds this stream as it is (usually
+	// the kubelet's ConfigMap sync, up to about a minute); a call now
+	// hears "not available".
+	ReasonBridgePending = "BridgePending"
+	// ReasonBridgeUnreachable is Ready Unknown: the controller cannot
+	// reach the stream bridge's observations.
+	ReasonBridgeUnreachable = "BridgeUnreachable"
 )
 
 // ActionKind names something done to a device. Only the controller decides
