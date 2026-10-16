@@ -9,6 +9,9 @@ SHELL := bash
 
 MODULE    := github.com/ChristopherJMiller/patchbay
 IMG       ?= ghcr.io/christopherjmiller/patchbay:dev
+# The stream bridge's image: the same binary on Alpine with ffmpeg (the
+# Dockerfile's stream-bridge target).
+IMG_STREAM_BRIDGE ?= ghcr.io/christopherjmiller/patchbay-stream-bridge:dev
 CRD_DIR   := charts/patchbay/templates/crds
 
 # Version metadata, stamped in with -ldflags. DATE is the commit time, not
@@ -97,14 +100,17 @@ fmt: ## Format Go code (gofmt + goimports, via golangci-lint).
 	golangci-lint fmt ./...
 
 .PHONY: vet
-vet: ## go vet (including the e2e-tagged code and the asterisk-check).
+vet: ## go vet (including the e2e-tagged code, the asterisk-check and the image check).
 	go vet ./...
 	go vet -tags e2e ./...
 	go vet -tags asterisk ./internal/compile/ ./internal/agent/ami/
+	go vet -tags image ./test/image/
 
 .PHONY: lint
-lint: ## golangci-lint (incl. exhaustive, and the e2e suite) and helm lint.
+lint: ## golangci-lint (incl. exhaustive, the e2e suite and the image check) and helm lint.
 	golangci-lint run ./...
+	@# The image check has a build tag of its own (.golangci.yml lists e2e and asterisk).
+	golangci-lint run --build-tags image ./test/image/
 	@# The chart has required values, so it is linted with each ci/ values file.
 	for f in charts/patchbay/ci/*-values.yaml; do helm lint --strict charts/patchbay -f "$$f"; done
 
@@ -160,6 +166,28 @@ image: sounds ## Build the container image (IMG, default ghcr.io/christopherjmil
 		--build-arg GO_TAGS=$(GO_TAGS) \
 		-t $(IMG) .
 
+# The bridge needs no prompts (the target never copies build/sounds/). It
+# takes GO_TAGS too only so that `make e2e-images` shares one build stage
+# between its two images; the bridge never reads the firmware manifest the
+# e2e tag changes.
+.PHONY: image-stream-bridge
+image-stream-bridge: ## Build the stream bridge image (IMG_STREAM_BRIDGE, default ghcr.io/christopherjmiller/patchbay-stream-bridge:dev): patchbay + Alpine's ffmpeg.
+	docker build --target stream-bridge \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg DATE=$(DATE) \
+		--build-arg GO_TAGS=$(GO_TAGS) \
+		-t $(IMG_STREAM_BRIDGE) .
+
+# test/image (build tag image) runs the built image with docker, always
+# with --network none: its user, ffmpeg's build configuration (GPL, never
+# nonfree), the CA bundle, and that its ffmpeg takes
+# streambridge.FFmpegArgs. It does not build the image: CI checks the
+# image its buildx job loaded.
+.PHONY: image-check-stream-bridge
+image-check-stream-bridge: ## Check the stream bridge image IMG_STREAM_BRIDGE (docker, no network): uid, ffmpeg's licence, CA bundle, the decoder's flags.
+	PATCHBAY_STREAM_BRIDGE_IMAGE=$(IMG_STREAM_BRIDGE) go test -tags image -count=1 -timeout 5m -v ./test/image/
+
 .PHONY: clean
 clean: ## Remove build output.
 	rm -rf bin/ build/ cover.out
@@ -199,6 +227,8 @@ E2E_KUBECONFIG := $(CURDIR)/.e2e/kubeconfig
 E2E_KUBECACHE  := $(CURDIR)/.e2e/kube-cache
 E2E_IMG        := ghcr.io/christopherjmiller/patchbay:e2e
 E2E_TOOLS_IMG  := ghcr.io/christopherjmiller/patchbay-e2e-tools:e2e
+# The stream bridge's image (test/e2e/streamkit_test.go's streamBridgeImage).
+E2E_STREAM_BRIDGE_IMG := ghcr.io/christopherjmiller/patchbay-stream-bridge:e2e
 # The CLI the e2e suite runs, built with the e2e tag (the e2e firmware load).
 E2E_CLI        := $(CURDIR)/.e2e/bin/patchbay
 E2E_TIMEOUT    ?= 30m
@@ -223,9 +253,11 @@ e2e-down: ## Delete the e2e kind cluster.
 	kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_KUBECONFIG)
 
 .PHONY: e2e-images
-e2e-images: ## Build the patchbay image and CLI (GO_TAGS=e2e) and the fakephone image; pull the chart's Asterisk image by digest.
+e2e-images: ## Build the patchbay and stream bridge images and the CLI (GO_TAGS=e2e) and the fakephone image; pull the chart's Asterisk image by digest.
 	@# The e2e tag gives the agent the e2e firmware load (E2E45.0-0-1S).
 	$(MAKE) image IMG=$(E2E_IMG) GO_TAGS=e2e
+	@# The bridge from the same build stage (GO_TAGS=e2e only shares it).
+	$(MAKE) image-stream-bridge IMG_STREAM_BRIDGE=$(E2E_STREAM_BRIDGE_IMG) GO_TAGS=e2e
 	@# And the CLI: `patchbay firmware load` must know the e2e load too.
 	CGO_ENABLED=0 go build -trimpath -tags e2e -ldflags '$(LDFLAGS)' -o $(E2E_CLI) ./cmd/patchbay
 	docker build -f test/e2e/fakephone/Dockerfile -t $(E2E_TOOLS_IMG) .

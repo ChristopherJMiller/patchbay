@@ -1,11 +1,19 @@
 # syntax=docker/dockerfile:1.28.0@sha256:bb22d9815c728170f72750f4e5b0d672e06176142e1d602c7e66c050100b7e5b
 #
-# patchbay: one static binary on distroless. The Dockerfile frontend (the
-# syntax line) and both base images are pinned by the digest of their
-# multi-arch index, so amd64 and arm64 builds (CI) and every rebuild use
-# exactly these. Bump tag and digest together:
+# patchbay: one static binary, in two images:
+#   - the last stage (the default target): patchbay on distroless, which
+#     runs the controller, the agent and the file server
+#     (ghcr.io/christopherjmiller/patchbay);
+#   - --target stream-bridge: the same binary on Alpine with its ffmpeg, for
+#     `patchbay stream-bridge`
+#     (ghcr.io/christopherjmiller/patchbay-stream-bridge;
+#     docs/plans/release-b.md §2(f)).
+# The Dockerfile frontend (the syntax line) and every base image are pinned
+# by the digest of their multi-arch index, so amd64 and arm64 builds (CI)
+# and every rebuild use exactly these. Bump tag and digest together:
 #   docker buildx imagetools inspect docker/dockerfile:<ver>
 #   docker buildx imagetools inspect golang:<ver>-trixie
+#   docker buildx imagetools inspect alpine:<ver>
 #   docker buildx imagetools inspect gcr.io/distroless/static-debian13:nonroot
 # The Go minor here must match the flake's go_1_26.
 
@@ -35,6 +43,35 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/ChristopherJMiller/patchbay/internal/version.Date=${DATE}" \
       -o /out/patchbay ./cmd/patchbay
 
+# The stream bridge: patchbay plus Alpine's ffmpeg, which decodes the live
+# sources (a tuner's MPEG-TS, Icecast radio) that `patchbay stream-bridge`
+# plays to callers. ffmpeg runs as a separate process; patchbay links
+# nothing of it. Alpine builds it with --enable-gpl and --enable-version3
+# (GPL-3.0 or later), never with --enable-nonfree, which would make the
+# image unredistributable: the build fails unless ffmpeg's -buildconf says
+# --enable-gpl and not --enable-nonfree. ffmpeg's patch level follows
+# Alpine's 3.24 branch at build time; the published digest pins what runs,
+# and the bridge reports `ffmpeg -version`. The corresponding sources are
+# Alpine's (aports at the package's commit, and its distfiles;
+# docs/streams.md). This stage runs apk on the target platform, so an arm64
+# build needs QEMU (CI's setup-qemu-action). `make
+# image-check-stream-bridge` checks the result (test/image).
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS stream-bridge
+
+RUN apk add --no-cache ffmpeg ca-certificates \
+ && ffmpeg -hide_banner -buildconf | grep -q -- '--enable-gpl' \
+ && ! ffmpeg -hide_banner -buildconf | grep -q -- '--enable-nonfree'
+
+LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/patchbay" \
+      org.opencontainers.image.description="patchbay stream bridge: live audio sources to callers over AudioSocket (patchbay + ffmpeg)" \
+      org.opencontainers.image.licenses="Apache-2.0 AND GPL-3.0-or-later"
+
+COPY --from=build /out/patchbay /patchbay
+USER 65532:65532
+ENTRYPOINT ["/patchbay"]
+
+# patchbay itself: the last stage, so it is the default target (`docker
+# build .`) and the bridge's ffmpeg never reaches it.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/patchbay" \

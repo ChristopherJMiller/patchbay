@@ -1,6 +1,8 @@
 # Only go.mod, go.sum, api/, cmd/ and internal/ are needed to build, plus
 # the sound prompts `make sounds` renders into build/sounds/<voice>/ (all
-# of build/sounds/ is copied into the image as it is).
+# of build/sounds/ is copied into the patchbay image as it is; the
+# stream-bridge target copies none of it, so `make image-stream-bridge`
+# needs no `make sounds`).
 *
 !go.mod
 !go.sum
