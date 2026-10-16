@@ -56,6 +56,23 @@ allowedNetworks:
   - 192.168.20.0/24
   - 192.168.0.0/24
 
+# The voice of the PBX's spoken prompts (911's "This phone cannot call
+# emergency services", "That number is not available"). The image carries
+# the prompts in each of these voices, rendered from text at build time,
+# and nothing else is accepted (the chart fails to render; the agent
+# refuses to start):
+#   espeak    espeak-ng's en-us voice: clear, robotic (the default)
+#   ljspeech  Piper, US English, female (LJ Speech)
+#   kristin   Piper, US English, female
+#   norman    Piper, US English, male
+#   john      Piper, US English, male
+# Every Piper voice here is trained on public domain recordings; Piper's
+# lessac-based voices are left out, for their dataset's research-only
+# licence. docs/sounds.md has each voice's licence and lineage. Changing it
+# restarts the PBX pod: the agent installs the voice at start.
+sounds:
+  voice: espeak
+
 controller:
   # One replica decides at a time (leader election); a second only speeds
   # up failover.

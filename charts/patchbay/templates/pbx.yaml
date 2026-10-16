@@ -181,6 +181,7 @@ spec:
             - --state-dir=/var/lib/patchbay/persistent/state
             - --sounds-dir=/var/lib/patchbay/sounds
             - --sounds-src=/usr/share/patchbay/sounds
+            - --sounds-voice={{ include "patchbay.soundsVoice" . }}
             - --fetch-socket=/var/run/patchbay/fetchlog/fetches.sock
             - --fs-group={{ $p.fsGroup }}
             - --device-http-listen={{ $address }}:{{ $p.ports.deviceHTTP }}

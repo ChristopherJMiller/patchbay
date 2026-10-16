@@ -155,6 +155,32 @@ func TestChartUsesTheLiveLayout(t *testing.T) {
 	})
 }
 
+// TestChartSoundsVoice: the agent installs the voice sounds.voice names
+// (--sounds-voice, in the pod spec, so a change rolls the PBX pod), espeak
+// by default; every voice the agent accepts renders, and any other value
+// fails `helm template`, listing exactly sounds.Voices.
+func TestChartSoundsVoice(t *testing.T) {
+	if got, _ := flag(container(t, pbx(t, render(t)), "agent").Args, "sounds-voice"); got != "espeak" {
+		t.Errorf("by default the agent gets --sounds-voice=%q, want espeak", got)
+	}
+	for _, v := range sounds.Voices {
+		wantFlags(t, container(t, pbx(t, render(t, "sounds.voice="+v)), "agent"), map[string]string{"sounds-voice": v})
+	}
+	minimal := filepath.Join(chartDir, "ci", "minimal-values.yaml")
+	for _, bad := range []string{"lessac", "Espeak", "en_US-kristin-medium", ""} {
+		_, stderr, err := helmTemplate(t, minimal, "sounds.voice="+bad)
+		if err == nil {
+			t.Errorf("sounds.voice=%s rendered", bad)
+			continue
+		}
+		_, list, ok := strings.Cut(stderr, "the voices are: ")
+		list, _, _ = strings.Cut(list, " (docs/sounds.md)")
+		if !ok || list != strings.Join(sounds.Voices, ", ") {
+			t.Errorf("sounds.voice=%s: helm said %q, want the voices %v", bad, stderr, sounds.Voices)
+		}
+	}
+}
+
 // TestChartAsteriskProbesUseTheConfig: every Asterisk probe runs the remote
 // console with -C, like Asterisk itself.
 func TestChartAsteriskProbesUseTheConfig(t *testing.T) {

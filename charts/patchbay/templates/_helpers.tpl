@@ -164,3 +164,17 @@ loaded, not even over AMI or by a relative path.
 {{- define "patchbay.asteriskConf" -}}
 /var/lib/patchbay/config/current/asterisk/asterisk.conf
 {{- end -}}
+
+{{/*
+The sound prompts' voice (sounds.voice), refused unless the image carries
+it: the list is internal/agent/sounds.Voices (test/chart compares the two),
+whose comment and docs/sounds.md give each voice's licence.
+*/}}
+{{- define "patchbay.soundsVoice" -}}
+{{- $voices := list "espeak" "ljspeech" "kristin" "norman" "john" -}}
+{{- $voice := toString .Values.sounds.voice -}}
+{{- if not (has $voice $voices) -}}
+{{- fail (printf "sounds.voice %q is not a voice the image carries; the voices are: %s (docs/sounds.md)" $voice (join ", " $voices)) -}}
+{{- end -}}
+{{- $voice -}}
+{{- end -}}

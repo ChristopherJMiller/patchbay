@@ -31,6 +31,16 @@ import (
 // minimal one) plus sets.
 func renderFile(t *testing.T, valuesFile string, sets ...string) manifest {
 	t.Helper()
+	stdout, stderr, err := helmTemplate(t, valuesFile, sets...)
+	if err != nil {
+		t.Fatalf("helm template --values %s --set %v: %v\n%s", valuesFile, sets, err, stderr)
+	}
+	return parseManifest(t, stdout)
+}
+
+// helmTemplate runs helm template with one values file plus sets.
+func helmTemplate(t *testing.T, valuesFile string, sets ...string) (stdout, stderr string, err error) {
+	t.Helper()
 	helm, err := exec.LookPath("helm")
 	if err != nil {
 		t.Fatal("helm is not on PATH: run the tests inside `nix develop`")
@@ -39,13 +49,11 @@ func renderFile(t *testing.T, valuesFile string, sets ...string) manifest {
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
-	var stdout, stderr bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), helm, args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("helm %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
-	}
-	return parseManifest(t, stdout.String())
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err = cmd.Run()
+	return out.String(), errOut.String(), err
 }
 
 // parseManifest splits a rendered chart into its documents.
