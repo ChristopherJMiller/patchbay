@@ -95,7 +95,9 @@ departs from it, the departure is recorded here (and in the code's docs).
   `Unknown`, reason `AgentUnreachable`.
 - **Firmware digests can be pending** (`drivers.SHA256Pending`) until taken
   from Cisco's zip: a pending file is never accepted, served or counted as
-  staged.
+  staged. The 9.4(2)SR4-3 load's were filled in on 2026-10-15 from a copy
+  whose files match Cisco's published sizes; they are to be confirmed against
+  Cisco's own copy (the CUCM device pack).
 - **Labels and names reject control characters** in the schema, because
   they are rendered into device XML and Asterisk config.
 - **Softphone status has memory too** (`observed`, `lastAction`,

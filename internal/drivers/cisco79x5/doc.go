@@ -8,8 +8,8 @@
 // dialtemplate.go). Its Decide is the ordered rule table of design §8.3
 // (decide.go), fed by the fold of the agent's four sensors into the memory
 // kept in status (fold.go). Its firmware manifest (firmware.go) names the SIP
-// load's files with SHA-256s that stay pending until they are taken from
-// Cisco's own zip.
+// load's files with their SHA-256s, filled in 2026-10-15 from a copy whose
+// sizes match Cisco's published ones and to be confirmed against Cisco's own.
 //
 // Everything here is pure: no I/O, no clock, no randomness.
 //

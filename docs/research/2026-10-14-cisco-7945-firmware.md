@@ -56,8 +56,9 @@ sources; where something could not be verified, it says so.
   cnu45, cvm45sip, dsp45 and jar45sip `.9-4-2ES26.sbn`. The zip is
   6,512,565 bytes.
 - **Checksums.** No Cisco-published hash was found in public; Cisco shows them
-  after login. The driver manifest pins the SHA-256s of the files from
-  Cisco's own zip.
+  after login. The driver manifest pins the files' SHA-256s: since
+  2026-10-15 from a copy whose sizes match Cisco's published ones, to be
+  confirmed against Cisco's own copy (the CUCM device pack carries this load).
 
 ## Upgrade path from SCCP 9.4(2)SR4-3
 

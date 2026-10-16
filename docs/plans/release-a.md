@@ -265,6 +265,11 @@ file is *always* missing) make it impossible to treat as verified:
 An empty digest is still invalid, so a forgotten field is an error, not
 silently pending. Sizes stay from the research notes and are advisory.
 
+*(2026-10-15)* The 9.4(2)SR4-3 load's digests are filled in, from a copy
+whose files match Cisco's published sizes; they are to be confirmed against
+Cisco's own copy (the CUCM device pack). The pending path stays for any load
+whose digests are not known.
+
 **e2e test load:** a load that exists only in binaries built with the `e2e`
 build tag (`internal/drivers/cisco79x5/e2eload_e2e.go`, `//go:build e2e`),
 whose files are generated deterministically by `cisco79x5.E2ELoadFile(name)`
@@ -524,7 +529,8 @@ profile.
 
 **Manifest** (`firmware.go`): one load `SIP45.9-4-2SR4-3S`, Source "Cisco's
 cmterm-7945_7965-sip.9-4-2SR4-3.zip", Models `cisco-7945`, `cisco-7965`,
-the 8 files and sizes of §1.5, every digest `drivers.SHA256Pending`,
+the 8 files and sizes of §1.5, every digest `drivers.SHA256Pending`
+(filled in 2026-10-15, §2(b)),
 `term45.default.loads` and `term65.default.loads` `Shared: true`. A comment
 above the list says exactly how to fill a digest in. `New()` appends any
 `extraLoads` (set only by `e2eload_e2e.go`'s `init`).
@@ -778,7 +784,8 @@ reason it has not registered.
   `drivers.ValidateProfile`; the 7945 values above, field by field; the
   Features table.
 - `TestManifest`: `ValidateFirmware` passes; the Cisco load has 8 files with
-  the §1.5 sizes, every digest pending, `term45`/`term65` Shared.
+  the §1.5 sizes, every digest pending (since 2026-10-15:
+  every digest 64 lower-case hex digits; §2(b)), `term45`/`term65` Shared.
   `TestManifestHasNoE2ELoad` lives in a file constrained `//go:build !e2e`
   (an unconstrained one would fail W1's own `go test -tags e2e` run), and
   its twin under `//go:build e2e` checks the test load is present with
@@ -2399,7 +2406,7 @@ authoritative;** this section says what to build on it.
 |---|---|---|
 | W1 | Claims come from `compile.ResolveClaims`, never re-derived | devices and numbers call `ResolveClaims` over every resource from the cache, `claims.Apply(&dev)`; `TestClaimsFromResolveClaims` (devices), `TestPersonNumberConflict` (numbers) |
 | W1 | Write status only when it changed | devices and numbers (6.2.1 "No status hot loop"); `TestStatusWrittenOnlyWhenChanged` in each |
-| W1 | `TestPhoneLifecycle` includes the Desk phone's factory-reset path | integrator: `TestPhoneLifecycle/reset` (6.2.9). In e2e the human action is **P6**, not P5: P5 needs the *default* load staged, and its digests are pending, so no e2e can stage it; the driver's `TestLifecycle` pins P5. Everything else on the row is asserted (never NeedsTrustReset again, Upgrading, Registered with FirmwareCurrent Unknown and no resync). |
+| W1 | `TestPhoneLifecycle` includes the Desk phone's factory-reset path | integrator: `TestPhoneLifecycle/reset` (6.2.9). In e2e the human action is **P6**, not P5: P5 needs the *default* load staged, which is Cisco's, and e2e never has Cisco's files (its digests were also pending until 2026-10-15), so no e2e can stage it; the driver's `TestLifecycle` pins P5. Everything else on the row is asserted (never NeedsTrustReset again, Upgrading, Registered with FirmwareCurrent Unknown and no resync). |
 | W1 | Linphone bench items stay §8's | nobody: e2e proves only that the fake reads the keys the renderer writes; §8 records nothing as answered |
 | W2 | The controller writes `pbx-secrets` (exactly `SecretRefs`, the compiled values) before `pbx-config`, and mints the agent token | core: `bundle`, `secrets`; `install.ProjectedSecret` refuses values that do not give the bundle's version; `TestWritesSecretsThenConfigMap` |
 | W2 | `test/e2e/bundle_test.go` (`applyBundle`) deleted | integrator |
@@ -3704,7 +3711,9 @@ The five inputs most likely to break a real user that no test covers yet.
   and starts with pending digests, so the first `patchbay firmware load` of
   the real zip waits for a commit that fills them in and an image built
   from it. That is the price of nothing outside the binary deciding what is
-  genuine.
+  genuine. *(2026-10-15: the 9.4(2)SR4-3 digests are filled in, so the first
+  release built with them can stage it; a load added later, or a digest
+  corrected against Cisco's own copy, still waits for a release.)*
 - **Hold plays silence**: `res_musiconhold` is not loaded and there are no
   music files.
 - **Long resource names**: a Phone name over 24 characters, or a Softphone

@@ -64,13 +64,13 @@ const (
 //     does not exist. The agent scrapes only a phone it has served or that
 //     registered, so its web page (whose log shows the trust error) is
 //     never read: after 3 min of nothing but .sgn requests it is
-//     NeedsTrustReset with P6 (the default load's digests are pending, so
-//     P5's "factory reset" can never be offered in e2e; the driver's
-//     TestLifecycle pins P5). After the factory reset it takes its config
-//     and downloads the staged load with its web page down: Upgrading, and
-//     never NeedsTrustReset again; then it fetches its config on the new
-//     load and registers: Registered with FirmwareCurrent Unknown (no page
-//     has been read), no resync, no NOTIFY.
+//     NeedsTrustReset with P6 (the default load is Cisco's, whose files e2e
+//     never has, so P5's "factory reset" can never be offered in e2e; the
+//     driver's TestLifecycle pins P5). After the factory reset it takes its
+//     config and downloads the staged load with its web page down:
+//     Upgrading, and never NeedsTrustReset again; then it fetches its config
+//     on the new load and registers: Registered with FirmwareCurrent Unknown
+//     (no page has been read), no resync, no NOTIFY.
 func TestPhoneLifecycle(t *testing.T) {
 	t.Parallel()
 	outer := t // phones and trackers outlive each assessment
