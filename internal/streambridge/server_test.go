@@ -117,12 +117,14 @@ func (a *asterisk) hungUp() {
 	a.closed()
 }
 
-// closed expects the connection to end with no frame.
+// closed expects the connection to end with no frame, then closes it, as
+// Asterisk does.
 func (a *asterisk) closed() {
 	a.t.Helper()
 	if f, err := a.next(5 * time.Second); !errors.Is(err, io.EOF) {
 		a.t.Fatalf("after the end: %s frame, %v; want EOF", f.Kind, err)
 	}
+	_ = a.conn.Close()
 }
 
 // refused expects exactly one hangup frame, then the end.

@@ -73,6 +73,7 @@ type manager struct {
 	loadedAt   *time.Time
 	streamsErr string
 	ffmpeg     string
+	ffmpegErr  string
 	sessions   map[string]*session   // running sessions by source URL
 	stopping   map[string][]*session // pool: stopped sessions whose decoder has not ended yet
 	freedAt    map[string]time.Time  // pool: when a decoder of it last ended
@@ -178,19 +179,20 @@ func (m *manager) setStreamsError(msg string) {
 	m.streamsErr = msg
 }
 
-// setFFmpeg records the decoder's version line.
-func (m *manager) setFFmpeg(v string) {
+// setFFmpeg records the decoder's version line, or why it could not be
+// had.
+func (m *manager) setFFmpeg(v, errMsg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.ffmpeg = v
+	m.ffmpeg, m.ffmpegErr = v, errMsg
 }
 
 // status is what readiness needs: whether a streams.json is loaded, why
-// the newest is not, and the decoder's version line.
-func (m *manager) status() (loaded bool, streamsErr, ffmpeg string) {
+// the newest is not, the decoder's version line and why it is missing.
+func (m *manager) status() (loaded bool, streamsErr, ffmpeg, ffmpegErr string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.doc.Version != "", m.streamsErr, m.ffmpeg
+	return m.doc.Version != "", m.streamsErr, m.ffmpeg, m.ffmpegErr
 }
 
 // openCall counts a new AudioSocket connection, unless the bridge holds
