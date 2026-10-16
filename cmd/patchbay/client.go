@@ -56,7 +56,8 @@ func newModelsCmd() *cobra.Command {
 		Short: "Print the capability profile of every supported model",
 		Long: `Print each driver's models: hardware, provisioning, the PJSIP endpoint
 options, features, and every firmware load with its files and SHA-256s
-(pending until a release fills them in). It needs no cluster.`,
+("pending" for a file whose digest no release has filled in yet). It needs
+no cluster.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			reg, err := builtin.Registry()
