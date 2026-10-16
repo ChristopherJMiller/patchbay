@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<DeviceInformation><MACAddress>D0C78915E8C8</MACAddress><HostName>SEPD0C78915E8C8</HostName><phoneDN>100</phoneDN><appLoadID>jar45sip.9-4-2SR4-3.sbn</appLoadID><bootLoadID>tnp45.9-3-1-CR17.bin</bootLoadID><versionID>*SIP45.9-4-2SR4-3S*</versionID><hardwareRevision>13.0</hardwareRevision><serialNumber>FCH00000000</serialNumber><modelNumber>CP-7945G</modelNumber><MessageWaiting>No</MessageWaiting><udi>phone
+<DeviceInformation><MACAddress>00000A7945AA</MACAddress><HostName>SEP00000A7945AA</HostName><phoneDN>199</phoneDN><appLoadID>jar45sip.9-4-2SR4-3.sbn</appLoadID><bootLoadID>tnp45.9-3-1-CR17.bin</bootLoadID><versionID>*SIP45.9-4-2SR4-3S*</versionID><hardwareRevision>13.0</hardwareRevision><serialNumber>FCH00000000</serialNumber><modelNumber>CP-7945G</modelNumber><MessageWaiting>No</MessageWaiting><udi>phone
 Cisco Unified IP Phone 7945G, Global, Gig Ethernet, Color
 CP-7945G
 V14
 FCH00000000
-</udi><time>6:05:04p</time><timezone>Pacific Standard/Daylight Time</timezone><date>10/15/26</date><systemFreeMemory>3850912</systemFreeMemory><javaHeapFreeMemory>1279032</javaHeapFreeMemory><javaPoolFreeMemory>496296</javaPoolFreeMemory><fipsModeEnabled>No</fipsModeEnabled></DeviceInformation>
+</udi><time>9:41:00a</time><timezone>Pacific Standard/Daylight Time</timezone><date>01/02/26</date><systemFreeMemory>3800000</systemFreeMemory><javaHeapFreeMemory>1200000</javaHeapFreeMemory><javaPoolFreeMemory>480000</javaPoolFreeMemory><fipsModeEnabled>No</fipsModeEnabled></DeviceInformation>

@@ -2029,8 +2029,8 @@ CM 1 as `CallManager1`, `UnifiedCM1` or `CUCM1`; log lines are the `status`
 elements' text (every leaf's text if there are none), trimmed, empty ones
 dropped. Which names a real 79x5 uses is a bench check (§8); the shapes
 are written from the documented field lists and generated, never copied
-from a phone (the bench phone's captured pages, 2026-10-15, are the one
-exception, §8). Addresses that are loopback, unspecified, multicast or
+from a phone (the `cp7945g-sip-9.4.2sr4-3` fixtures are synthetic: the
+bench phone's 2026-10-15 page structure, §8, with invented values). Addresses that are loopback, unspecified, multicast or
 link-local are refused (a failed scrape) without a request. The merge is
 `sensor.ScrapeRecorder`'s rule: a failed scrape adopts nothing.
 *(Bench, 2026-10-15, §8.)* The real 7945 breaks off its own

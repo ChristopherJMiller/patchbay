@@ -237,8 +237,8 @@ StatusFile, Execute, Response, Error.
 - Only `/CGI/Execute` and `/CGI/Screenshot` are documented as needing auth.
 
 **Observed 2026-10-15 on a CP-7945G hw rev 13, SIP 9.4(2)SR4-3** (the
-bench phone, registered to patchbay; the pages are fixtures in
-`internal/agent/scrape/testdata/cp7945g-sip-9.4.2sr4-3`, serial replaced):
+bench phone, registered to patchbay; synthetic fixtures with this structure and invented values are in
+`internal/agent/scrape/testdata/cp7945g-sip-9.4.2sr4-3`):
 - `/DeviceInformationX` is well-formed XML (`utf-8`, CRLF after the
   declaration), root `<DeviceInformation>`. **The load ID is `versionID`,
   wrapped in asterisks:** `*SIP45.9-4-2SR4-3S*`. `appLoadID` names the jar

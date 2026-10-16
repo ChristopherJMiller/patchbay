@@ -16,13 +16,15 @@ import (
 // The fixtures are generated here from the documented field lists
 // (docs/research/2026-10-14-cisco-7945-capabilities.md §6, release-a.md
 // W2.7), through the exported page shapes or by hand for the variants a
-// marshaller cannot produce. The one exception is capture's.
+// marshaller cannot produce. capture's files are written by hand too.
 
-// capture is one page a real CP-7945G (hardware revision 13, SIP
-// 9.4(2)SR4-3) served on 2026-10-15, byte for byte except its serial
-// number, which is FCH00000000 here (in serialNumber and udi). Its
-// /NetworkConfigurationX breaks off where the phone's own renderer throws
-// a NullPointerException, and its /DeviceLogX is empty.
+// capture is one page as a real CP-7945G (hardware revision 13, SIP
+// 9.4(2)SR4-3) served it on the bench on 2026-10-15: its element names,
+// order and CRLF line ends, its asterisk-wrapped versionID, its
+// /NetworkConfigurationX breaking off where the phone's own renderer
+// throws a NullPointerException, and its empty /DeviceLogX. Every value
+// that identified the phone or the house (MAC, number, serial, addresses,
+// URLs, time) is invented: the addresses are 192.0.2.0/24 (RFC 5737).
 func capture(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "cp7945g-sip-9.4.2sr4-3", name))
@@ -42,7 +44,7 @@ var (
 		SerialNumber:     "FCH00000000",
 		ModelNumber:      "CP-7945G",
 	}
-	captureNC = api.NetworkConfiguration{CallManager1: "192.168.0.240   Active"}
+	captureNC = api.NetworkConfiguration{CallManager1: "192.0.2.10   Active"}
 )
 
 func page(t *testing.T, v any) []byte {
