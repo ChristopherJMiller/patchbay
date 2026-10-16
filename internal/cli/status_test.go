@@ -107,15 +107,64 @@ func statusObjects() []client.Object {
 		ObjectMeta: objectMeta("radio", created),
 		Spec:       v1alpha1.StreamSpec{Number: "700", Name: "Radio", Source: "http://radio.invalid/stream"},
 		Status: v1alpha1.StreamStatus{State: "Unavailable", Conditions: []metav1.Condition{
-			condition(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonNoStreamBridge, "release A has no stream bridge"),
+			condition(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonNoStreamBridge,
+				`streams are disabled (streamBridge.enabled is false): dialling 700 plays "not available"`),
 			condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
 		}},
+	}
+	played := metav1.NewTime(testNow.Add(-2 * time.Minute))
+	king5 := &v1alpha1.Stream{
+		ObjectMeta: objectMeta("king5", created),
+		Spec:       v1alpha1.StreamSpec{Number: "705", Name: "KING 5", Source: "http://192.168.0.58:5004/auto/v5.1"},
+		Status: v1alpha1.StreamStatus{
+			State: "Playing", Listeners: 2, TunerPool: "hdhomerun", LastPlayed: &played,
+			// History: it played since, so status does not print it.
+			LastFailure: &v1alpha1.StreamFailure{At: metav1.NewTime(testNow.Add(-time.Hour)), Reason: v1alpha1.StreamFailureSourceFailed, Message: "an old failure"},
+			Conditions: []metav1.Condition{
+				condition(v1alpha1.ConditionReady, metav1.ConditionTrue, v1alpha1.ReasonPlaying, "2 listeners; tuner pool hdhomerun"),
+				condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
+			},
+		},
+	}
+	kiro7 := &v1alpha1.Stream{
+		ObjectMeta: objectMeta("kiro7", created),
+		Spec:       v1alpha1.StreamSpec{Number: "707", Name: "KIRO 7", Source: "http://192.168.0.58:5004/auto/v7.1"},
+		Status: v1alpha1.StreamStatus{
+			State: "Busy", TunerPool: "hdhomerun",
+			LastFailure: &v1alpha1.StreamFailure{At: metav1.NewTime(testNow.Add(-time.Minute)), Reason: v1alpha1.StreamFailureTunerBusy,
+				Message: "pool hdhomerun (1 at a time) is playing king5 (705)"},
+			Conditions: []metav1.Condition{
+				condition(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonTunerBusy, "pool hdhomerun (1 at a time) is playing king5 (705)"),
+				condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
+			},
+		},
+	}
+	groove := &v1alpha1.Stream{
+		ObjectMeta: objectMeta("groovesalad", created),
+		Spec:       v1alpha1.StreamSpec{Number: "750", Name: "Groove Salad", Source: "https://ice2.somafm.com/groovesalad-128-mp3"},
+		Status: v1alpha1.StreamStatus{
+			State: "Failing",
+			LastFailure: &v1alpha1.StreamFailure{At: metav1.NewTime(testNow.Add(-30 * time.Second)), Reason: v1alpha1.StreamFailureSourceEnded,
+				Message: "ffmpeg exited with status 0: the source ended[2J"},
+			Conditions: []metav1.Condition{
+				condition(v1alpha1.ConditionReady, metav1.ConditionFalse, v1alpha1.ReasonSourceFailed, "2026-10-15T09:29:30Z: ffmpeg exited with status 0: the source ended"),
+				condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
+			},
+		},
 	}
 	other := &v1alpha1.Phone{
 		ObjectMeta: metav1.ObjectMeta{Name: "elsewhere", Namespace: "other"},
 		Spec:       v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "0200E2E000FF", Number: "199"},
 	}
-	return []client.Object{radio, tablet, kitchen, chris, desk, laptop, garage, other}
+	drone := &v1alpha1.Stream{
+		ObjectMeta: objectMeta("dronezone", created),
+		Spec:       v1alpha1.StreamSpec{Number: "751", Name: "Drone Zone", Source: "https://ice2.somafm.com/dronezone-128-mp3"},
+		Status: v1alpha1.StreamStatus{State: "Playing", Listeners: 1, LastPlayed: &played, Conditions: []metav1.Condition{
+			condition(v1alpha1.ConditionReady, metav1.ConditionTrue, v1alpha1.ReasonPlaying, "1 listener"),
+			condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
+		}},
+	}
+	return []client.Object{drone, radio, king5, kiro7, groove, tablet, kitchen, chris, desk, laptop, garage, other}
 }
 
 func statusObservations() agentapi.Observations {

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -50,6 +51,12 @@ type resourceRow struct {
 	// provisioning is a Softphone with a provisioning URL. The URL itself
 	// is never printed: only `patchbay softphone qr` prints it.
 	provisioning bool
+	// details follow the state in parentheses: a Stream's listeners and
+	// tuner pool.
+	details []string
+	// lastFailure is a Stream's status.lastFailure, printed while Ready is
+	// not True (once it plays again the failure is history).
+	lastFailure *v1alpha1.StreamFailure
 }
 
 // Status prints an overview of the install (plan 6.2.7):
@@ -63,8 +70,11 @@ type resourceRow struct {
 //     controller or a frozen compile looks like a healthy install;
 //  2. per kind (Phone, Softphone, Person, Stream; by name; a kind with none
 //     left out) each resource's state (Pending before the controller wrote
-//     one; marked when its spec changed since), every condition not in its healthy status, its human action, and
-//     for a Softphone with a URL the command that shows it;
+//     one; marked when its spec changed since), every condition not in its
+//     healthy status, its human action, for a Softphone with a URL the
+//     command that shows it, and for a Stream its listeners and tuner pool
+//     (`Stream king5 (705): Playing (2 listeners, pool hdhomerun)`) and,
+//     while Ready is not True, its last failure;
 //  3. the unknown phones the agent has seen ask for config.
 //
 // The resources are listed first; failing that is the only error. The
@@ -173,7 +183,9 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 		rows = append(rows, resourceRow{
 			kind: "Stream", name: o.Name, number: string(o.Spec.Number), state: o.Status.State,
 			generation: o.Generation, observed: o.Status.ObservedGeneration,
-			conditions: o.Status.Conditions,
+			conditions:  o.Status.Conditions,
+			details:     streamDetails(o.Status),
+			lastFailure: o.Status.LastFailure,
 		})
 	}
 	add(rows)
@@ -182,6 +194,9 @@ func listResources(ctx context.Context, kube client.Reader, namespace string) ([
 
 func printRow(p *printer, r resourceRow) {
 	state := displayState(r.state)
+	if len(r.details) > 0 {
+		state += " (" + strings.Join(r.details, ", ") + ")"
+	}
 	if r.state != "" && r.observed < r.generation {
 		state += " (its spec changed since; not decided again yet)"
 	}
@@ -199,9 +214,29 @@ func printRow(p *printer, r resourceRow) {
 	if r.humanAction != "" {
 		p.printf("  human action: %s\n", indentLines(printable(r.humanAction)))
 	}
+	if f := r.lastFailure; f != nil && !meta.IsStatusConditionTrue(r.conditions, v1alpha1.ConditionReady) {
+		line := fmt.Sprintf("last failure %s %s: %s", f.At.UTC().Format(time.RFC3339), f.Reason, f.Message)
+		p.printf("  %s\n", indentLines(printable(line)))
+	}
 	if r.provisioning {
 		p.printf("  provisioning: patchbay softphone qr %s\n", r.name)
 	}
+}
+
+// streamDetails is what a Stream row shows after its state: its listeners
+// (while it has any) and its tuner pool.
+func streamDetails(s v1alpha1.StreamStatus) []string {
+	var d []string
+	switch {
+	case s.Listeners == 1:
+		d = append(d, "1 listener")
+	case s.Listeners > 1:
+		d = append(d, fmt.Sprintf("%d listeners", s.Listeners))
+	}
+	if s.TunerPool != "" {
+		d = append(d, "pool "+s.TunerPool)
+	}
+	return d
 }
 
 // displayState is status.state, or Pending before the controller wrote one.
