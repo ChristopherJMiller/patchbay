@@ -176,9 +176,11 @@ The patchbay image and the CLI the suite runs are built with the `e2e`
 build tag: only then does the firmware manifest hold the e2e test load
 (docs/plans/release-a.md §2(b)). No other image or binary may be built
 with it. `make image` renders the sound prompts
-first (`make sounds`: espeak-ng and ffmpeg from the flake into
-`build/sounds/`, which `.dockerignore` admits and `.gitignore` keeps out
-of git); the Dockerfile copies them to `/usr/share/patchbay/sounds/`.
+first (`make sounds`: every voice, with espeak-ng, Piper and ffmpeg from
+the flake, into `build/sounds/<voice>/`, which `.dockerignore` admits and
+`.gitignore` keeps out of git); the Dockerfile copies them to
+`/usr/share/patchbay/sounds/`. The suite runs the default voice, espeak
+(docs/sounds.md).
 
 `kind load` cannot carry a registry digest into the node's containerd (it
 re-imports the image under a new manifest digest), so `test/e2e/values.yaml`

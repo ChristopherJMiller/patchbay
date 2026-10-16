@@ -56,7 +56,8 @@ again (at most its 600 s expiry; Asterisk's contacts live on an emptyDir).
 | The PBX pod stays in `ContainerCreating` | Its `<fullname>-agent-token` Secret does not exist yet: the controller mints it, and is not running (or not yet). | Look at the controller pod. |
 | The controller crash-loops; its log names `settings.json` | A chart value it refuses: a time zone the 79x5 has no name for (the message lists the ones it takes), a number plan that clashes, an `amiSecret` that is not this install's. | Fix the value. The old controller pod keeps running meanwhile (rolling update). |
 | The PBX pod is not Ready; the agent's startup probe fails, `/readyz` says no config is live | The agent waits for `pbx-config` and `pbx-secrets`, or refused what it found (`Agent:` and the agent log say why). After a change of `pbx.address` or `pbx.ports.sip`, or a new release, the new PBX pod refuses a version compiled for its old SIP bind or modules until the new controller has compiled ("refused: compiled for SIP on …"): Asterisk would keep the transports it booted with, and no reload moves them. | Normally seconds. If it lasts, the controller is not compiling: see the `Controller:` and `Config:` lines. The startup probe allows 300 s, then the kubelet restarts the agent. |
-| `/readyz` names a sound prompt | The image lacks a prompt (a broken image). | Use a released image. |
+| `/readyz` names a sound prompt | The image lacks a prompt in the voice `sounds.voice` picks (a broken image). | Use a released image. |
+| The agent exits at start naming `--sounds-voice` | A voice the image does not carry; the chart refuses one (`helm template` fails), so the pod spec was edited by hand. | Set `sounds.voice` to one of the voices it lists (docs/sounds.md). |
 
 ## Every device at once
 

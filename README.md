@@ -86,6 +86,13 @@ When something is wrong, [docs/operations.md](docs/operations.md) goes from
 what you see (in `patchbay status`, `kubectl get phones`, the Events and
 the metrics) to its cause and what to do.
 
+The PBX's spoken prompts (911's "This phone cannot call emergency
+services" and "That number is not available") are rendered from text when
+the image is built, in five voices: espeak-ng's, the default, and four
+Piper voices trained on public domain recordings (`ljspeech`, `kristin`,
+`norman`, `john`). Pick one with `--set sounds.voice=kristin`;
+[docs/sounds.md](docs/sounds.md) has the voices and their licences.
+
 ## Development
 
 Everything runs inside the pinned Nix dev shell, which provides Go, the
@@ -99,7 +106,7 @@ make generate                  # deepcopy + CRDs (after any api/ change)
 make test                      # unit tests + envtest (real kube-apiserver + etcd)
 make lint                      # golangci-lint (with exhaustive) + helm lint
 make build                     # bin/patchbay
-make sounds                    # the 911 and "not available" prompts (espeak-ng) into build/sounds
+make sounds                    # the 911 and "not available" prompts, every voice (espeak-ng, Piper) into build/sounds
 make image                     # ghcr.io/christopherjmiller/patchbay:dev (renders the prompts first)
 make asterisk-check            # every compile golden booted in the pinned Asterisk (docker)
 make e2e                       # kind + the chart + the controller + real Asterisk + simulated phones

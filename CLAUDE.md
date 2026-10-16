@@ -166,6 +166,9 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **Ready also needs the prompts** (§5: the startup probe passes once the
   first version is applied): `/readyz` also requires every sound prompt
   installed from the image, so 911 never plays a missing announcement.
+  The image carries them in every voice of an allowlist; the chart's
+  `sounds.voice` (default `espeak`) picks one, and the agent
+  (`--sounds-voice`) refuses any other (docs/sounds.md).
 - **Request annotations** (`patchbay.chrismiller.xyz/resync-requested`,
   `.../reissue-requested`) are acted on once per value, recorded in
   `status.handledRequest`, so the controller never edits metadata.
@@ -283,7 +286,9 @@ make test         # unit + envtest (KUBEBUILDER_ASSETS comes from the flake), th
 make test-unit    # -short: skips envtest
 make build image  # bin/patchbay; ghcr.io/christopherjmiller/patchbay:dev (GO_TAGS=e2e
                   # only for e2e images and .e2e/bin/patchbay: the e2e firmware load)
-make sounds       # the prompts (espeak-ng + ffmpeg) into build/sounds; make image runs it
+make sounds       # the prompts in every voice into build/sounds/<voice>; make image runs it.
+                  # espeak-ng + ffmpeg from the shell; Piper and its voices are flake packages
+                  # (.#piper, .#piper-voices) that gen-sounds `nix build`s, never in the shell
 make tools-versions
 make check-versions # envtest's kube-apiserver minor = go.mod's k8s.io minor, flake Go minor =
                     # the Dockerfile's (hard rule 1, checked; make test runs it first)
@@ -306,6 +311,14 @@ The CRDs are generated into `charts/patchbay/templates/crds/` and carry
 `test/chart` renders the chart (`helm template`) and checks it against the
 Go layout contracts: change a path, uid or module in one and the test names
 the other.
+
+The prompt voices are an allowlist kept in four places: `sounds.Voices`
+(internal/agent/sounds, the reference), `hack/gen-sounds.sh`, the flake's
+`piper-voices` (each file pinned by sha256) and the chart's
+`patchbay.soundsVoice`. The tests compare the script's `--list` and the
+chart's refusal with `sounds.Voices`; `make sounds` fails if `piper-voices`
+lacks one. A new voice needs a public domain dataset and no lessac in its
+lineage (docs/sounds.md says why).
 
 ## Hard rules
 
