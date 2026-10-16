@@ -140,6 +140,12 @@ type Device struct {
 	// device Invalid.
 	Firmware string
 
+	// Display is the Phone's own spec.display, nil when unset (always for
+	// softphones). The driver renders DisplayWithDefaults(Display,
+	// RenderContext.DisplayDefaults) for a model that supports
+	// FeatureDisplayPowerSave; a Display on a model without it is Invalid.
+	Display *v1alpha1.PhoneDisplay
+
 	// ConfigVersion is this device's compiled config version
 	// (compile.Bundle.Devices[ID].Version). Compared with
 	// Memory.LastConfigFetch.Version to tell ConfigStale. Empty when the
@@ -358,6 +364,12 @@ type RenderContext struct {
 	// at once.
 	DialPatterns []string
 
+	// DisplayDefaults is the house default display for Phones
+	// (compile.Settings.PhoneDefaults.Display), nil when there is none. A
+	// driver merges it under each Phone's own (DisplayWithDefaults), on the
+	// models that support FeatureDisplayPowerSave only.
+	DisplayDefaults *v1alpha1.PhoneDisplay
+
 	// SIPPassword is the placeholder for the device's SIP password
 	// (@@secret:<name>/<key>@@), never the password itself.
 	SIPPassword string
@@ -401,6 +413,7 @@ const (
 	FeatureCustomRingtones  Feature = "customRingtones"
 	FeatureXMLServices      Feature = "xmlServices"
 	FeaturePushNotification Feature = "pushNotification" // CGI/Execute
+	FeatureDisplayPowerSave Feature = "displayPowerSave" // Phone.spec.display
 )
 
 // Support is whether a feature works on a backend.

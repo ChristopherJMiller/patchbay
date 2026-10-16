@@ -53,8 +53,8 @@ const RequestMaxLength = 256
 // annotation and its status: everything that comes from the resource alone.
 // The caller sets what needs the whole install: ConfigVersion (from the
 // compiled bundle) and the claim fields NumberConflict, MACConflict,
-// NumberOutOfPlan and ClaimMessage (from compile.ResolveClaims). Memory is a
-// deep copy, so a driver can change it freely.
+// NumberOutOfPlan and ClaimMessage (from compile.ResolveClaims). Memory and
+// Display are deep copies, so a driver can change them freely.
 func PhoneDevice(p *v1alpha1.Phone) Device {
 	label := p.Spec.Label
 	if label == "" {
@@ -82,6 +82,7 @@ func PhoneDevice(p *v1alpha1.Phone) Device {
 		Number:    string(p.Spec.Number),
 		Label:     label,
 		Firmware:  p.Spec.Firmware,
+		Display:   p.Spec.Display.DeepCopy(),
 		Request:   request(p.Annotations, v1alpha1.AnnotationResyncRequested),
 		LastState: State(st.State),
 		Memory:    m,

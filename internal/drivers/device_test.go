@@ -77,7 +77,9 @@ func TestPhoneDevice(t *testing.T) {
 			Name:        "desk",
 			Annotations: map[string]string{v1alpha1.AnnotationResyncRequested: "2026-10-14T12:00:00Z"},
 		},
-		Spec: v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "d0c78915e8c8", Number: "100", Label: "Desk"},
+		Spec: v1alpha1.PhoneSpec{Model: v1alpha1.PhoneModelCisco7945, MAC: "d0c78915e8c8", Number: "100", Label: "Desk",
+			Display: &v1alpha1.PhoneDisplay{IdleTimeout: &metav1.Duration{Duration: time.Minute}, OnWindow: &v1alpha1.DisplayOnWindow{
+				Start: "07:30", Duration: metav1.Duration{Duration: time.Hour}, Days: []v1alpha1.Weekday{v1alpha1.Monday}}}},
 		Status: v1alpha1.PhoneStatus{
 			State: "Registered",
 			Observed: &v1alpha1.PhoneObserved{
@@ -93,6 +95,7 @@ func TestPhoneDevice(t *testing.T) {
 	want := drivers.Device{
 		Kind: drivers.KindPhone, Name: "desk", ID: "phone-desk", Model: "cisco-7945",
 		MAC: "D0C78915E8C8", Number: "100", Label: "Desk",
+		Display: p.Spec.Display.DeepCopy(),
 		Request: "2026-10-14T12:00:00Z", LastState: drivers.StateRegistered,
 		Memory: drivers.Memory{
 			FirstSeen: at(1), Firmware: "SIP45.9-4-2SR4-3S", Address: "192.168.20.100",
@@ -110,9 +113,12 @@ func TestPhoneDevice(t *testing.T) {
 	got.Memory.LastConfigFetch.Version = "changed"
 	got.Memory.LastAction.Attempts = 9
 	*got.Memory.FirstSeen = *at(59)
+	got.Display.OnWindow.Days[0] = v1alpha1.Sunday
+	got.Display.IdleTimeout.Duration = time.Hour
 	if p.Status.Observed.LastConfigFetch.Version != "7c1e" || p.Status.LastAction.Attempts != 1 ||
-		!p.Status.Observed.FirstSeen.Equal(at(1)) {
-		t.Fatal("PhoneDevice's Memory aliases the resource's status")
+		!p.Status.Observed.FirstSeen.Equal(at(1)) ||
+		p.Spec.Display.OnWindow.Days[0] != v1alpha1.Monday || p.Spec.Display.IdleTimeout.Duration != time.Minute {
+		t.Fatal("PhoneDevice's Memory or Display aliases the resource")
 	}
 
 	// Writing the memory back gives the status it came from.
@@ -133,9 +139,10 @@ func TestPhoneDevice(t *testing.T) {
 	// no request.
 	p.Spec.Label = ""
 	p.Annotations[v1alpha1.AnnotationResyncRequested] = strings.Repeat("x", drivers.RequestMaxLength+1)
+	p.Spec.Display = nil
 	p.Status = v1alpha1.PhoneStatus{}
 	d := drivers.PhoneDevice(p)
-	if d.Label != "desk" || d.Request != "" || d.LastState != "" || !reflect.DeepEqual(d.Memory, drivers.Memory{}) {
+	if d.Label != "desk" || d.Display != nil || d.Request != "" || d.LastState != "" || !reflect.DeepEqual(d.Memory, drivers.Memory{}) {
 		t.Fatalf("defaults: %+v", d)
 	}
 	p.Annotations[v1alpha1.AnnotationResyncRequested] = strings.Repeat("x", drivers.RequestMaxLength)
