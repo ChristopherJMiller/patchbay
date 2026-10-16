@@ -597,3 +597,23 @@ func helm(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	err = cmd.Run()
 	return out.String(), errOut.String(), err
 }
+
+// TestChartE2EValues: the e2e suite's values (test/e2e/values.yaml, with
+// the node the harness adds at run time) render settings the controller
+// accepts, the stream bridge from the e2e image, never pulled, and the
+// fake tuner as the only pool.
+func TestChartE2EValues(t *testing.T) {
+	m := renderFile(t, filepath.Join("..", "e2e", "values.yaml"), "pbx.nodeName=patchbay-e2e-control-plane", "pbx.address=172.18.0.2")
+	s, err := settings.Parse([]byte(settingsJSON(t, m)))
+	if err != nil {
+		t.Fatalf("the controller refuses the e2e settings: %v", err)
+	}
+	if s.Streams.Limit() != 20*time.Second ||
+		!reflect.DeepEqual(s.Streams.TunerPools, []compile.TunerPool{{Name: "tuner", Hosts: []string{"fake-tuner.patchbay-e2e.svc"}, Max: 1}}) {
+		t.Errorf("e2e streams settings: %+v", s.Streams)
+	}
+	c := bridgeContainer(t, &bridge(t, m).Spec.Template.Spec)
+	if c.Image != bridgeRepository+":e2e" || c.ImagePullPolicy != corev1.PullNever {
+		t.Errorf("the e2e bridge runs %s (%s), want %s:e2e, never pulled", c.Image, c.ImagePullPolicy, bridgeRepository)
+	}
+}

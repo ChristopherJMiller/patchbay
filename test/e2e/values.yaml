@@ -31,3 +31,22 @@ pbx:
 firmware:
   persistence:
     keep: false
+
+# The stream bridge (release B): the e2e build of its image, loaded with
+# `kind load docker-image`, never pulled (test/e2e/streamkit_test.go's
+# streamBridgeImage).
+streamBridge:
+  image:
+    tag: e2e
+    pullPolicy: Never
+  logLevel: debug
+
+streams:
+  # Short, so TestStreamRadio sees the PBX end a call at the limit.
+  callLimit: 20s
+  # The fake tuner (`fakephone source`, Service fake-tuner) is the pool:
+  # one of its two tuners at a time, as the house's HDHomeRun.
+  tunerPools:
+    - name: tuner
+      hosts: [fake-tuner.patchbay-e2e.svc]
+      max: 1
