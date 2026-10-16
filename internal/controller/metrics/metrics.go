@@ -9,13 +9,17 @@
 //	patchbay_observation_age_seconds      how old the last good observations are
 //	patchbay_agent_reachable              1 when the latest poll of the agent succeeded, else 0
 //	patchbay_asterisk_up                  1 when the agent's AMI session to Asterisk was up at the latest poll, else 0
+//	patchbay_streams{state}               Streams by status.state (from the cache at scrape; "" is Pending)
+//	patchbay_stream_bridge_reachable      1 when the latest poll of the stream bridge succeeded, else 0
 //
 // patchbay_registered_endpoints and patchbay_observation_age_seconds are
 // absent until the first successful poll, patchbay_agent_reachable until
 // the first poll attempt has ended, patchbay_asterisk_up while the latest poll
-// failed (patchbay_agent_reachable says so), and patchbay_config_version_info until
-// the bundle reconciler has a version in place. Labels carry kinds, states
-// and bundle versions, never a secret.
+// failed (patchbay_agent_reachable says so), patchbay_config_version_info until
+// the bundle reconciler has a version in place, and
+// patchbay_stream_bridge_reachable until the stream poller's first attempt
+// has ended (ObserveBridge; there is none without a stream bridge). Labels
+// carry kinds, states and bundle versions, never a secret.
 //
 // Every method is a no-op on a nil *Metrics, so components run without
 // metrics.
@@ -45,10 +49,15 @@ const (
 	NameObservationAge      = "patchbay_observation_age_seconds"
 	NameAgentReachable      = "patchbay_agent_reachable"
 	NameAsteriskUp          = "patchbay_asterisk_up"
+
+	// Release B (docs/plans/release-b.md RT.6).
+	NameStreams               = "patchbay_streams"
+	NameStreamBridgeReachable = "patchbay_stream_bridge_reachable"
 )
 
-// StatePending is patchbay_devices' state label for a device whose status
-// has no state yet (not decided, or not compiled).
+// StatePending is the state label of patchbay_devices and patchbay_streams
+// for a resource whose status has no state yet (not decided, or not
+// compiled).
 const StatePending = "Pending"
 
 // listTimeout bounds patchbay_devices' read of the cache at scrape.
@@ -87,6 +96,7 @@ type Metrics struct {
 	mu          sync.Mutex
 	version     string     // the config_version_info series set last
 	lastFailure failureKey // the failed apply counted last
+	bridge      *bool      // the stream poller's latest attempt reached the bridge; nil before the first
 }
 
 // failureKey is one apply attempt the agent reported.
@@ -118,9 +128,10 @@ func New(cfg Config) (*Metrics, error) {
 			Help: "Reconciles whose compile or bundle encoding failed; the previous bundle stayed.",
 		}),
 	}
-	collectors := []prometheus.Collector{m.configVersion, m.applyFailures, m.compileFailures}
+	collectors := []prometheus.Collector{m.configVersion, m.applyFailures, m.compileFailures, &bridgeCollector{m: m}}
 	if cfg.Reader != nil {
-		collectors = append(collectors, &devicesCollector{reader: cfg.Reader, namespace: cfg.Namespace})
+		collectors = append(collectors, &devicesCollector{reader: cfg.Reader, namespace: cfg.Namespace},
+			&streamsCollector{reader: cfg.Reader, namespace: cfg.Namespace})
 	}
 	if cfg.Observer != nil {
 		collectors = append(collectors, &observerCollector{observer: cfg.Observer, now: cfg.Now})
@@ -279,4 +290,61 @@ func boolValue(b bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+// ObserveBridge records the outcome of the stream poller's latest attempt
+// (internal/controller/streamstate): patchbay_stream_bridge_reachable is 1
+// when it reached the bridge's observations, else 0.
+func (m *Metrics) ObserveBridge(reachable bool) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.bridge = &reachable
+}
+
+// bridgeCollector is patchbay_stream_bridge_reachable, once ObserveBridge
+// has been called.
+type bridgeCollector struct{ m *Metrics }
+
+var bridgeReachableDesc = prometheus.NewDesc(NameStreamBridgeReachable,
+	"1 when the latest poll of the stream bridge's observations succeeded, else 0 (absent without a stream bridge).", nil, nil)
+
+func (c *bridgeCollector) Describe(ch chan<- *prometheus.Desc) { ch <- bridgeReachableDesc }
+
+func (c *bridgeCollector) Collect(ch chan<- prometheus.Metric) {
+	c.m.mu.Lock()
+	b := c.m.bridge
+	c.m.mu.Unlock()
+	if b != nil {
+		ch <- prometheus.MustNewConstMetric(bridgeReachableDesc, prometheus.GaugeValue, boolValue(*b))
+	}
+}
+
+// streamsCollector is patchbay_streams, counted from the cache at scrape.
+type streamsCollector struct {
+	reader    client.Reader
+	namespace string
+}
+
+var streamsDesc = prometheus.NewDesc(NameStreams,
+	"Streams by status.state (Pending: no state yet).", []string{"state"}, nil)
+
+func (c *streamsCollector) Describe(ch chan<- *prometheus.Desc) { ch <- streamsDesc }
+
+func (c *streamsCollector) Collect(ch chan<- prometheus.Metric) {
+	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+	defer cancel()
+	var list v1alpha1.StreamList
+	if err := c.reader.List(ctx, &list, client.InNamespace(c.namespace)); err != nil {
+		return // as patchbay_devices: the series vanish until the cache answers
+	}
+	counts := map[string]int{}
+	for i := range list.Items {
+		counts[stateLabel(list.Items[i].Status.State)]++
+	}
+	for state, n := range counts {
+		ch <- prometheus.MustNewConstMetric(streamsDesc, prometheus.GaugeValue, float64(n), state)
+	}
 }

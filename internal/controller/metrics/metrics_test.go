@@ -84,14 +84,25 @@ func softphone(name, state string) *v1alpha1.Softphone {
 	return s
 }
 
+func stream(name, state string) *v1alpha1.Stream {
+	s := &v1alpha1.Stream{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}
+	s.Status.State = state
+	return s
+}
+
 func TestEveryMetric(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme(t)).WithObjects(
 		phone("desk", "Registered"),
 		phone("kitchen", "Registered"),
 		phone("garage", ""),
 		softphone("laptop", "Issued"),
+		stream("king5", "Playing"),
+		stream("kiro7", "Idle"),
+		stream("komo4", "Idle"),
+		stream("added", ""),
 		// Another namespace is not counted.
 		&v1alpha1.Phone{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "elsewhere"}},
+		&v1alpha1.Stream{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "elsewhere"}},
 	).Build()
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	applyAt := now.Add(-time.Minute)
@@ -120,9 +131,14 @@ func TestEveryMetric(t *testing.T) {
 	m.ConfigWritten("v2")
 	m.CompileFailed()
 	m.ObserveSnapshot(holder.Snapshot())
+	m.ObserveBridge(true)
 
 	got := scrape(t, reg)
 	want := map[string]string{
+		`patchbay_streams{state="Playing"}`:                 "1",
+		`patchbay_streams{state="Idle"}`:                    "2",
+		`patchbay_streams{state="Pending"}`:                 "1",
+		`patchbay_stream_bridge_reachable`:                  "1",
 		`patchbay_devices{kind="Phone",state="Registered"}`: "2",
 		`patchbay_devices{kind="Phone",state="Pending"}`:    "1",
 		`patchbay_devices{kind="Softphone",state="Issued"}`: "1",
@@ -293,5 +309,49 @@ func TestDevicesAbsentWhenTheCacheFails(t *testing.T) {
 	}
 	if s := series(scrape(t, reg), metrics.NameDevices); len(s) != 0 {
 		t.Fatalf("patchbay_devices with a failing cache: %v, want none", s)
+	}
+}
+
+// TestStreamBridgeReachable: patchbay_stream_bridge_reachable is absent
+// until the stream poller's first attempt has ended, then follows the
+// latest attempt (docs/plans/release-b.md RT.6).
+func TestStreamBridgeReachable(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m, err := metrics.New(metrics.Config{Registerer: reg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := series(scrape(t, reg), metrics.NameStreamBridgeReachable); len(s) != 0 {
+		t.Fatalf("%s present before any poll: %v", metrics.NameStreamBridgeReachable, s)
+	}
+	for _, step := range []struct {
+		reachable bool
+		want      string
+	}{{false, "0"}, {true, "1"}, {true, "1"}, {false, "0"}} {
+		m.ObserveBridge(step.reachable)
+		if got := scrape(t, reg)[metrics.NameStreamBridgeReachable]; got != step.want {
+			t.Errorf("after a poll that reached it %t: %s, want %s", step.reachable, got, step.want)
+		}
+	}
+	var none *metrics.Metrics
+	none.ObserveBridge(true)
+}
+
+func TestStreamsAbsentWhenTheCacheFails(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(scheme(t)).WithObjects(stream("king5", "Idle")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, cl client.WithWatch, l client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := l.(*v1alpha1.StreamList); ok {
+					return errors.New("cache not started")
+				}
+				return cl.List(context.Background(), l, opts...)
+			},
+		}).Build()
+	reg := prometheus.NewRegistry()
+	if _, err := metrics.New(metrics.Config{Registerer: reg, Reader: c, Namespace: ns}); err != nil {
+		t.Fatal(err)
+	}
+	if s := series(scrape(t, reg), metrics.NameStreams); len(s) != 0 {
+		t.Fatalf("patchbay_streams with a failing cache: %v, want none", s)
 	}
 }
