@@ -123,12 +123,9 @@ func checkSecretRef(r SecretRef) error {
 // bridgeAddress accepts the stream bridge's AudioSocket address as the
 // dialplan writes it into Dial(AudioSocket/<address>/…): host:port, the
 // host an IP address (IPv6 in brackets, no zone) or a DNS subdomain, the
-// port 1-65535 in digits, and none of "/", ",", "(" or ")", which would end
-// the dial string's part or Dial's argument.
+// port 1-65535 in digits. Neither can hold "/", ",", "(" or ")", which
+// would end the dial string's part or Dial's argument, nor white space.
 func bridgeAddress(addr string) bool {
-	if strings.ContainsAny(addr, "/,()") {
-		return false
-	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || !hostName(host) || port == "" || strings.Trim(port, "0123456789") != "" {
 		return false
