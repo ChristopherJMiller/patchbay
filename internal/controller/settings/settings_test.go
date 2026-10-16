@@ -185,3 +185,57 @@ func TestParsePhoneDefaults(t *testing.T) {
 		}
 	}
 }
+
+// TestParseStreams: settings.json's streams (the call limit as a Go
+// duration, the tuner pools) parse as strictly as the rest, and a bad
+// value's error names its field (docs/plans/release-b.md RT.3).
+func TestParseStreams(t *testing.T) {
+	with := func(streams string) []byte {
+		return []byte(strings.Replace(string(readFixture(t)), `"streams": {
+    "callLimit": "2h"
+  }`, `"streams": `+streams, 1))
+	}
+	got, err := settings.Parse(with(`{"callLimit": "90m", "tunerPools": [
+		{"name": "hdhomerun", "hosts": ["192.168.0.58", "hdhomerun.lan"], "max": 1},
+		{"name": "attic", "hosts": ["fd00::59"], "max": 2}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := compile.StreamSettings{
+		CallLimit: metav1.Duration{Duration: 90 * time.Minute},
+		TunerPools: []compile.TunerPool{
+			{Name: "hdhomerun", Hosts: []string{"192.168.0.58", "hdhomerun.lan"}, Max: 1},
+			{Name: "attic", Hosts: []string{"fd00::59"}, Max: 2},
+		},
+	}
+	if !reflect.DeepEqual(got.Streams, want) || got.Streams.Limit() != 90*time.Minute {
+		t.Errorf("streams = %+v, want %+v", got.Streams, want)
+	}
+	if def, err := settings.Parse(with(`{}`)); err != nil || def.Streams.Limit() != compile.DefaultCallLimit || def.Streams.TunerPools != nil {
+		t.Errorf("empty streams: %+v, %v; want the default limit and no pools", def.Streams, err)
+	}
+
+	for streams, wantErr := range map[string]string{
+		`{"callLimit": "5s"}`:    "streams.callLimit 5s is not whole seconds from 10s to 24h",
+		`{"callLimit": "48h"}`:   "streams.callLimit 48h0m0s is not whole seconds",
+		`{"callLimit": "90.5s"}`: "streams.callLimit 1m30.5s is not whole seconds",
+		`{"callLimit": 7200}`:    "decoding",
+		`{"callLimit": "2 h"}`:   "decoding",
+		`{"limit": "2h"}`:        `unknown field "limit"`,
+		`{"tunerPools": [{"name": "tv", "hosts": ["h"], "max": 1, "tuners": 2}]}`:                            `unknown field "tuners"`,
+		`{"tunerPools": [{"name": "tv", "hosts": ["h"]}]}`:                                                   "streams.tunerPools[0]: max 0 is not 1-16",
+		`{"tunerPools": [{"name": "TV", "hosts": ["h"], "max": 1}]}`:                                         `streams.tunerPools[0]: name "TV" is not a DNS label`,
+		`{"tunerPools": [{"name": "tv", "hosts": [], "max": 1}]}`:                                            "streams.tunerPools[0]: hosts is empty",
+		`{"tunerPools": [{"name": "tv", "hosts": ["h:5004"], "max": 1}]}`:                                    `streams.tunerPools[0]: host "h:5004" is not an IP address or a DNS name`,
+		`{"tunerPools": [{"name": "a", "hosts": ["h"], "max": 1}, {"name": "b", "hosts": ["H"], "max": 1}]}`: `streams.tunerPools[1]: host "H" is in pools "a" and "b"`,
+		`{"tunerPools": {"name": "tv"}}`:                                                                     "decoding",
+	} {
+		if _, err := settings.Parse(with(streams)); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Parse with streams %s = %v, want an error containing %q", streams, err, wantErr)
+		}
+	}
+	raw := strings.Replace(string(readFixture(t)), `"streamBridge": "patchbay-streams.telephony.svc:9092"`, `"streamBridge": "patchbay-streams.telephony.svc:9092/x"`, 1)
+	if _, err := settings.Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "streamBridge") {
+		t.Errorf("Parse with a bad streamBridge = %v, want an error naming streamBridge", err)
+	}
+}
