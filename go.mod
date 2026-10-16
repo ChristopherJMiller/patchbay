@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/emiago/sipgo v1.6.0
 	github.com/go-logr/logr v1.4.3
-	github.com/icholy/digest v1.1.0
+	github.com/icholy/digest v1.2.0
 	github.com/pin/tftp/v3 v3.2.0
 	github.com/pion/rtp v1.10.5
 	github.com/prometheus/client_golang v1.24.0
