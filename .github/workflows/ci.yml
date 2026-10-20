@@ -47,7 +47,7 @@ concurrency:
 jobs:
   check:
     name: generate, lint, test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,7 +132,7 @@ jobs:
 
   e2e:
     name: e2e (kind)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     # Contract with the harness (`make e2e`, test/e2e):
     #   - one kind cluster named patchbay-e2e;
@@ -214,7 +214,7 @@ jobs:
   image:
     name: image (amd64, arm64)
     needs: [check, e2e]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -315,7 +315,7 @@ jobs:
     name: publish (ghcr.io)
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [check, e2e, image]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     permissions:
       contents: read
@@ -515,7 +515,7 @@ jobs:
     name: release (chart + GitHub release)
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [publish]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: write # the GitHub release and the gh-pages index
@@ -606,7 +606,7 @@ jobs:
     name: ci-ok
     if: always()
     needs: [check, e2e, image]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Every required job passed
