@@ -62,12 +62,14 @@ func (d ciscoDirectory) numbers() []string {
 //     the bundle's http/ tree, of at most 32 entries whose names are at
 //     most 32 characters;
 //   - Extensions is always there, Streams exactly when StreamsFile is, and
-//     nothing in http/ is out of the menu's reach.
+//     nothing in http/ is out of the menu's reach but the softphones'
+//     ContactsFile, which holds the same entries (checkContacts).
 func checkMenus(t *testing.T, s compile.Settings, b compile.Bundle) map[string]ciscoDirectory {
 	t.Helper()
 	base := fmt.Sprintf("http://%s:%d/", s.PBXAddress, s.DeviceHTTPPort)
 	dirs := map[string]ciscoDirectory{}
-	reached := map[string]bool{compile.DirectoryFile: true, compile.ServicesFile: true}
+	reached := map[string]bool{compile.DirectoryFile: true, compile.ServicesFile: true, compile.ContactsFile: true}
+	checkContacts(t, s, b)
 	for _, file := range []string{compile.DirectoryFile, compile.ServicesFile} {
 		raw, ok := b.Files[file]
 		if !ok {

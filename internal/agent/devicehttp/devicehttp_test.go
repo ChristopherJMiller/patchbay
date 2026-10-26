@@ -72,6 +72,12 @@ func TestServesTheHTTPTree(t *testing.T) {
 		t.Errorf("GET /logo.bin = %d %q %v", r.code, r.body, r.header)
 	}
 	f.rec.next(t)
+	// The softphones' contacts: text/vcard.
+	if r := f.get(t, "/directory/contacts.vcf"); r.code != http.StatusOK || r.header.Get("Content-Type") != "text/vcard; charset=utf-8" ||
+		r.body != "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:v1\r\nEND:VCARD\r\n" || r.header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("GET /directory/contacts.vcf = %d %q %v", r.code, r.body, r.header)
+	}
+	checkEvent(t, f.rec.next(t), treeEvent("directory/contacts.vcf", v1, api.FetchServed))
 
 	// A swap: the next request is served from the new version.
 	setCurrent(t, f.live, v2)

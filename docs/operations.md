@@ -147,6 +147,26 @@ has applied its version: no resync is needed.
 | `Offline` | Its registration lapsed (the laptop sleeps). | Nothing; it registers when it wakes. |
 | Linphone says provisioning failed | The URL was spent (it re-fetches at start), or the softphone was reissued. | `patchbay softphone qr <name> --reissue` and scan the new one. |
 
+### Linphone's contacts
+
+Linphone shows the Extensions and Streams lists above as read-only
+contacts: every entry, names whole (Cisco's 32-entry and 32-character
+limits do not apply). Its provisioning document names
+`http://<pbx.address>:8088/directory/contacts.vcf`, a vCard 4.0 list that
+Linphone downloads again at every start, so a new Phone, Person or Stream
+shows after Linphone restarts (on a phone, quit the app; it otherwise
+keeps running). A download that fails keeps the contacts it had.
+
+A softphone provisioned before patchbay 0.3.0 has none: the new
+document changes its settings, so it shows `Issued` with "its settings
+changed: scan `patchbay softphone qr <name>` in Linphone again". Scan it
+once; no `--reissue` is needed, as the controller publishes the URL.
+
+| Symptom | Cause | Action |
+|---|---|---|
+| No patchbay contacts | Linphone runs settings from before 0.3.0, or cannot reach device HTTP :8088. | `patchbay status` (above); curl the URL from Linphone's network. |
+| A new entry is missing | Linphone has not restarted since, or its last download failed. | Restart Linphone. |
+
 ## Changes and upgrades
 
 - **A Stream** (new, renumbered, a new source): compiled into

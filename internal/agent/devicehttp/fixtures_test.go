@@ -319,6 +319,7 @@ func v1Files(tag string) map[string]string {
 		"http/directory.xml":           "<CiscoIPPhoneDirectory>" + tag + "</CiscoIPPhoneDirectory>",
 		"http/apps/menu.xml":           "<CiscoIPPhoneMenu>" + tag + "</CiscoIPPhoneMenu>",
 		"http/logo.bin":                "\x00\x01binary" + tag,
+		"http/directory/contacts.vcf":  "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:" + tag + "\r\nEND:VCARD\r\n",
 		"tftp/SEPD0C78915E8C8.cnf.xml": "<device>tftp secret " + tag + "</device>",
 		"asterisk/pjsip.conf":          "[asterisk secret " + tag + "]",
 		denFile:                        "<config>den document " + tag + "</config>",

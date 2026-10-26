@@ -87,12 +87,13 @@ const (
 
 // The answers.
 const (
-	notFoundBody    = "404 page not found\n"
-	unavailableBody = "503 service unavailable\n"
-	notAllowedBody  = "405 method not allowed\n"
-	xmlContentType  = "text/xml; charset=utf-8"
-	binContentType  = "application/octet-stream"
-	textContentType = "text/plain; charset=utf-8"
+	notFoundBody     = "404 page not found\n"
+	unavailableBody  = "503 service unavailable\n"
+	notAllowedBody   = "405 method not allowed\n"
+	xmlContentType   = "text/xml; charset=utf-8"
+	vCardContentType = "text/vcard; charset=utf-8" // RFC 6350 §10.1
+	binContentType   = "application/octet-stream"
+	textContentType  = "text/plain; charset=utf-8"
 )
 
 // compareHook, when set (tests only), is called with each grant's index as
@@ -498,8 +499,11 @@ func (s *Server) serveTree(w http.ResponseWriter, urlPath string, head bool, src
 		return
 	}
 	ctype := binContentType
-	if path.Ext(name) == ".xml" {
+	switch path.Ext(name) {
+	case ".xml":
 		ctype = xmlContentType
+	case ".vcf":
+		ctype = vCardContentType
 	}
 	if err := writeDocument(w, ctype, body, head, false); err != nil {
 		finish(http.StatusOK, api.FetchError, "the response could not be sent")

@@ -349,6 +349,11 @@ type RenderContext struct {
 	// (http://192.168.0.240:8088/services.xml): the 79x5's servicesURL.
 	ServicesURL string
 
+	// ContactsURL is the URL of the compiled softphone contacts, a vCard
+	// list (http://192.168.0.240:8088/directory/contacts.vcf): Linphone's
+	// misc/contacts-vcard-list.
+	ContactsURL string
+
 	// NTPServer is the time server as an IP address (the 79x5 cannot
 	// resolve names here).
 	NTPServer string

@@ -1,0 +1,25 @@
+BEGIN:VCARD
+VERSION:4.0
+FN:R&D; "Lab" <1> Küche
+IMPP:sip:100@192.168.0.240
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:A label of sixty-four characters\, cut for every phone's screen!!
+IMPP:sip:101@192.168.0.240
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:@secret:a/b @x
+IMPP:sip:102@192.168.0.240
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:Mom & Dad's \\ ;-- --; @secret:patchbay-ami/password@
+IMPP:sip:150@192.168.0.240
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:The "Family" <&> ; Ünïcödé
+IMPP:sip:300@192.168.0.240
+END:VCARD

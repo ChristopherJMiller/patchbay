@@ -47,8 +47,8 @@ const (
 // Trees lists the four trees in a fixed order.
 var Trees = []string{TreeAsterisk, TreeTFTP, TreeHTTP, TreeProvisioning}
 
-// The phones' directory and Services menu, in http/ (directory.go). Device
-// HTTP serves http/<p> at /<p>.
+// The phones' directory and Services menu, and the softphones' contacts, in
+// http/ (directory.go). Device HTTP serves http/<p> at /<p>.
 const (
 	// DirectoryFile is the Directories menu (a CiscoIPPhoneMenu), served at
 	// /directory.xml: the 79x5's directoryURL. Phones hold that URL, so
@@ -68,6 +68,12 @@ const (
 	// opens: every Stream whose number dials the stream bridge. Neither
 	// the file nor the item exists while no Stream does.
 	StreamsFile = TreeHTTP + "/directory/streams.xml"
+
+	// ContactsFile is the same entries for softphones: a vCard 4.0 list of
+	// every extension and every Stream that dials the bridge, which
+	// Linphone downloads at every start (its misc/contacts-vcard-list).
+	// Linphones hold its URL, so the path never moves.
+	ContactsFile = TreeHTTP + "/directory/contacts.vcf"
 )
 
 // The live directory (design §5, Apply). The PBX pod mounts one volume at

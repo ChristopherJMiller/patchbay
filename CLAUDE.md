@@ -47,7 +47,8 @@ resources (Phone, Softphone, Person, Stream)
 
 Contracts: `internal/compile` (Bundle with its device index, Inputs, Boot,
 Settings, device Secret names; in `layout.go` the bundle's four trees, the
-menu and directory files in http/ (the phones hold `/directory.xml`), the
+menu, directory and contacts files in http/ (the phones hold `/directory.xml`,
+Linphones `/directory/contacts.vcf`), the
 live directory the agent swaps and the sound prompts; in `configmap.go` the
 pbx-config ConfigMap encoding), `internal/drivers` (Driver and the optional
 SettingsChecker, Device and the DeviceID format, Memory and its DeepCopy,
@@ -157,6 +158,16 @@ departs from it, the departure is recorded here (and in the code's docs).
   entries, so picking one dials it (compile/directory.go). No phone status,
   nothing pushed; the profile's `xmlServices` and `serviceURL` stay
   `Untested`.
+- **Softphones get the directory as contacts** (0.3.0; the design has no
+  softphone directory): `directory/contacts.vcf` (`compile.ContactsFile`)
+  is the same two lists as one vCard 4.0 list, every entry and every name
+  whole, each card an FN and an IMPP `sip:<number>@<pbx.address>`
+  (compile/contacts.go, written to what belcard parses). The Linphone
+  document names it in `misc/contacts-vcard-list`, which Linphone
+  downloads at every start into a read-only friend list
+  (internal/drivers/softphone/doc.go). The document now depends on device
+  HTTP's port too, and every softphone provisioned before 0.3.0 is asked
+  to scan once. Device HTTP serves `.vcf` as `text/vcard`.
 - **Softphone status has memory too** (`observed`, `lastAction`,
   `humanAction`), which §8.4's Offline and rotateToken need.
 - **Bundle trees.** §5 says TFTP and HTTP "serve from the same live

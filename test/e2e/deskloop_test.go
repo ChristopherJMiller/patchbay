@@ -86,8 +86,9 @@ var (
 // 800 Hz). In order (plan 6.2.9):
 //
 //   - softphone: `patchbay softphone qr laptop --reissue` gives a URL;
-//     Linphone fetches it once and registers, the controller replaces the
-//     spent token, and the same URL then answers 404 while laptop stays
+//     Linphone fetches it once, downloads the contacts it names (desk and
+//     laptop among them) and registers, the controller replaces the spent
+//     token, and the same URL then answers 404 while laptop stays
 //     Registered (Review Focus 4);
 //   - provision: desk fetches its config over TFTP and registers;
 //   - calls: 100 calls 150 and 150 calls 100, tones both ways, each
@@ -170,6 +171,20 @@ func TestDeskLoop(t *testing.T) {
 			}
 			if st.Config.Transport != "udp" || st.Config.User != laptopNumber || st.Config.AuthUser != laptopID {
 				t.Errorf("Linphone read %+v", *st.Config)
+			}
+			// Its contacts: the PBX's directory, downloaded from device
+			// HTTP as Linphone does once configured, each card dialing its
+			// number on the PBX.
+			if want := fmt.Sprintf("http://%s:%d/directory/contacts.vcf", h.nodeIP, deviceHTTPPort); st.Config.ContactsURL != want || !st.Config.ContactsAtStartup {
+				t.Errorf("contacts URL %q (at startup %t), want %q", st.Config.ContactsURL, st.Config.ContactsAtStartup, want)
+			}
+			for _, c := range []script.Contact{
+				{Name: deskLabel, URI: "sip:" + deskNumber + "@" + h.nodeIP},
+				{Name: laptopLabel, URI: "sip:" + laptopNumber + "@" + h.nodeIP},
+			} {
+				if !slices.Contains(st.Contacts, c) {
+					t.Errorf("Linphone's contacts %+v lack %+v (fetches %+v)", st.Contacts, c, st.Fetches)
+				}
 			}
 
 			// The same URL again, as Linphone fetches it at its next start:

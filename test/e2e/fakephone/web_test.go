@@ -180,55 +180,85 @@ func linphoneScript(url string, steps ...script.Step) script.Script {
 	return script.Script{Mode: script.ModeLinphone, Server: "127.0.0.1", ProvisioningURL: url, Steps: steps}
 }
 
-// provisioningServer serves doc once at /p/<token>, as device HTTP does
-// (then 404: the token is spent), and counts the GETs and their agents.
+// provisioningServer is device HTTP for one softphone: it serves doc once
+// at /p/<token> (then 404: the token is spent) and contacts, when set, at
+// contactsPath every time. It counts the provisioning GETs and their
+// agents, and records the contacts GETs' Accept headers.
 type provisioningServer struct {
 	*httptest.Server
-	mu     sync.Mutex
-	gets   int
-	agents []string
+	mu       sync.Mutex
+	doc      []byte
+	contacts []byte
+	gets     int
+	agents   []string
+	accepts  []string
 }
 
-func startProvisioning(t *testing.T, token string, doc []byte) *provisioningServer {
+// contactsPath is where device HTTP serves compile.ContactsFile.
+const contactsPath = "/directory/contacts.vcf"
+
+// startProvisioning starts the server; set doc (and contacts) before the
+// phone asks.
+func startProvisioning(t *testing.T, token string) *provisioningServer {
 	t.Helper()
 	ps := &provisioningServer{}
 	ps.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ps.mu.Lock()
+		defer ps.mu.Unlock()
+		if r.URL.Path == contactsPath && ps.contacts != nil {
+			ps.accepts = append(ps.accepts, r.Header.Get("Accept"))
+			w.Header().Set("Content-Type", "text/vcard; charset=utf-8")
+			_, _ = w.Write(ps.contacts)
+			return
+		}
 		ps.gets++
 		ps.agents = append(ps.agents, r.UserAgent())
-		first := ps.gets == 1
-		ps.mu.Unlock()
-		if r.URL.Path != "/p/"+token || !first {
+		if r.URL.Path != "/p/"+token || ps.gets != 1 {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/xml")
-		_, _ = w.Write(doc)
+		_, _ = w.Write(ps.doc)
 	}))
 	t.Cleanup(ps.Close)
 	return ps
 }
 
-// laptopLP is the softphone chris-laptop golden pointed at pbx.
-func laptopLP(t *testing.T, pbx *fakePBX, password string) []byte {
+func (ps *provisioningServer) set(doc, contacts []byte) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	ps.doc, ps.contacts = doc, contacts
+}
+
+// laptopLP is the softphone chris-laptop golden pointed at pbx, its
+// contacts at ps.
+func laptopLP(t *testing.T, pbx *fakePBX, ps *provisioningServer, password string) []byte {
 	t.Helper()
 	doc := string(resolve(readGolden(t, filepath.Join(softphoneGoldens,
 		"chris-laptop/provisioning/softphone-chris-laptop.xml")), password))
+	doc = strings.ReplaceAll(doc, "http://192.168.0.240:8088", ps.URL)
 	doc = strings.ReplaceAll(doc, "192.168.0.240:5060", pbx.addr.String())
 	return []byte(strings.ReplaceAll(doc, "192.168.0.240", "127.0.0.1"))
 }
 
+// houseContacts is the house's compiled contacts (compile's golden).
+func houseContacts(t *testing.T) []byte {
+	t.Helper()
+	return readGolden(t, filepath.Join(compileGoldens, "house/want/http/directory/contacts.vcf"))
+}
+
 // TestRunLinphone: GET the provisioning URL once, parse the lpconfig,
-// REGISTER over UDP with its credentials; a second GET of the same URL is
-// recorded as notFound.
+// download the contacts it names, REGISTER over UDP with its credentials;
+// a second GET of the same URL is recorded as notFound.
 func TestRunLinphone(t *testing.T) {
 	const (
 		password = "not-a-secret-laptop"
 		token    = "not-a-secret-provisioning-token"
 	)
 	pbx := startPBX(t, map[string]string{"softphone-chris-laptop": password})
-	doc := laptopLP(t, pbx, password)
-	ps := startProvisioning(t, token, doc)
+	ps := startProvisioning(t, token)
+	doc := laptopLP(t, pbx, ps, password)
+	ps.set(doc, houseContacts(t))
 	sc := linphoneScript(ps.URL+"/p/"+token,
 		script.Step{Label: "provision", FetchConfig: &script.FetchConfig{}},
 		script.Step{Label: "register", Register: &script.Register{}},
@@ -237,14 +267,24 @@ func TestRunLinphone(t *testing.T) {
 	h := startRun(t, sc, runOptions{})
 	s := h.atStep("")
 
-	if len(s.Fetches) != 2 || s.Fetches[0].File != "provisioning" || s.Fetches[0].Result != script.Served ||
-		s.Fetches[0].Bytes != int64(len(doc)) || s.Fetches[1].Result != script.NotFound || s.Fetches[1].Error != "HTTP 404" {
+	if len(s.Fetches) != 3 || s.Fetches[0].File != "provisioning" || s.Fetches[0].Result != script.Served ||
+		s.Fetches[0].Bytes != int64(len(doc)) || s.Fetches[1].File != "contacts" || s.Fetches[1].Result != script.Served ||
+		s.Fetches[2].Result != script.NotFound || s.Fetches[2].Error != "HTTP 404" {
 		t.Fatalf("fetches %+v", s.Fetches)
 	}
 	c := s.Config
 	if c == nil || c.Source != "provisioning" || c.User != "150" || c.AuthUser != "softphone-chris-laptop" ||
-		c.Transport != "udp" || c.Proxy != pbx.addr.String() || !c.ConfigURICleared || c.PasswordSHA256 != sha(password) {
+		c.Transport != "udp" || c.Proxy != pbx.addr.String() || !c.ConfigURICleared || c.PasswordSHA256 != sha(password) ||
+		c.ContactsURL != ps.URL+contactsPath || !c.ContactsAtStartup {
 		t.Fatalf("config %+v", c)
+	}
+	want := []script.Contact{
+		{Name: "Desk", URI: "sip:100@192.168.0.240"},
+		{Name: "Chris (laptop)", URI: "sip:150@192.168.0.240"},
+		{Name: "Chris", URI: "sip:301@192.168.0.240"},
+	}
+	if !slices.Equal(s.Contacts, want) {
+		t.Errorf("contacts %+v, want %+v", s.Contacts, want)
 	}
 	regs := pbx.okRegisters()
 	if len(regs) != 1 || regs[0].Transport != "udp" || regs[0].AuthUser != "softphone-chris-laptop" ||
@@ -256,8 +296,8 @@ func TestRunLinphone(t *testing.T) {
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	if ps.gets != 2 || ps.agents[0] != userAgentLinphone {
-		t.Errorf("GETs %d, agents %q", ps.gets, ps.agents)
+	if ps.gets != 2 || ps.agents[0] != userAgentLinphone || !slices.Equal(ps.accepts, []string{"text/vcard"}) {
+		t.Errorf("GETs %d, agents %q, contacts Accept %q", ps.gets, ps.agents, ps.accepts)
 	}
 }
 
@@ -358,7 +398,8 @@ func TestRunNeverLogsSecrets(t *testing.T) {
 	cisco.atStep("")
 
 	lpPBX := startPBX(t, map[string]string{"softphone-chris-laptop": lpPassword})
-	ps := startProvisioning(t, token, laptopLP(t, lpPBX, lpPassword))
+	ps := startProvisioning(t, token)
+	ps.set(laptopLP(t, lpPBX, ps, lpPassword), houseContacts(t))
 	lp := startRun(t, linphoneScript(ps.URL+"/p/"+token,
 		script.Step{Label: "provision", FetchConfig: &script.FetchConfig{}},
 		script.Step{Label: "register", Register: &script.Register{}},

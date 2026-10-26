@@ -392,6 +392,7 @@ func (r *runner) snapshot() script.State {
 		c := *s.Config
 		s.Config = &c
 	}
+	s.Contacts = slices.Clone(s.Contacts)
 	s.Fetches = slices.Clone(s.Fetches)
 	s.Registrations = slices.Clone(s.Registrations)
 	s.Signals = slices.Clone(s.Signals)

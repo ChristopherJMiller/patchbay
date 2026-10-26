@@ -18,11 +18,12 @@ import (
 	"github.com/ChristopherJMiller/patchbay/test/e2e/fakephone/script"
 )
 
-// The drivers' render goldens, read-only: a render change that would break
-// the fake phone fails here.
+// The drivers' render goldens and compile's, read-only: a render change
+// that would break the fake phone fails here.
 const (
 	ciscoGoldens     = "../../../internal/drivers/cisco79x5/testdata/render"
 	softphoneGoldens = "../../../internal/drivers/softphone/testdata/render"
+	compileGoldens   = "../../../internal/compile/testdata/golden"
 )
 
 // placeholder is the agent's secret placeholder, which it resolves before a
@@ -150,23 +151,30 @@ func TestParseSEPRefuses(t *testing.T) {
 }
 
 func TestParseLPConfig(t *testing.T) {
-	const password = "not-a-secret-lp-password"
+	const (
+		password = "not-a-secret-lp-password"
+		contacts = "http://192.168.0.240:8088/directory/contacts.vcf"
+	)
 	for name, want := range map[string]script.Config{
 		"chris-laptop": {
 			Source: "provisioning", User: "150", AuthUser: "softphone-chris-laptop",
 			Proxy: "192.168.0.240:5060", Transport: "udp", Expires: 600, ConfigURICleared: true,
+			ContactsURL: contacts, ContactsAtStartup: true,
 		},
 		"settings-variant": {
 			Source: "provisioning", User: "150", AuthUser: "softphone-chris-laptop",
 			Proxy: "10.0.0.5:5070", Transport: "udp", Expires: 600, ConfigURICleared: true,
+			ContactsURL: "http://10.0.0.5:8089/directory/contacts.vcf", ContactsAtStartup: true,
 		},
 		"hostile-label": {
 			Source: "provisioning", User: "151", AuthUser: "softphone-lab",
 			Proxy: "192.168.0.240:5060", Transport: "udp", Expires: 600, ConfigURICleared: true,
+			ContactsURL: contacts, ContactsAtStartup: true,
 		},
 		"long-name": {
 			Source: "provisioning", User: "152", AuthUser: "softphone-the-upstair-03847320",
 			Proxy: "192.168.0.240:5060", Transport: "udp", Expires: 600, ConfigURICleared: true,
+			ContactsURL: contacts, ContactsAtStartup: true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

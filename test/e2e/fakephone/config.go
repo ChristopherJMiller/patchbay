@@ -254,8 +254,11 @@ type lpEntry struct {
 
 // parseLPConfig reads the lpconfig XML: proxy_0/reg_proxy
 // (<sip:host:port;transport=…>), reg_identity (<sip:user@host>),
-// reg_expires, auth_info_0/username, userid and passwd, and whether
-// misc/config-uri is cleared (present, empty and overwritten).
+// reg_expires, auth_info_0/username, userid and passwd, whether
+// misc/config-uri is cleared (present, empty and overwritten), and the
+// contacts: misc/contacts-vcard-list, downloaded at start unless
+// misc/fetch_contacts_vcard_list_at_startup is 0 (liblinphone's default
+// is 1).
 func parseLPConfig(doc []byte) (*deviceConfig, error) {
 	var x lpXML
 	if err := xml.NewDecoder(bytes.NewReader(doc)).Decode(&x); err != nil {
@@ -298,17 +301,24 @@ func parseLPConfig(doc []byte) (*deviceConfig, error) {
 		return nil, fmt.Errorf("provisioning: %w", errors.Join(errs...))
 	}
 	uri, present := entries["misc/config-uri"]
+	atStartup := true
+	if e, ok := entries["misc/fetch_contacts_vcard_list_at_startup"]; ok {
+		n, _ := strconv.Atoi(strings.TrimSpace(e.value)) // linphone_config_get_bool: a number, else 0
+		atStartup = n != 0
+	}
 	return &deviceConfig{
 		Public: script.Config{
-			Source:           "provisioning",
-			SHA256:           hex.EncodeToString(sha256Of(doc)),
-			User:             user,
-			AuthUser:         authUser,
-			PasswordSHA256:   password.sha256Hex(),
-			Proxy:            server.String(),
-			Transport:        transport,
-			Expires:          expires,
-			ConfigURICleared: present && strings.TrimSpace(uri.value) == "" && uri.overwrite,
+			Source:            "provisioning",
+			SHA256:            hex.EncodeToString(sha256Of(doc)),
+			User:              user,
+			AuthUser:          authUser,
+			PasswordSHA256:    password.sha256Hex(),
+			Proxy:             server.String(),
+			Transport:         transport,
+			Expires:           expires,
+			ConfigURICleared:  present && strings.TrimSpace(uri.value) == "" && uri.overwrite,
+			ContactsURL:       strings.TrimSpace(entries["misc/contacts-vcard-list"].value),
+			ContactsAtStartup: atStartup,
 		},
 		Server: server, Transport: transport, Password: password,
 	}, nil

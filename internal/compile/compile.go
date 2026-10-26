@@ -451,7 +451,7 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 	}
 	maps.Copy(b.Files, asteriskFiles(s, endpoints))
 	b.Files[TreeAsterisk+"/extensions.conf"] = extensionsConf(s.NumberPlan, byNumber(deviceTargets), people, streamDial)
-	httpFiles, err := directoryFiles(deviceHTTPBase(s), directory, streamDirectory)
+	httpFiles, err := directoryFiles(deviceHTTPBase(s), contactsSIPHost(s), directory, streamDirectory)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -496,6 +496,7 @@ func renderContext(s Settings) drivers.RenderContext {
 		DeviceHTTPURL: base,
 		DirectoryURL:  base + deviceHTTPPath(DirectoryFile),
 		ServicesURL:   base + deviceHTTPPath(ServicesFile),
+		ContactsURL:   base + deviceHTTPPath(ContactsFile),
 		NTPServer:     s.NTPServer,
 		Timezone:      s.Timezone,
 		Signalling:    s.Signalling,

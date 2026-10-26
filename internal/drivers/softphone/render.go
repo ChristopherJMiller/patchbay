@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,15 +30,16 @@ var linphoneCodecs = map[string]struct {
 // Render produces the softphone's Linphone remote-provisioning document,
 // provisioning/<ID>.xml (see the package documentation for the format and
 // where each key was checked). The document depends on the device's
-// number, ID and password placeholder and on the install's PBX address and
-// SIP port only: never on the label (a relabel must not ask anyone to scan
-// again), the token or dev.ConfigVersion, so Compile's two passes render the
-// same bytes.
+// number, ID and password placeholder and on the install's PBX address, SIP
+// port and contacts URL only: never on the label (a relabel must not ask
+// anyone to scan again), the token or dev.ConfigVersion, so Compile's two
+// passes render the same bytes.
 //
 // An error wraps drivers.ErrInvalidSpec when dev.Model is not
 // drivers.ModelSoftphone. A missing or unusable password placeholder, PBX
-// address or SIP port, or a malformed number or ID, is a plain error: the
-// caller (Compile) or the CRD schema should have prevented it.
+// address, SIP port or contacts URL, or a malformed number or ID, is a
+// plain error: the caller (Compile) or the CRD schema should have
+// prevented it.
 func (*Driver) Render(dev drivers.Device, ctx drivers.RenderContext) (drivers.Files, error) {
 	if dev.Model != drivers.ModelSoftphone {
 		return nil, fmt.Errorf("%w: softphone %s: model %q is not %q",
@@ -84,6 +86,10 @@ func checkRenderInputs(dev drivers.Device, ctx drivers.RenderContext) error {
 	}
 	if ctx.SIPPort < 1 || ctx.SIPPort > 65535 {
 		errs = append(errs, fmt.Errorf("SIP port %d is not 1-65535", ctx.SIPPort))
+	}
+	if u, err := url.Parse(ctx.ContactsURL); err != nil || u.Scheme != "http" || u.Host == "" ||
+		strings.ContainsFunc(ctx.ContactsURL, needsEscape) {
+		errs = append(errs, fmt.Errorf("contacts URL %q is not a plain http URL", ctx.ContactsURL))
 	}
 	return errors.Join(errs...)
 }
@@ -204,6 +210,10 @@ func provisioningDocument(dev drivers.Device, ctx drivers.RenderContext, p drive
 			// forget it, so Linphone does not fetch it again at every start.
 			unset("config-uri"),
 			set("transient_provisioning", "1"),
+			// The PBX's directory as read-only contacts, downloaded again
+			// at every start (compile.ContactsFile).
+			set("contacts-vcard-list", ctx.ContactsURL),
+			set("fetch_contacts_vcard_list_at_startup", "1"),
 		}},
 	)
 

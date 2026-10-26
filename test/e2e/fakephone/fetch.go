@@ -26,6 +26,8 @@ const (
 	// provisioningSource is how State and the log name the provisioning URL,
 	// which carries a one-time token and is never written anywhere.
 	provisioningSource = "provisioning"
+	// contactsSource is how they name the contacts download (linphone).
+	contactsSource = "contacts"
 )
 
 // tftpErrorPattern is pin/tftp's error for a TFTP ERROR packet.
@@ -88,7 +90,34 @@ func (r *runner) fetchConfig(ctx context.Context) (script.Result, error) {
 		return rec.Result, fmt.Errorf("the config was served but does not parse: %w", err)
 	}
 	r.setConfig(cfg)
+	if c := cfg.Public; r.sc.Mode == script.ModeLinphone && c.ContactsURL != "" && c.ContactsAtStartup {
+		// Linphone downloads its contacts once its configuring is done
+		// (linphone_configuring_terminated); how that goes never fails
+		// the config.
+		r.fetchContacts(ctx, c.ContactsURL)
+	}
 	return rec.Result, nil
+}
+
+// fetchContacts downloads the contacts at url as Linphone does at its
+// start (Accept: text/vcard), records the fetch as "contacts" and, when it
+// answered 200 with cards that parse, makes them the phone's contacts.
+// Anything else is recorded and keeps the contacts the phone had, as
+// liblinphone's synchronizeFriendsFromServerVcard4 does.
+func (r *runner) fetchContacts(ctx context.Context, url string) {
+	body, rec := r.httpGet(ctx, contactsSource, url, "text/vcard")
+	if rec.Result == script.Served {
+		cards, err := parseVCards(body)
+		if err != nil {
+			rec.Result, rec.Error = script.Failed, "the contacts do not parse: "+err.Error()
+		} else {
+			r.mu.Lock()
+			r.state.Contacts = cards
+			r.changedLocked()
+			r.mu.Unlock()
+		}
+	}
+	r.recordFetch(rec)
 }
 
 // fetchFile is a Fetch step: TFTP one file (its body is only counted and
@@ -145,13 +174,23 @@ func classifyTFTP(err error) (script.Result, string) {
 // getProvisioning GETs the provisioning URL once. The record names it
 // "provisioning", and no error quotes the URL.
 func (r *runner) getProvisioning(ctx context.Context) ([]byte, script.FetchRecord) {
-	rec := script.FetchRecord{File: provisioningSource, At: time.Now()}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.sc.ProvisioningURL, nil)
+	return r.httpGet(ctx, provisioningSource, r.sc.ProvisioningURL, "")
+}
+
+// httpGet GETs url once, as Linphone (its User-Agent, and accept as Accept
+// when not ""), and returns the body of a 200 and the fetch's record, which
+// names it source. No error quotes the URL.
+func (r *runner) httpGet(ctx context.Context, source, url, accept string) ([]byte, script.FetchRecord) {
+	rec := script.FetchRecord{File: source, At: time.Now()}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		rec.Result, rec.Error = script.Failed, "the provisioning URL is not a valid URL"
+		rec.Result, rec.Error = script.Failed, "the "+source+" URL is not a valid URL"
 		return nil, rec
 	}
 	req.Header.Set("User-Agent", r.userAgent())
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
 	res, err := r.opts.HTTP.Do(req)
 	if err != nil {
 		rec.Result, rec.Error = script.Failed, unwrapURLError(err).Error()

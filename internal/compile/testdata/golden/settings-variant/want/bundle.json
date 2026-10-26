@@ -1,5 +1,5 @@
 {
-  "version": "13563c0037cf713ed4bea32382b569b7e5997474571710e530c3fe018a80ac92",
+  "version": "02963c57d0b5c59c308d9d12b34944e10f8ffe30e15b180076e74a529a5eaf58",
   "devices": {
     "phone-desk": {
       "kind": "Phone",
@@ -17,7 +17,7 @@
       "kind": "Softphone",
       "name": "chris-laptop",
       "number": "450",
-      "version": "7e6acb938461910f5a44cfbc6e918c7d2542ec82bcc40841d2b5863fa0dedf1d",
+      "version": "eeac7daeb6323bba1b20cc754a4473785ac7028f83be2ee6ddcce17bb2d5f9b9",
       "configFile": "provisioning/softphone-chris-laptop.xml",
       "files": [
         "provisioning/softphone-chris-laptop.xml"

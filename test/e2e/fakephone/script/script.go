@@ -558,6 +558,10 @@ type State struct {
 	// Web is the pages being served (cisco mode).
 	Web Web `json:"web"`
 
+	// Contacts are the cards of the last contacts download that parsed
+	// (linphone mode, Config.ContactsURL), in file order; nil before one.
+	Contacts []Contact `json:"contacts,omitempty"`
+
 	Fetches       []FetchRecord        `json:"fetches"`
 	Registrations []RegistrationRecord `json:"registrations"`
 	Notifies      []NotifyRecord       `json:"notifies"`
@@ -596,6 +600,19 @@ type Config struct {
 	// ConfigURICleared is linphone mode's misc/config-uri written empty
 	// with overwrite (Review Focus 4).
 	ConfigURICleared bool `json:"configURICleared,omitempty"`
+	// ContactsURL is linphone mode's misc/contacts-vcard-list, the vCard
+	// list the phone downloads (as "contacts") once it has its config
+	// while ContactsAtStartup (misc/fetch_contacts_vcard_list_at_startup,
+	// true unless written 0).
+	ContactsURL       string `json:"contactsURL,omitempty"`
+	ContactsAtStartup bool   `json:"contactsAtStartup,omitempty"`
+}
+
+// Contact is one card of a contacts download: its FN, unescaped, and its
+// first sip: IMPP, which is what Linphone dials.
+type Contact struct {
+	Name string `json:"name"`
+	URI  string `json:"uri"`
 }
 
 // FetchRecord is one fetch the phone made.

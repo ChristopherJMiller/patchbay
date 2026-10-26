@@ -31,6 +31,7 @@ func houseCtx(id string) drivers.RenderContext {
 		DeviceHTTPURL: "http://192.168.0.240:8088",
 		DirectoryURL:  "http://192.168.0.240:8088/directory.xml",
 		ServicesURL:   "http://192.168.0.240:8088/services.xml",
+		ContactsURL:   "http://192.168.0.240:8088/directory/contacts.vcf",
 		NTPServer:     "192.168.20.1",
 		Timezone:      "America/Los_Angeles",
 		Signalling:    drivers.SignallingPJSIP,
@@ -63,6 +64,7 @@ func renderCases() []renderCase {
 	other := softphoneDevice("chris-laptop", "150", "Chris (laptop)")
 	otherCtx := houseCtx(other.ID)
 	otherCtx.PBXAddress, otherCtx.SIPPort = "10.0.0.5", 5070
+	otherCtx.ContactsURL = "http://10.0.0.5:8089/directory/contacts.vcf"
 	return []renderCase{
 		{"chris-laptop", laptop, houseCtx(laptop.ID)},
 		{"hostile-label", hostile, houseCtx(hostile.ID)},
@@ -234,6 +236,11 @@ func TestProvisioningDocumentKeys(t *testing.T) {
 		// after a successful apply (:240, coreapi/linphonecore.c:2895).
 		{"misc", "config-uri", ""},
 		{"misc", "transient_provisioning", "1"},
+		// linphone-sdk 79aefb33 (2026-10-26), coreapi/linphonecore.c
+		// linphone_configuring_terminated: contacts-vcard-list :2917,
+		// fetch_contacts_vcard_list_at_startup :2944 (default TRUE).
+		{"misc", "contacts-vcard-list", "http://192.168.0.240:8088/directory/contacts.vcf"},
+		{"misc", "fetch_contacts_vcard_list_at_startup", "1"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("document keys:\n got %q\nwant %q", got, want)
@@ -306,6 +313,10 @@ func TestRenderProperties(t *testing.T) {
 			if v, ok := get("misc", "config-uri"); !ok || v != "" {
 				t.Errorf("misc/config-uri = %q (present %t), want present and empty", v, ok)
 			}
+			// The contacts are the install's, fetched at every start.
+			if v, _ := get("misc", "contacts-vcard-list"); v != tc.ctx.ContactsURL {
+				t.Errorf("misc/contacts-vcard-list = %q, want %q", v, tc.ctx.ContactsURL)
+			}
 			// No key is written twice.
 			seen := map[[2]string]bool{}
 			for _, e := range entries {
@@ -316,9 +327,9 @@ func TestRenderProperties(t *testing.T) {
 				seen[k] = true
 			}
 
-			// Only the number, ID, placeholder, PBX address and SIP port
-			// matter: the label, ConfigVersion (Compile's two passes) and
-			// every other setting leave the bytes alone.
+			// Only the number, ID, placeholder, PBX address, SIP port and
+			// contacts URL matter: the label, ConfigVersion (Compile's two
+			// passes) and every other setting leave the bytes alone.
 			for name, mutate := range map[string]func(*drivers.Device, *drivers.RenderContext){
 				"label":         func(d *drivers.Device, _ *drivers.RenderContext) { d.Label = "something else entirely" },
 				"ConfigVersion": func(d *drivers.Device, _ *drivers.RenderContext) { d.ConfigVersion = strings.Repeat("ab", 32) },
@@ -368,6 +379,10 @@ func TestRenderErrors(t *testing.T) {
 		{"address with URI syntax", func(_ *drivers.Device, c *drivers.RenderContext) { c.PBXAddress = "pbx>;transport=tcp" }, false},
 		{"port 0", func(_ *drivers.Device, c *drivers.RenderContext) { c.SIPPort = 0 }, false},
 		{"port 65536", func(_ *drivers.Device, c *drivers.RenderContext) { c.SIPPort = 65536 }, false},
+		{"no contacts URL", func(_ *drivers.Device, c *drivers.RenderContext) { c.ContactsURL = "" }, false},
+		{"https contacts URL", func(_ *drivers.Device, c *drivers.RenderContext) { c.ContactsURL = "https://192.168.0.240/c.vcf" }, false},
+		{"contacts URL without a host", func(_ *drivers.Device, c *drivers.RenderContext) { c.ContactsURL = "http:///c.vcf" }, false},
+		{"contacts URL with a space", func(_ *drivers.Device, c *drivers.RenderContext) { c.ContactsURL = "http://pbx/a b.vcf" }, false},
 		{"empty number", func(d *drivers.Device, _ *drivers.RenderContext) { d.Number = "" }, false},
 		{"non-digit number", func(d *drivers.Device, _ *drivers.RenderContext) { d.Number = "15a" }, false},
 		{"empty ID", func(d *drivers.Device, _ *drivers.RenderContext) { d.ID = "" }, false},

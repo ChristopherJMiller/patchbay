@@ -78,9 +78,24 @@
 //     defaults, so DTMF is RFC 4733 (Asterisk's dtmf_mode) whatever the
 //     install had.
 //
+// The contacts keys were checked later, in linphone-sdk's GitHub mirror
+// (https://github.com/BelledonneCommunications/linphone-sdk) at commit
+// 79aefb33f61261095a1e8b1e4c9a5aafbcf8c642 (2026-10-26):
+//
+//   - coreapi/linphonecore.c, linphone_configuring_terminated (lines
+//     2892-2949), which ends every start, with or without provisioning:
+//     misc/contacts-vcard-list names a vCard 4.0 list that Linphone keeps as
+//     a read-only friend list of its own (named by the URL), downloaded
+//     again at every start while misc/fetch_contacts_vcard_list_at_startup
+//     is 1 (its default, written anyway). The document names
+//     compile.ContactsFile, so the PBX's directory shows as contacts; the
+//     file's format is compile's (contacts.go).
+//
 // Only a real Linphone proves the document (docs/plans/release-a.md §8,
 // "Does Linphone honour userid, misc/config-uri and the video keys?"); the
-// e2e fake phone reads the same document.
+// e2e fake phone reads the same document, and downloads and parses the
+// contacts it names. The house's first real Linphone took the document
+// and registered on 2026-10-26, before the contacts keys existed.
 //
 // What the document leaves out, on purpose:
 //   - the label. reg_identity carries no display name: what others see is the

@@ -75,11 +75,13 @@ type menuItem struct {
 }
 
 // directoryFiles renders the whole http/ tree: the menu at DirectoryFile
-// and ServicesFile, ExtensionsFile, and StreamsFile when streams is not
-// empty. base is device HTTP's URL (deviceHTTPBase); extensions are the
-// routed devices' and the people's entries, streams those of the Streams
-// that dial the bridge.
-func directoryFiles(base string, extensions, streams []directoryEntry) (map[string][]byte, error) {
+// and ServicesFile, ExtensionsFile, StreamsFile when streams is not empty,
+// and the softphones' ContactsFile (contacts.go) when either list is not.
+// base is device HTTP's URL
+// (deviceHTTPBase) and sipHost the contacts' (contactsSIPHost); extensions
+// are the routed devices' and the people's entries, streams those of the
+// Streams that dial the bridge.
+func directoryFiles(base, sipHost string, extensions, streams []directoryEntry) (map[string][]byte, error) {
 	files := map[string][]byte{}
 	menu := ciscoMenu{Title: menuTitle}
 	add := func(title, file string, entries []directoryEntry) error {
@@ -104,17 +106,27 @@ func directoryFiles(base string, extensions, streams []directoryEntry) (map[stri
 		return nil, fmt.Errorf("compile: directory menu XML: %w", err)
 	}
 	files[DirectoryFile], files[ServicesFile] = doc, bytes.Clone(doc)
+	if contacts := contactsVCard(sipHost, extensions, streams); len(contacts) > 0 {
+		files[ContactsFile] = contacts
+	}
 	return files, nil
 }
 
-// directoryXML renders one CiscoIPPhoneDirectory: its entries sorted by
-// number (shorter numbers first), names cut to 32 characters, at most
-// DirectoryMaxEntries, with a comment counting the rest.
-func directoryXML(title string, entries []directoryEntry) ([]byte, error) {
+// sortedEntries is a copy of entries sorted by number (shorter numbers
+// first), then name.
+func sortedEntries(entries []directoryEntry) []directoryEntry {
 	entries = slices.Clone(entries)
 	slices.SortFunc(entries, func(a, b directoryEntry) int {
 		return cmp.Or(cmp.Compare(len(a.Number), len(b.Number)), cmp.Compare(a.Number, b.Number), cmp.Compare(a.Name, b.Name))
 	})
+	return entries
+}
+
+// directoryXML renders one CiscoIPPhoneDirectory: its entries sorted by
+// number (sortedEntries), names cut to 32 characters, at most
+// DirectoryMaxEntries, with a comment counting the rest.
+func directoryXML(title string, entries []directoryEntry) ([]byte, error) {
+	entries = sortedEntries(entries)
 	for i := range entries {
 		if r := []rune(entries[i].Name); len(r) > directoryMaxName {
 			entries[i].Name = string(r[:directoryMaxName])

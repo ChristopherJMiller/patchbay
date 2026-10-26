@@ -47,5 +47,7 @@
   <section name="misc">
     <entry name="config-uri" overwrite="true"></entry>
     <entry name="transient_provisioning" overwrite="true">1</entry>
+    <entry name="contacts-vcard-list" overwrite="true">http://10.0.0.5:8090/directory/contacts.vcf</entry>
+    <entry name="fetch_contacts_vcard_list_at_startup" overwrite="true">1</entry>
   </section>
 </config>

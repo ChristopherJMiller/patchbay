@@ -69,7 +69,8 @@ for the real HDHomeRun and SomaFM are in
 
 On a Cisco desk phone, the Directories and Services buttons list the
 extensions (phones, softphones, people) and the streams, and picking one
-dials it ([docs/operations.md](docs/operations.md)).
+dials it; Linphone shows the same lists as its contacts
+([docs/operations.md](docs/operations.md)).
 
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
 extras (wallpaper, ringtones, speed dials, more of the Services menu, push
