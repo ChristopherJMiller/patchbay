@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneMenu>
+  <Title>patchbay</Title>
+  <MenuItem>
+    <Name>Extensions</Name>
+    <URL>http://192.168.0.240:8088/directory/extensions.xml</URL>
+  </MenuItem>
+  <MenuItem>
+    <Name>Streams</Name>
+    <URL>http://192.168.0.240:8088/directory/streams.xml</URL>
+  </MenuItem>
+</CiscoIPPhoneMenu>

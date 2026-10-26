@@ -375,10 +375,11 @@ func ProvisioningTokenRef(deviceID string) SecretRef {
 //     kind's tree and reference no secret but its own SIP password; a path
 //     two devices render must be byte-identical (the 79x5's shared
 //     dialplan.xml).
-//  4. Asterisk's files, the dialplan and the directory, from the routed
-//     devices (rendered, holding their number), people and streams; and
-//     streams.json (Bundle.Streams, sealed), from the streams that hold
-//     their number and have an acceptable source (streamTargets).
+//  4. Asterisk's files, the dialplan and the directory and Services menus
+//     (directory.go), from the routed devices (rendered, holding their
+//     number), people and streams; and streams.json (Bundle.Streams,
+//     sealed), from the streams that hold their number and have an
+//     acceptable source (streamTargets).
 //  5. The device index (every Phone and Softphone, rendered or not), the
 //     AMI account, the bundle version, and Validate.
 //
@@ -444,15 +445,17 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 	people, peopleDirectory := personTargets(in.People, claims, routedID)
 	directory = append(directory, peopleDirectory...)
 
-	streamDial, doc := streamTargets(in.Streams, claims, s)
+	streamDial, streamDirectory, doc := streamTargets(in.Streams, claims, s)
 	if b.Streams, err = doc.Sealed(); err != nil {
 		return Bundle{}, fmt.Errorf("compile: streams.json: %w", err)
 	}
 	maps.Copy(b.Files, asteriskFiles(s, endpoints))
 	b.Files[TreeAsterisk+"/extensions.conf"] = extensionsConf(s.NumberPlan, byNumber(deviceTargets), people, streamDial)
-	if b.Files[DirectoryFile], err = directoryXML(directory); err != nil {
+	httpFiles, err := directoryFiles(deviceHTTPBase(s), directory, streamDirectory)
+	if err != nil {
 		return Bundle{}, err
 	}
+	maps.Copy(b.Files, httpFiles)
 
 	if b.Version, err = b.VersionWith(in.Secrets); err != nil {
 		return Bundle{}, err
@@ -486,12 +489,12 @@ func (s Settings) CheckDrivers(reg *drivers.Registry) error {
 
 // renderContext is what every device's Render gets but its password.
 func renderContext(s Settings) drivers.RenderContext {
-	base := fmt.Sprintf("http://%s:%d", s.PBXAddress, s.DeviceHTTPPort)
+	base := deviceHTTPBase(s)
 	return drivers.RenderContext{
 		PBXAddress:    s.PBXAddress,
 		SIPPort:       s.SIPPort,
 		DeviceHTTPURL: base,
-		DirectoryURL:  base + strings.TrimPrefix(DirectoryFile, TreeHTTP),
+		DirectoryURL:  base + deviceHTTPPath(DirectoryFile),
 		NTPServer:     s.NTPServer,
 		Timezone:      s.Timezone,
 		Signalling:    s.Signalling,

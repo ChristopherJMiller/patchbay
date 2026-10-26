@@ -117,7 +117,7 @@ func TestGolden(t *testing.T) {
 				}
 			}
 			compareTree(t, want, got)
-			crossCheck(t, name, in, b)
+			crossCheck(t, name, in, s, b)
 		})
 	}
 }
@@ -239,7 +239,7 @@ func (c lpConfig) get(section, entry string) string {
 
 // crossCheck asserts what must hold of every compiled bundle, beyond its
 // golden bytes (docs/plans/release-a.md §4 T4).
-func crossCheck(t *testing.T, name string, in compile.Inputs, b compile.Bundle) {
+func crossCheck(t *testing.T, name string, in compile.Inputs, s compile.Settings, b compile.Bundle) {
 	t.Helper()
 	if err := b.Validate(); err != nil {
 		t.Errorf("Validate: %v", err)
@@ -297,6 +297,9 @@ func crossCheck(t *testing.T, name string, in compile.Inputs, b compile.Bundle) 
 			t.Errorf("%s is served to anyone but holds a placeholder", p)
 		}
 	}
+
+	// The Directories and Services menus open only files of the bundle.
+	checkMenus(t, s, b)
 
 	// Every rendered device has its endpoint, auth and AOR, and its number
 	// in the dialplan; nothing else has an endpoint.

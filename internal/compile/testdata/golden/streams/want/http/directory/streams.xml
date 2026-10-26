@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneDirectory>
+  <Title>Streams</Title>
+  <DirectoryEntry>
+    <Name>KOMO 4</Name>
+    <Telephone>704</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>KING 5</Name>
+    <Telephone>705</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>KIRO 7</Name>
+    <Telephone>707</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>FOX 13</Name>
+    <Telephone>713</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Groove Salad</Name>
+    <Telephone>750</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Drone Zone</Name>
+    <Telephone>751</Telephone>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>

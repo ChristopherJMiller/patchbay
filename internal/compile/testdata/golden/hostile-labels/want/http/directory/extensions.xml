@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneDirectory>
+  <Title>Extensions</Title>
+  <DirectoryEntry>
+    <Name>R&amp;D; &#34;Lab&#34; &lt;1&gt; Küche</Name>
+    <Telephone>100</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>A label of sixty-four characters</Name>
+    <Telephone>101</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>@secret:a/b @x</Name>
+    <Telephone>102</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Mom &amp; Dad&#39;s \ ;-- --; @secret:pa</Name>
+    <Telephone>150</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>The &#34;Family&#34; &lt;&amp;&gt; ; Ünïcödé</Name>
+    <Telephone>300</Telephone>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>

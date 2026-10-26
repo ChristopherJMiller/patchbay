@@ -160,7 +160,17 @@ func TestLiveLayout(t *testing.T) {
 	if compile.SoundsDir != "/var/lib/patchbay/sounds" {
 		t.Fatalf("SoundsDir = %q", compile.SoundsDir)
 	}
-	if _, err := compile.TreeOf(compile.DirectoryFile); err != nil {
-		t.Fatalf("DirectoryFile: %v", err)
+	// Phones in the field hold the directory's URL (/directory.xml) from
+	// their SEP files: it never moves.
+	if compile.DirectoryFile != "http/directory.xml" {
+		t.Fatalf("DirectoryFile = %q", compile.DirectoryFile)
+	}
+	for name, p := range map[string]string{
+		"DirectoryFile": compile.DirectoryFile, "ServicesFile": compile.ServicesFile,
+		"ExtensionsFile": compile.ExtensionsFile, "StreamsFile": compile.StreamsFile,
+	} {
+		if tree, err := compile.TreeOf(p); err != nil || tree != compile.TreeHTTP {
+			t.Errorf("%s %q: tree %q, %v; want %s", name, p, tree, err, compile.TreeHTTP)
+		}
 	}
 }

@@ -47,9 +47,27 @@ const (
 // Trees lists the four trees in a fixed order.
 var Trees = []string{TreeAsterisk, TreeTFTP, TreeHTTP, TreeProvisioning}
 
-// DirectoryFile is the compiled directory (CiscoIPPhoneDirectory), served
-// at /directory.xml on device HTTP: the 79x5's directoryURL.
-const DirectoryFile = TreeHTTP + "/directory.xml"
+// The phones' directory and Services menu, in http/ (directory.go). Device
+// HTTP serves http/<p> at /<p>.
+const (
+	// DirectoryFile is the Directories menu (a CiscoIPPhoneMenu), served at
+	// /directory.xml: the 79x5's directoryURL. Phones hold that URL, so
+	// the path never moves.
+	DirectoryFile = TreeHTTP + "/directory.xml"
+
+	// ServicesFile is the Services menu, the same CiscoIPPhoneMenu, served
+	// at /services.xml: the 79x5's servicesURL.
+	ServicesFile = TreeHTTP + "/services.xml"
+
+	// ExtensionsFile is the CiscoIPPhoneDirectory the menus' Extensions
+	// item opens: every routed Phone and Softphone and every Person.
+	ExtensionsFile = TreeHTTP + "/directory/extensions.xml"
+
+	// StreamsFile is the CiscoIPPhoneDirectory the menus' Streams item
+	// opens: every Stream whose number dials the stream bridge. Neither
+	// the file nor the item exists while no Stream does.
+	StreamsFile = TreeHTTP + "/directory/streams.xml"
+)
 
 // The live directory (design §5, Apply). The PBX pod mounts one volume at
 // LiveDir in both containers. The agent writes each version into a directory

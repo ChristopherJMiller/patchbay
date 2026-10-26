@@ -45,14 +45,17 @@ import (
 //
 // Only the stream's UUID (streams.UUID of its resource name) and number
 // reach the dialplan, never its display name or its source, so a source
-// change rewrites streams.json alone.
+// change rewrites streams.json alone. The display name reaches the phones'
+// Streams directory (directory.go), and only for a Stream routed to the
+// bridge: the others play "not available", so they are not offered.
 
 // streamTargets is the dialplan entry of each Stream holding its number,
 // sorted by number, and the unsealed streams.json: the time limit (for
 // the bridge's own ceiling), every tuner pool, and each of those Streams
 // with an acceptable source, keyed by UUID, with the pool its source's
-// host is in.
-func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTarget, streams.Document) {
+// host is in; and the directory entry of each Stream routed to the bridge
+// (its display name, drivers.UserText, and number).
+func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTarget, []directoryEntry, streams.Document) {
 	doc := streams.Document{
 		CallLimitSeconds: int(s.Streams.Limit() / time.Second),
 		Pools:            []streams.Pool{},
@@ -64,6 +67,7 @@ func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTar
 	sorted := slices.Clone(list)
 	slices.SortFunc(sorted, func(a, b v1alpha1.Stream) int { return cmp.Compare(a.Name, b.Name) })
 	var targets []dialTarget
+	var directory []directoryEntry
 	for i := range sorted {
 		st := &sorted[i]
 		ref := ResourceRef{ResourceStream, st.Name}
@@ -88,8 +92,9 @@ func streamTargets(list []v1alpha1.Stream, claims Claims, s Settings) ([]dialTar
 			"Dial(AudioSocket/" + s.StreamBridge + "/" + id + "/c(" + streams.Codec + "),,gS(" + limit + "))",
 			unavailable,
 		}})
+		directory = append(directory, directoryEntry{Name: drivers.UserText(st.Spec.Name), Number: number})
 	}
-	return byNumber(targets), doc
+	return byNumber(targets), directory, doc
 }
 
 // poolOf is the name of the tuner pool a source counts against: the pool

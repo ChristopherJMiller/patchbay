@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneDirectory>
+  <Title>Streams</Title>
+  <DirectoryEntry>
+    <Name>KING 5</Name>
+    <Telephone>705</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>KIRO 7</Name>
+    <Telephone>707</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>KCTS 9</Name>
+    <Telephone>709</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>FOX 13</Name>
+    <Telephone>713</Telephone>
+  </DirectoryEntry>
+  <DirectoryEntry>
+    <Name>Secret Agent</Name>
+    <Telephone>753</Telephone>
+  </DirectoryEntry>
+</CiscoIPPhoneDirectory>

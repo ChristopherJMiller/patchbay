@@ -1,12 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<CiscoIPPhoneDirectory>
+<CiscoIPPhoneMenu>
   <Title>patchbay</Title>
-  <DirectoryEntry>
-    <Name>Desk</Name>
-    <Telephone>100</Telephone>
-  </DirectoryEntry>
-  <DirectoryEntry>
-    <Name>Chris</Name>
-    <Telephone>301</Telephone>
-  </DirectoryEntry>
-</CiscoIPPhoneDirectory>
+  <MenuItem>
+    <Name>Extensions</Name>
+    <URL>http://192.168.0.240:8088/directory/extensions.xml</URL>
+  </MenuItem>
+</CiscoIPPhoneMenu>
