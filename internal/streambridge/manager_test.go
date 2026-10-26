@@ -315,7 +315,7 @@ func TestPoolPreemptsDraining(t *testing.T) {
 	clk.Step(PreemptSettle - time.Millisecond)
 	never(t, "the new source started before PreemptSettle", func() bool { return src.started(srcKiro) > 0 })
 	clk.Step(time.Millisecond)
-	eventually(t, "the new source to start", func() bool { return src.started(srcKiro) == 1 })
+	stepUntil(t, clk, "the new source to start", func() bool { return src.started(srcKiro) == 1 })
 	popN(t, next, 1)
 	if o := streamObs(t, m, "king5"); o.LastFailure != nil {
 		t.Errorf("the preempted stream has a failure: %+v", o.LastFailure)
@@ -333,7 +333,7 @@ func TestPoolWaitsForAStoppingDecoder(t *testing.T) {
 	join(t, m, kiro7)
 	never(t, "a pool source started within PreemptSettle of the last one's end", func() bool { return src.started(srcKiro) > 0 })
 	clk.Step(PreemptSettle)
-	eventually(t, "the new source to start", func() bool { return src.started(srcKiro) == 1 })
+	stepUntil(t, clk, "the new source to start", func() bool { return src.started(srcKiro) == 1 })
 
 	// Radio has no pool and never waits.
 	m.setDocument(doc(t, []streams.Pool{hdhomerun}, king5, kiro7, groovesalad))

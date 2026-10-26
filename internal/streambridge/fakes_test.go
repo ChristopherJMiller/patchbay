@@ -238,6 +238,22 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	eventuallyWithin(t, 5*time.Second, what, cond)
 }
 
+// stepUntil polls cond like eventually, stepping clk a millisecond after
+// each miss. A goroutine that computes a delay from clk.Now() and then
+// creates its timer can be overtaken by the test's Step in between: the
+// timer then starts from the later time and waits for a step that never
+// comes. Use it only once the test has shown nothing happened too early.
+func stepUntil(t *testing.T, clk *clocktesting.FakeClock, what string, cond func() bool) {
+	t.Helper()
+	eventually(t, what, func() bool {
+		if cond() {
+			return true
+		}
+		clk.Step(time.Millisecond)
+		return false
+	})
+}
+
 // eventuallyWithin polls cond for up to d of real time.
 func eventuallyWithin(t *testing.T, d time.Duration, what string, cond func() bool) {
 	t.Helper()
