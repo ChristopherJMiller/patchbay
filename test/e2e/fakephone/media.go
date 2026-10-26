@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/rtp"
+	"github.com/pion/rtp/v2"
 )
 
 // mediaOptions configures one call's audio.

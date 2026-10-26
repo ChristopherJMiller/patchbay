@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/rtp"
+	"github.com/pion/rtp/v2"
 )
 
 // peer answers RTP from 127.0.0.1: echo sends every packet back unchanged,

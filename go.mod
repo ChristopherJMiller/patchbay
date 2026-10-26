@@ -7,7 +7,7 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/icholy/digest v1.2.0
 	github.com/pin/tftp/v3 v3.2.0
-	github.com/pion/rtp v1.10.5
+	github.com/pion/rtp/v2 v2.0.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.24.0

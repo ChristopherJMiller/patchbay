@@ -13,7 +13,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/pion/rtp"
+	"github.com/pion/rtp/v2"
 )
 
 // fakePBX is an in-process PBX on 127.0.0.1 (UDP and TCP) for the tests

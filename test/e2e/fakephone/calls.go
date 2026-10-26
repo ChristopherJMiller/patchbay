@@ -14,7 +14,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/icholy/digest"
-	"github.com/pion/rtp"
+	"github.com/pion/rtp/v2"
 
 	"github.com/ChristopherJMiller/patchbay/test/e2e/fakephone/script"
 )
