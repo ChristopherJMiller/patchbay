@@ -61,8 +61,11 @@ func TestServesTheHTTPTree(t *testing.T) {
 	}
 	checkEvent(t, f.rec.next(t), treeEvent("directory.xml", v1, api.FetchServed))
 
-	if r := f.get(t, "/apps/menu.xml"); r.code != http.StatusOK || r.body != "<CiscoIPPhoneMenu>v1</CiscoIPPhoneMenu>" {
-		t.Errorf("GET /apps/menu.xml = %d %q", r.code, r.body)
+	// A subdirectory of http/ (the compiled directory/extensions.xml is
+	// one): served at its path, as text/xml like any .xml.
+	if r := f.get(t, "/apps/menu.xml"); r.code != http.StatusOK || r.body != "<CiscoIPPhoneMenu>v1</CiscoIPPhoneMenu>" ||
+		r.header.Get("Content-Type") != xmlType || r.header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("GET /apps/menu.xml = %d %q %v", r.code, r.body, r.header)
 	}
 	checkEvent(t, f.rec.next(t), treeEvent("apps/menu.xml", v1, api.FetchServed))
 	if r := f.get(t, "/logo.bin"); r.code != http.StatusOK || r.header.Get("Content-Type") != "application/octet-stream" || r.body != "\x00\x01binaryv1" {

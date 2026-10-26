@@ -272,10 +272,14 @@ func TestAgentWiring(t *testing.T) {
 		}
 	}
 
-	// Device HTTP serves the live http/ tree.
-	code, dir := httpDo(t, http.MethodGet, "http://"+f.opts.deviceHTTPListen+"/directory.xml", nil, false)
-	if want := string(f.bundle.Files[compile.DirectoryFile]); code != http.StatusOK || dir != want {
-		t.Errorf("GET /directory.xml: %d %q", code, dir)
+	// Device HTTP serves the live http/ tree: the menus and the directory
+	// they open, in a subdirectory.
+	for _, file := range []string{compile.DirectoryFile, compile.ServicesFile, compile.ExtensionsFile} {
+		urlPath := strings.TrimPrefix(file, compile.TreeHTTP)
+		code, doc := httpDo(t, http.MethodGet, "http://"+f.opts.deviceHTTPListen+urlPath, nil, false)
+		if want := string(f.bundle.Files[file]); code != http.StatusOK || want == "" || doc != want {
+			t.Errorf("GET %s: %d %q", urlPath, code, doc)
+		}
 	}
 
 	// A fetch the file server reports over the socket is attributed to the
