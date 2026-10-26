@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-s -w" -o /out/fakephone ./test/e2e/fakephone
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:516757106de35205efb70b91ba03f6f1298424a0678c603255cf2852a7000087
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 
 LABEL org.opencontainers.image.source="https://github.com/ChristopherJMiller/patchbay" \
       org.opencontainers.image.description="patchbay e2e tools: a simulated Cisco 79x5 and Linphone (fakephone)" \
