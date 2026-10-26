@@ -494,8 +494,7 @@ func (a *Applier) verifyLive(ctx context.Context) error {
 func (a *Applier) rollBack(ctx context.Context, failed *live, err error) {
 	prev := failed.prev
 	if prev == nil {
-		a.setLive(failed)
-		a.failed(failed.version, err)
+		a.setLiveFailed(failed, failed.version, err)
 		a.cfg.Log.Info("version failed with nothing to roll back to; it stays live", "version", failed.version, "error", err.Error())
 		return
 	}
@@ -511,8 +510,7 @@ func (a *Applier) rollBack(ctx context.Context, failed *live, err error) {
 	a.mu.Lock()
 	prev.restored = true
 	a.mu.Unlock()
-	a.setLive(prev)
-	a.failed(failed.version, err)
+	a.setLiveFailed(prev, failed.version, err)
 	a.cfg.Log.Info("version rolled back", "failed", failed.version, "live", prev.version, "error", err.Error())
 }
 
@@ -728,6 +726,20 @@ func (a *Applier) succeeded(version string) {
 	defer a.mu.Unlock()
 	now := a.cfg.Now()
 	a.status.LastApplyVersion, a.status.LastApplyError, a.status.LastApplyAt = version, "", &now
+}
+
+// setLiveFailed makes l live and records that version failed, in one step:
+// Status (and so the controller's poll) never sees the rollback's version
+// live without the failure that caused it.
+func (a *Applier) setLiveFailed(l *live, version string, err error) {
+	a.mu.Lock()
+	now := a.cfg.Now()
+	a.cur = l
+	a.status.AppliedVersion = l.version
+	a.status.LastApplyVersion, a.status.LastApplyError, a.status.LastApplyAt = version, err.Error(), &now
+	a.mu.Unlock()
+	a.cfg.Metrics.SetAppliedVersion(l.version)
+	a.cfg.Metrics.ApplyFailed()
 }
 
 // failed records an apply of version that failed.
