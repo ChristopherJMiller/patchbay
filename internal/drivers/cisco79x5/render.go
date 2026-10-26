@@ -124,6 +124,8 @@ func checkRender(dev drivers.Device, ctx drivers.RenderContext) error {
 		return fmt.Errorf("cisco79x5: NTP server %q is over %d characters", ctx.NTPServer, maxHost)
 	case len(ctx.DirectoryURL) > maxURL:
 		return fmt.Errorf("cisco79x5: directory URL is %d characters, over %d", len(ctx.DirectoryURL), maxURL)
+	case len(ctx.ServicesURL) > maxURL:
+		return fmt.Errorf("cisco79x5: services URL is %d characters, over %d", len(ctx.ServicesURL), maxURL)
 	case ctx.Signalling != drivers.SignallingPJSIP:
 		return fmt.Errorf("cisco79x5: signalling backend %q is not implemented", ctx.Signalling)
 	}
@@ -320,8 +322,13 @@ func sep(dev drivers.Device, ctx drivers.RenderContext, p drivers.Profile, load,
 		NetworkLocale:      "United_States",
 		NetworkLocaleInfo:  sepNetworkLocaleInfo{Name: "United_States"},
 		DeviceSecurityMode: 1, // non-secure: no TLS in release A
-		DirectoryURL:       ctx.DirectoryURL,
-		ProxyServerURL:     "",
+		// The compiled menus (CiscoIPPhoneMenu, compile's directory.go):
+		// the Services button opens servicesURL's, and the Directories
+		// menu adds directoryURL's items after the phoneServices below
+		// (provisioning 2 uses both).
+		ServicesURL:    ctx.ServicesURL,
+		DirectoryURL:   ctx.DirectoryURL,
+		ProxyServerURL: "",
 		PhoneServices: sepPhoneServices{
 			UseHTTPS:     false,
 			Provisioning: 2,

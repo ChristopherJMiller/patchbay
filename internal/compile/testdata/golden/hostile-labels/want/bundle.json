@@ -1,12 +1,12 @@
 {
-  "version": "1df5a4801f903c8367ad9df04463ad5d908d4da700e4f194b6975936325dc8e8",
+  "version": "9bcd14da075240481b244189356b7f6ceeb131601dd386543cfa325e4d397d70",
   "devices": {
     "phone-lab": {
       "kind": "Phone",
       "name": "lab",
       "number": "100",
       "mac": "D0C78915E8C8",
-      "version": "c72f443f4d95f6c4561f2ce275a331416957de2bb563a6f3eae2675834168372",
+      "version": "da6bfab2a21d2fc28d3d7c8985e58fbd7b1901fbc230c546c58798fc32f07bde",
       "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
       "files": [
         "tftp/SEPD0C78915E8C8.cnf.xml",
@@ -18,7 +18,7 @@
       "name": "long",
       "number": "101",
       "mac": "D0C78915EBB5",
-      "version": "6455e54dbb0098ef752f39e443b052e503d43d2fed8bf40920c39f9224c92eca",
+      "version": "6b88c0411875c0c1f29d214af76454dba167698d99aa919d5419b61307190dac",
       "configFile": "tftp/SEPD0C78915EBB5.cnf.xml",
       "files": [
         "tftp/SEPD0C78915EBB5.cnf.xml",
@@ -30,7 +30,7 @@
       "name": "spaced",
       "number": "102",
       "mac": "D0C78915A0C1",
-      "version": "b56847a682cc51973943f2e5b7744823dc38c24a6e761f3c700453f4c3cab50b",
+      "version": "fbbf3ce4a59471872ddd34a949fe85afa9a09719675e3f3998870236c34d10a9",
       "configFile": "tftp/SEPD0C78915A0C1.cnf.xml",
       "files": [
         "tftp/SEPD0C78915A0C1.cnf.xml",

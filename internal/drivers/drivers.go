@@ -341,9 +341,13 @@ type RenderContext struct {
 	// http://192.168.0.240:8088 (directory, services, provisioning).
 	DeviceHTTPURL string
 
-	// DirectoryURL is the URL of the compiled directory
+	// DirectoryURL is the URL of the compiled Directories menu
 	// (http://192.168.0.240:8088/directory.xml): the 79x5's directoryURL.
 	DirectoryURL string
+
+	// ServicesURL is the URL of the compiled Services menu
+	// (http://192.168.0.240:8088/services.xml): the 79x5's servicesURL.
+	ServicesURL string
 
 	// NTPServer is the time server as an IP address (the 79x5 cannot
 	// resolve names here).

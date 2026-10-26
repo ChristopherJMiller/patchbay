@@ -176,7 +176,7 @@
     <powerNegotiation>0</powerNegotiation>
     <eapAuthentication>1</eapAuthentication>
   </vendorConfig>
-  <versionStamp>6d08e19c6cac982857a033f931562ccb</versionStamp>
+  <versionStamp>49b96db4abfe023264c03b05026ba38f</versionStamp>
   <userLocale>
     <name>English_United_States</name>
     <uid>1</uid>
@@ -190,6 +190,7 @@
     <version></version>
   </networkLocaleInfo>
   <deviceSecurityMode>1</deviceSecurityMode>
+  <servicesURL>http://192.168.0.240:8088/services.xml</servicesURL>
   <directoryURL>http://192.168.0.240:8088/directory.xml</directoryURL>
   <proxyServerURL></proxyServerURL>
   <phoneServices useHTTPS="false">

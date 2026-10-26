@@ -36,6 +36,7 @@ type sepDevice struct {
 	NetworkLocale           string               `xml:"networkLocale"`
 	NetworkLocaleInfo       sepNetworkLocaleInfo `xml:"networkLocaleInfo"`
 	DeviceSecurityMode      int                  `xml:"deviceSecurityMode"`
+	ServicesURL             string               `xml:"servicesURL"`
 	DirectoryURL            string               `xml:"directoryURL"`
 	ProxyServerURL          string               `xml:"proxyServerURL"`
 	PhoneServices           sepPhoneServices     `xml:"phoneServices"`

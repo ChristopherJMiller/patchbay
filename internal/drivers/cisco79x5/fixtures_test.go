@@ -78,6 +78,7 @@ func houseCtx() drivers.RenderContext {
 		SIPPort:       5060,
 		DeviceHTTPURL: "http://192.168.0.240:8088",
 		DirectoryURL:  "http://192.168.0.240:8088/directory.xml",
+		ServicesURL:   "http://192.168.0.240:8088/services.xml",
 		NTPServer:     "192.168.20.1",
 		Timezone:      "America/Los_Angeles",
 		Signalling:    drivers.SignallingPJSIP,

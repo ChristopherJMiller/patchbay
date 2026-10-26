@@ -191,6 +191,7 @@
     <version></version>
   </networkLocaleInfo>
   <deviceSecurityMode>1</deviceSecurityMode>
+  <servicesURL>http://192.168.0.240:8088/services.xml</servicesURL>
   <directoryURL>http://192.168.0.240:8088/directory.xml</directoryURL>
   <proxyServerURL></proxyServerURL>
   <phoneServices useHTTPS="false">

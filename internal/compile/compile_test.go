@@ -146,7 +146,7 @@ func TestCompileWithFakes(t *testing.T) {
 			t.Errorf("desk's file is not stamped with its version %s:\n%s", desk.Version, b.Files["tftp/phone-desk.cfg"])
 		}
 		// The render context, from the settings.
-		if want := "tz=America/Los_Angeles patterns=600,911,1XX,3XX,7XX,2XX,0,9.,*8 directory=http://192.168.0.240:8088/directory.xml ntp=192.168.20.1\n"; string(b.Files["tftp/shared.cfg"]) != want {
+		if want := "tz=America/Los_Angeles patterns=600,911,1XX,3XX,7XX,2XX,0,9.,*8 directory=http://192.168.0.240:8088/directory.xml services=http://192.168.0.240:8088/services.xml ntp=192.168.20.1\n"; string(b.Files["tftp/shared.cfg"]) != want {
 			t.Errorf("shared.cfg = %q, want %q", b.Files["tftp/shared.cfg"], want)
 		}
 		ext := string(b.Files["asterisk/extensions.conf"])

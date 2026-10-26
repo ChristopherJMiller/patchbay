@@ -1,12 +1,12 @@
 {
-  "version": "cf7faa760eb4c51ad64a238663ec813b74df33df71bc113a0df154c1d4e5b2e0",
+  "version": "aa41c2a95bfc0cb33776b6fb7478c10be62cd43d853db378b9c3153b00cdc461",
   "devices": {
     "phone-desk": {
       "kind": "Phone",
       "name": "desk",
       "number": "100",
       "mac": "D0C78915E8C8",
-      "version": "bd2729d817f5d71e924766852b0536e34b7433d21fb074166274c8cf50c9ab95",
+      "version": "d19f22a12cd579957f5689de64543e2f4e05082e4fb656a45b7a3166cd9938da",
       "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
       "files": [
         "tftp/SEPD0C78915E8C8.cnf.xml",
@@ -18,7 +18,7 @@
       "name": "kitchen",
       "number": "101",
       "mac": "D0C78915EBB5",
-      "version": "50af6a062ac0cdae8f248557567d03428e583c3deb57169cb8e9075572789a6f",
+      "version": "48230177d3d559ea6227acbac58c04f12ebbd4a66f55873bba7f120883f9d5e5",
       "configFile": "tftp/SEPD0C78915EBB5.cnf.xml",
       "files": [
         "tftp/SEPD0C78915EBB5.cnf.xml",

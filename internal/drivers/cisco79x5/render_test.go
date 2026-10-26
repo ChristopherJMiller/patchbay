@@ -75,9 +75,11 @@ func goldenCases() []renderCase {
 //   - vpnGroup: no VPN (softphones away from home are out of scope).
 //   - messagesNumber, messagesURL and the Voicemail phoneService: no
 //     voicemail in release A.
-//   - softKeyFile, servicesURL, informationURL, idleURL, idleTimeout,
-//     authenticationURL: soft keys and XML services are release C; until
-//     then the phone keeps its built-in soft keys.
+//   - softKeyFile, informationURL, idleURL, idleTimeout,
+//     authenticationURL: soft keys, help, the idle screen and pushed XML
+//     are release C; until then the phone keeps its built-in soft keys.
+//     servicesURL is written: the compiled Services menu
+//     (compile.ServicesFile), pulled forward from release C.
 //   - blfAudibleAlertSettingOfIdleStation/BusyStation: BLF is unsupported
 //     on stock PJSIP (design §8.5); no BLF key is rendered.
 //   - recordingTone, recordingToneLocalVolume, recordingToneRemoteVolume,
@@ -170,6 +172,9 @@ func TestRenderErrors(t *testing.T) {
 		{name: "256-character directory URL", ctx: func(c *drivers.RenderContext) {
 			c.DirectoryURL = "http://192.168.0.240:8088/" + strings.Repeat("d", 256-26)
 		}},
+		{name: "256-character services URL", ctx: func(c *drivers.RenderContext) {
+			c.ServicesURL = "http://192.168.0.240:8088/" + strings.Repeat("s", 256-26)
+		}},
 		{name: "51-character PBX address", ctx: func(c *drivers.RenderContext) { c.PBXAddress = strings.Repeat("p", 51) }},
 		{name: "empty PBX address", ctx: func(c *drivers.RenderContext) { c.PBXAddress = "" }},
 		{name: "51-character NTP server", ctx: func(c *drivers.RenderContext) { c.NTPServer = strings.Repeat("1", 51) }},
@@ -201,9 +206,10 @@ func TestRenderErrors(t *testing.T) {
 	// At the limits, it renders.
 	ctx := houseCtx()
 	ctx.DirectoryURL = "http://192.168.0.240:8088/" + strings.Repeat("d", 255-26)
+	ctx.ServicesURL = "http://192.168.0.240:8088/" + strings.Repeat("s", 255-26)
 	ctx.PBXAddress = strings.Repeat("p", 50)
 	if _, err := d.Render(desk(), ctx); err != nil {
-		t.Errorf("a 255-character URL and a 50-character address: %v", err)
+		t.Errorf("255-character URLs and a 50-character address: %v", err)
 	}
 }
 
@@ -242,6 +248,7 @@ type sepFields struct {
 	VersionStamp    string `xml:"versionStamp"`
 	Transport       string `xml:"transportLayerProtocol"`
 	G722            string `xml:"advertiseG722Codec"`
+	ServicesURL     string `xml:"servicesURL"`
 	DirectoryURL    string `xml:"directoryURL"`
 }
 
@@ -296,7 +303,7 @@ func TestRenderProperties(t *testing.T) {
 			if n := utf8.RuneCountInString(f.PhoneLabel); n > 12 || strings.Contains(f.PhoneLabel, " ") {
 				t.Errorf("phoneLabel %q: %d characters or a space", f.PhoneLabel, n)
 			}
-			if len(f.ProcessNodeName) > 50 || len(f.NTPName) > 50 || len(f.DirectoryURL) > 255 {
+			if len(f.ProcessNodeName) > 50 || len(f.NTPName) > 50 || len(f.DirectoryURL) > 255 || len(f.ServicesURL) > 255 {
 				t.Errorf("a host or URL is over its limit: %+v", f)
 			}
 			// The values plan §4 T1's table requires.
@@ -332,6 +339,7 @@ func TestRenderProperties(t *testing.T) {
 				"versionStamp":           {f.VersionStamp, c.dev.ConfigVersion[:32]},
 				"transportLayerProtocol": {f.Transport, "1"},
 				"advertiseG722Codec":     {f.G722, "1"},
+				"servicesURL":            {f.ServicesURL, c.ctx.ServicesURL},
 				"directoryURL":           {f.DirectoryURL, c.ctx.DirectoryURL},
 			}
 			for name, gw := range want {

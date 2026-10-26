@@ -30,6 +30,7 @@ func houseCtx(id string) drivers.RenderContext {
 		SIPPort:       5060,
 		DeviceHTTPURL: "http://192.168.0.240:8088",
 		DirectoryURL:  "http://192.168.0.240:8088/directory.xml",
+		ServicesURL:   "http://192.168.0.240:8088/services.xml",
 		NTPServer:     "192.168.20.1",
 		Timezone:      "America/Los_Angeles",
 		Signalling:    drivers.SignallingPJSIP,
@@ -322,7 +323,7 @@ func TestRenderProperties(t *testing.T) {
 				"label":         func(d *drivers.Device, _ *drivers.RenderContext) { d.Label = "something else entirely" },
 				"ConfigVersion": func(d *drivers.Device, _ *drivers.RenderContext) { d.ConfigVersion = strings.Repeat("ab", 32) },
 				"other settings": func(_ *drivers.Device, c *drivers.RenderContext) {
-					c.DeviceHTTPURL, c.DirectoryURL, c.NTPServer, c.Timezone = "http://x", "http://x/d.xml", "10.9.9.9", "Europe/London"
+					c.DeviceHTTPURL, c.DirectoryURL, c.ServicesURL, c.NTPServer, c.Timezone = "http://x", "http://x/d.xml", "http://x/s.xml", "10.9.9.9", "Europe/London"
 					c.DialPatterns = nil
 				},
 			} {

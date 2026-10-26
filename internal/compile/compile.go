@@ -495,6 +495,7 @@ func renderContext(s Settings) drivers.RenderContext {
 		SIPPort:       s.SIPPort,
 		DeviceHTTPURL: base,
 		DirectoryURL:  base + deviceHTTPPath(DirectoryFile),
+		ServicesURL:   base + deviceHTTPPath(ServicesFile),
 		NTPServer:     s.NTPServer,
 		Timezone:      s.Timezone,
 		Signalling:    s.Signalling,

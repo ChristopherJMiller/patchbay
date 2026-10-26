@@ -67,7 +67,7 @@ func (fakeDriver) Profile(model string) (drivers.Profile, bool) {
 
 func (fakeDriver) Render(dev drivers.Device, ctx drivers.RenderContext) (drivers.Files, error) {
 	own := fmt.Sprintf("id=%s number=%s label=%s password=%s stamp=%s\n", dev.ID, dev.Number, dev.Label, ctx.SIPPassword, dev.ConfigVersion)
-	shared := fmt.Sprintf("tz=%s patterns=%s directory=%s ntp=%s\n", ctx.Timezone, strings.Join(ctx.DialPatterns, ","), ctx.DirectoryURL, ctx.NTPServer)
+	shared := fmt.Sprintf("tz=%s patterns=%s directory=%s services=%s ntp=%s\n", ctx.Timezone, strings.Join(ctx.DialPatterns, ","), ctx.DirectoryURL, ctx.ServicesURL, ctx.NTPServer)
 	switch dev.Model {
 	case modelPhone:
 		return drivers.Files{"tftp/" + dev.ID + ".cfg": []byte(own), "tftp/shared.cfg": []byte(shared)}, nil
