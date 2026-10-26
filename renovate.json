@@ -65,6 +65,12 @@
       "prBodyNotes": ["Keep the k8s.io minor in step with nixpkgs' `kubernetes` (envtest's kube-apiserver; see flake.nix). A new minor here usually needs a flake.lock bump too."]
     },
     {
+      "description": "Propose a golang patch on its own. Without this Renovate offers only the newest version (a minor, disabled below), so a Go security patch never arrived and govulncheck held every PR red (GO-2026-6809, fixed in 1.26.10).",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["golang", "docker.io/library/golang"],
+      "separateMinorPatch": true
+    },
+    {
       "description": "The Go minor comes from the flake (go_1_26 and GOTOOLCHAIN=local). The builder image follows patches only; a new Go minor changes flake.nix and the Dockerfile together, by hand.",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["golang", "docker.io/library/golang"],
