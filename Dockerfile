@@ -56,7 +56,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # docs/streams.md). This stage runs apk on the target platform, so an arm64
 # build needs QEMU (CI's setup-qemu-action). `make
 # image-check-stream-bridge` checks the result (test/image).
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS stream-bridge
+FROM alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS stream-bridge
 
 RUN apk add --no-cache ffmpeg ca-certificates \
  && ffmpeg -hide_banner -buildconf | grep -q -- '--enable-gpl' \
