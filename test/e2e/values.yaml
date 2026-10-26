@@ -6,7 +6,7 @@
 image:
   repository: ghcr.io/christopherjmiller/patchbay
   tag: e2e
-  # Loaded with `kind load docker-image`; never pulled.
+  # Loaded into kind from a host-platform `docker save` (harness loadImages); never pulled.
   pullPolicy: Never
 
 # The phones' clock (the chart's default is UTC).
@@ -33,7 +33,7 @@ firmware:
     keep: false
 
 # The stream bridge (release B): the e2e build of its image, loaded with
-# `kind load docker-image`, never pulled (test/e2e/streamkit_test.go's
+# loaded into kind by the harness, never pulled (test/e2e/streamkit_test.go's
 # streamBridgeImage).
 streamBridge:
   image:

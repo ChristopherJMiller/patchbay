@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -383,18 +384,35 @@ func (h *harness) setupCluster(ctx context.Context, cfg *envconf.Config) (contex
 
 // loadImages loads the locally built images (patchbay, the stream bridge,
 // the tools), and the digest-pinned Asterisk image pulled on the host, into
-// the kind node. `make e2e-images` builds and pulls them; kind load is a
-// no-op for an image already present.
+// the kind node. `make e2e-images` builds and pulls them.
+//
+// Each image is saved for the host's platform only and loaded as an
+// archive. `kind load docker-image` saves the whole image and imports
+// every platform its index names (ctr --all-platforms); with Docker's
+// containerd image store (the default on GitHub's ubuntu-26.04 runners)
+// that index names platforms whose layers were never pulled, and the
+// import fails with "content digest … not found".
 func (h *harness) loadImages(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-	for _, img := range []string{patchbayImage, streamBridgeImage, toolsImage, h.asteriskImage} {
+	dir, err := os.MkdirTemp("", "patchbay-e2e-images")
+	if err != nil {
+		return ctx, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	platform := "linux/" + runtime.GOARCH
+	for i, img := range []string{patchbayImage, streamBridgeImage, toolsImage, h.asteriskImage} {
 		id, err := h.run(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", img)
 		if err != nil {
 			return ctx, fmt.Errorf("image %s is missing locally: run `nix develop -c make e2e-images` (make e2e does): %w", img, err)
 		}
 		h.imageIDs[img] = strings.TrimSpace(id)
-		if _, err := h.run(ctx, "kind", "load", "docker-image", "--name", clusterName, img); err != nil {
+		archive := filepath.Join(dir, fmt.Sprintf("image-%d.tar", i))
+		if _, err := h.run(ctx, "docker", "save", "--platform", platform, "-o", archive, img); err != nil {
+			return ctx, fmt.Errorf("saving %s for %s: %w", img, platform, err)
+		}
+		if _, err := h.run(ctx, "kind", "load", "image-archive", "--name", clusterName, archive); err != nil {
 			return ctx, err
 		}
+		_ = os.Remove(archive)
 	}
 	return ctx, nil
 }
