@@ -18,7 +18,7 @@
   },
   "osvVulnerabilityAlerts": true,
   "ignorePaths": ["**/node_modules/**", "**/vendor/**"],
-  "postUpdateOptions": ["gomodTidy"],
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
   "nix": {
     "enabled": true,
     "lockFileMaintenance": {
