@@ -1329,6 +1329,39 @@ e2e tests, docs)
   limit. Left as packaged; a house that wants the scheduler to count what
   three sessions use sets `streamBridge.resources.requests.memory: 128Mi`.
 
+**After B: the Directories and Services menus** (2026-10-25; CLAUDE.md
+records it as a deviation, the Services menu pulled forward from C)
+- **The Desk 7945 never showed the directory.** It fetched
+  `/directory.xml` on every press of Directories (device HTTP's fetch
+  log) and showed only its Missed, Received and Placed Calls: a 79x5
+  extends that menu only with the items of a `CiscoIPPhoneMenu`, and
+  release A's file was a flat `CiscoIPPhoneDirectory`. Services showed
+  nothing: the SEP file had no `servicesURL`.
+- `http/directory.xml` (the URL phones already hold) is now a
+  `CiscoIPPhoneMenu` titled patchbay, and `http/services.xml` the same
+  menu, which the SEP file names in `servicesURL` (before `directoryURL`,
+  as usecallmanager.nz's sample has it). The items carry absolute URLs on
+  device HTTP: **Extensions** opens `directory/extensions.xml`, release
+  A's list (every routed Phone and Softphone, every Person who rings one,
+  by number, 32 at most); **Streams** opens `directory/streams.xml`, every
+  Stream whose number dials the bridge, by number, 32 at most. A Stream
+  with a refused source, or on an install without a bridge, plays "not
+  available" and is not listed; with none listed there is no Streams item
+  and no file. The lists are titled Extensions and Streams.
+- A Stream's display name now reaches pbx-config (streams.xml), so
+  renaming a routed Stream makes a new bundle version, as relabelling a
+  phone does; its source still changes streams.json alone. Every Phone's
+  SEP file gained `servicesURL`, so each 79x5 is resynced once after the
+  upgrade (ConfigStale, never during a call).
+- Tests: `checkMenus` on every golden (each item's URL is absolute on the
+  install's device HTTP, at most 256 characters, and opens a
+  `CiscoIPPhoneDirectory` in the bundle's http/ tree within Cisco's
+  limits; nothing in http/ is out of reach), `TestDirectory`,
+  `TestStreamDirectory`, the 79x5's goldens and limits, and
+  `TestAgentWiring` fetching the menus and `directory/extensions.xml`
+  through the agent. No e2e test read the old directory; none was
+  changed. Bench B13 checks the phone.
+
 **Still open at B's close** (each a bench or CI question, §8 and §9):
 B1-B11 on the real HDHomeRun, the Desk phone and SomaFM; the arm64 image
 (CI's first run); `[real]` closes of every §9 row.
@@ -1383,6 +1416,7 @@ open.
 | B10 | Does Plex still record on its tuner while a phone holds the other, and what does Plex do when it wants both? | the pool's `max` (luma-homeops values) | 1 | Chris's policy; record Plex's behaviour |
 | B11 | Does the bridge pod reach `192.168.0.58:5004` from the pod network? | none | yes (pods reach the LAN through the node) | if a NetworkPolicy blocks it, allow it in luma-homeops |
 | B12 | Does a stream call the Desk phone transfers still end at the time limit? Set `streams.callLimit: 60s` for the test; transfer a 705 call to another phone (answered, and while it still rings) and to 600 | none (`streambridge.CallLimitSlack`) | Asterisk ends a blind transfer at the limit (`S()`); the bridge ends what Asterisk lost 5 s later (§13 R1) | record which ended each (the bridge logs "call ended past its time limit"); if neither does, it is a bug |
+| B13 | After its resync, does the Desk phone list Extensions and Streams under Directories (after its call histories) and under Services, and does picking an entry dial it? Does a name with `'`, `"` or `&` show as written (encoding/xml writes `&#39;`, `&#34;`, `&amp;`)? | `compile/directory.go` | absolute item URLs; encoding/xml's escaping | if a menu stays empty, read device HTTP's fetches (`services.xml`, `directory/extensions.xml`); if quotes show escaped, write the named entities (`&apos;`, `&quot;`) |
 
 ---
 

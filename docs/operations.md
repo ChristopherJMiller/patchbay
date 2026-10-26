@@ -112,6 +112,32 @@ The human action in `patchbay status` is the instruction; this is the why.
 annotation `patchbay.chrismiller.xyz/resync-requested`, acted on once;
 held while the phone is on a call).
 
+### The Directories and Services buttons
+
+**Directories** lists the phone's own Missed, Received and Placed Calls,
+then patchbay's two lists; **Services** opens the same two lists alone:
+
+- **Extensions**: every Phone and Softphone that holds its number, and
+  every Person who rings at least one of them, by number.
+- **Streams**: every Stream whose number dials the stream bridge, by
+  number. Absent while no Stream can play: a Stream with a refused
+  source, and every Stream of an install without a bridge, plays "not
+  available" and is not offered.
+
+Pick an entry and press Dial. Each list holds at most 32 entries (Cisco's
+limit; the highest numbers are dropped, and the file says how many) and
+cuts names to 32 characters. The phone fetches them from device HTTP
+(`http://<pbx.address>:8088/directory.xml` and `/services.xml`, which open
+`/directory/extensions.xml` and `/directory/streams.xml`) on every press,
+so a new Phone, Person or Stream shows on the next press after the agent
+has applied its version: no resync is needed.
+
+| Symptom | Cause | Action |
+|---|---|---|
+| Services shows nothing, Directories works | The phone still runs a SEP file without `servicesURL` (rendered before the Services menu). | `patchbay status`: a `ConfigStale` phone is resynced on its own, never during a call. |
+| Directories shows only the call histories | The phone cannot reach device HTTP :8088, or gets no menu there. | curl `http://<pbx.address>:8088/directory.xml` from the voice VLAN; the agent's observations record each device HTTP fetch (transport `http8088`). |
+| An entry is missing | Over 32 entries, a Stream that cannot play (above), or a Phone or Softphone that does not hold its number (`Invalid`). | The resource's status says why. |
+
 ## One Softphone
 
 | State | Cause | Action |

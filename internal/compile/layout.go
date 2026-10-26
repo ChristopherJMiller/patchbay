@@ -60,7 +60,8 @@ const (
 	ServicesFile = TreeHTTP + "/services.xml"
 
 	// ExtensionsFile is the CiscoIPPhoneDirectory the menus' Extensions
-	// item opens: every routed Phone and Softphone and every Person.
+	// item opens: every routed Phone and Softphone, and every Person who
+	// rings at least one of them.
 	ExtensionsFile = TreeHTTP + "/directory/extensions.xml"
 
 	// StreamsFile is the CiscoIPPhoneDirectory the menus' Streams item

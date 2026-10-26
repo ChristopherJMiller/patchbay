@@ -67,8 +67,13 @@ for the real HDHomeRun and SomaFM are in
 [docs/plans/release-b.md §8](docs/plans/release-b.md).
 [docs/streams.md](docs/streams.md) is the guide.
 
+On a Cisco desk phone, the Directories and Services buttons list the
+extensions (phones, softphones, people) and the streams, and picking one
+dials it ([docs/operations.md](docs/operations.md)).
+
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
-extras (wallpaper, ringtones, speed dials, a Services menu, push messages).
+extras (wallpaper, ringtones, speed dials, more of the Services menu, push
+messages).
 
 ## Quickstart
 

@@ -19,7 +19,7 @@ import (
 // object its servicesURL returns. So directory.xml and services.xml are one
 // menu, titled patchbay:
 //
-//	Extensions -> directory/extensions.xml  every routed Phone and Softphone, every Person
+//	Extensions -> directory/extensions.xml  every routed Phone and Softphone, every Person ringing one
 //	Streams    -> directory/streams.xml     every Stream whose number dials the bridge
 //
 // Each list is a CiscoIPPhoneDirectory: pick an entry and the phone dials

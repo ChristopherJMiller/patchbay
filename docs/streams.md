@@ -13,6 +13,13 @@ metadata: {name: king5}
 spec: {number: "705", name: KING 5, source: "http://192.168.0.58:5004/auto/v5.1"}
 ```
 
+On a Cisco desk phone, Directories and Services both list **Streams**: each
+Stream whose number dials the bridge, by number, under its `name`; pick one
+to dial it
+([docs/operations.md](operations.md#the-directories-and-services-buttons)). A
+Stream that plays "not available" (a refused source, no bridge) is not
+listed.
+
 Contents: [How a call works](#how-a-stream-call-works) ·
 [Sources](#sources) · [Tuner pools](#tuner-pools) ·
 [The time limit](#the-time-limit) · [States](#states-and-conditions) ·

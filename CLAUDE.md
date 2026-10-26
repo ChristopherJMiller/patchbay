@@ -47,6 +47,7 @@ resources (Phone, Softphone, Person, Stream)
 
 Contracts: `internal/compile` (Bundle with its device index, Inputs, Boot,
 Settings, device Secret names; in `layout.go` the bundle's four trees, the
+menu and directory files in http/ (the phones hold `/directory.xml`), the
 live directory the agent swaps and the sound prompts; in `configmap.go` the
 pbx-config ConfigMap encoding), `internal/drivers` (Driver and the optional
 SettingsChecker, Device and the DeviceID format, Memory and its DeepCopy,
@@ -142,6 +143,20 @@ departs from it, the departure is recorded here (and in the code's docs).
   lacks it, a Phone's own display is Invalid with `Unsupported=True`
   (reason `UnsupportedFeature`, §8.3's "unsupported feature" rule), and the
   house default is left out.
+- **The Services menu is pulled forward from release C, static: Extensions
+  and Streams** (§10 has a Services menu of streams, phone status and
+  people in C). The 79x5's SEP file carries `servicesURL`
+  (`/services.xml`, `compile.ServicesFile`), the same CiscoIPPhoneMenu as
+  its `directoryURL` (`/directory.xml`): a 79x5 adds to its Directories
+  menu only the items of a CiscoIPPhoneMenu, so the directory is a menu too
+  (the Desk 7945 fetched a flat CiscoIPPhoneDirectory there on every press
+  and never showed it, 2026-10-25). Its items, with absolute URLs, open
+  `directory/extensions.xml` (every routed Phone and Softphone, and every
+  Person who rings one) and, while some Stream's number dials the bridge,
+  `directory/streams.xml`: CiscoIPPhoneDirectory lists of at most 32
+  entries, so picking one dials it (compile/directory.go). No phone status,
+  nothing pushed; the profile's `xmlServices` and `serviceURL` stay
+  `Untested`.
 - **Softphone status has memory too** (`observed`, `lastAction`,
   `humanAction`), which §8.4's Offline and rotateToken need.
 - **Bundle trees.** §5 says TFTP and HTTP "serve from the same live
