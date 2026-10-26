@@ -722,8 +722,8 @@ a session in each state, a pool with two sessions, a failure),
 pool), `patchbay_stream_bridge_session_starts_total{result="played|failed"}`,
 `patchbay_stream_bridge_refused_calls_total{reason="unknown_stream|tuner_busy|bridge_full"}`,
 `patchbay_stream_bridge_frames_dropped_total`,
-`patchbay_stream_bridge_underrun_frames_total` (silence sent while
-Playing), `patchbay_stream_bridge_streams_version_info{version}` (1, the
+`patchbay_stream_bridge_underrun_frames_total` (silence sent, while
+Playing, to a caller that has heard audio), `patchbay_stream_bridge_streams_version_info{version}` (1, the
 previous series removed), `patchbay_stream_bridge_streams_load_failures_total`.
 *Test:* `TestEveryMetric`.
 

@@ -195,6 +195,12 @@ func (srv *server) pace(ctx context.Context, conn net.Conn, c *caller, readerDon
 	timer := srv.clock.NewTimer(streams.FrameDuration)
 	defer timer.Stop()
 	t0 := srv.clock.Now()
+	// heard: this caller has had a frame of audio. Only then is a missing
+	// frame an underrun: before it, the session may have just turned
+	// Playing while its first frame is still on the way to this queue
+	// (deliver marks Playing before it fans out), or the caller may have
+	// joined a playing session between two frames.
+	heard := false
 	var cut time.Time // zero: no limit
 	if c.limit > 0 {
 		cut = t0.Add(c.limit + CallLimitSlack)
@@ -230,7 +236,8 @@ func (srv *server) pace(ctx context.Context, conn net.Conn, c *caller, readerDon
 		out := silence
 		if f, ok := c.queue.pop(); ok {
 			out = audiosocket.AppendFrame(buf[:0], audiosocket.KindAudio, f)
-		} else if c.sess.playing.Load() {
+			heard = true
+		} else if heard && c.sess.playing.Load() {
 			srv.m.metrics.underruns.Inc()
 		}
 		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))

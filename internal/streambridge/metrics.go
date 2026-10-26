@@ -15,7 +15,7 @@ import (
 //	patchbay_stream_bridge_refused_calls_total{reason}      unknown_stream, tuner_busy, bridge_full
 //	patchbay_stream_bridge_call_limit_ends_total            calls the bridge ended past the time limit (Asterisk had not)
 //	patchbay_stream_bridge_frames_dropped_total             frames a full caller queue dropped
-//	patchbay_stream_bridge_underrun_frames_total            silent frames sent while a session was Playing
+//	patchbay_stream_bridge_underrun_frames_total            silent frames sent to a caller that had heard audio, while Playing
 //	patchbay_stream_bridge_streams_version_info{version}    1 for the loaded streams.json (one series)
 //	patchbay_stream_bridge_streams_load_failures_total      streams.json files that could not be loaded
 //
@@ -82,7 +82,7 @@ func newMetrics() *metrics {
 		}),
 		underruns: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "patchbay_stream_bridge_underrun_frames_total",
-			Help: "Silent frames sent to callers of a playing session because no audio was queued.",
+			Help: "Silent frames sent, because no audio was queued, to callers of a playing session that had already heard audio.",
 		}),
 		loadFailures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "patchbay_stream_bridge_streams_load_failures_total",

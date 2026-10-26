@@ -299,8 +299,8 @@ pool), `patchbay_stream_bridge_session_starts_total{result="played|failed"}`,
 `patchbay_stream_bridge_call_limit_ends_total` (calls the bridge ended past
 the time limit),
 `patchbay_stream_bridge_frames_dropped_total`,
-`patchbay_stream_bridge_underrun_frames_total` (silence sent while
-playing), `patchbay_stream_bridge_streams_version_info{version}`,
+`patchbay_stream_bridge_underrun_frames_total` (silence sent, while
+playing, to a caller that has heard audio), `patchbay_stream_bridge_streams_version_info{version}`,
 `patchbay_stream_bridge_streams_load_failures_total`. The controller:
 `patchbay_streams{state}` and `patchbay_stream_bridge_reachable`.
 
