@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -171,7 +172,10 @@ func serveCheckConnection(conn net.Conn, dir string, i int, plays map[string]tim
 			k, p, err := readCheckFrame(conn)
 			if err != nil {
 				mu.Lock()
-				rec.PeerClosed = errors.Is(err, io.EOF)
+				// Asterisk closing the connection is an EOF, or a reset when
+				// it closes with our frames still unread in its buffer (the
+				// kernel then sends RST): both mean Asterisk ended the call.
+				rec.PeerClosed = errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
 				mu.Unlock()
 				return
 			}
