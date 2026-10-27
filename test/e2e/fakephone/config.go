@@ -116,6 +116,7 @@ type sepXML struct {
 	LoadInformation        string `xml:"loadInformation"`
 	VersionStamp           string `xml:"versionStamp"`
 	TransportLayerProtocol string `xml:"transportLayerProtocol"`
+	AuthenticationURL      string `xml:"authenticationURL"`
 }
 
 type sepMember struct {
@@ -139,7 +140,7 @@ var sepTransports = map[string]string{"1": "tcp", "2": "udp"}
 // parseSEP reads a SEP<MAC>.cnf.xml named source: the first call manager's
 // processNodeName and ports/sipPort, sipStack/timerRegisterExpires,
 // phoneLabel, line 1's name, authName, authPassword and displayName,
-// loadInformation, versionStamp and transportLayerProtocol.
+// loadInformation, versionStamp, transportLayerProtocol and authenticationURL.
 func parseSEP(doc []byte, source string) (*deviceConfig, error) {
 	var x sepXML
 	if err := xml.NewDecoder(bytes.NewReader(doc)).Decode(&x); err != nil {
@@ -194,18 +195,19 @@ func parseSEP(doc []byte, source string) (*deviceConfig, error) {
 	}
 	return &deviceConfig{
 		Public: script.Config{
-			Source:          source,
-			SHA256:          hex.EncodeToString(sha256Of(doc)),
-			Version:         strings.TrimSpace(x.VersionStamp),
-			PhoneLabel:      x.Profile.PhoneLabel,
-			LineLabel:       line.DisplayName,
-			LoadInformation: strings.TrimSpace(x.LoadInformation),
-			User:            user,
-			AuthUser:        authName,
-			PasswordSHA256:  password.sha256Hex(),
-			Proxy:           server.String(),
-			Transport:       transport,
-			Expires:         expires,
+			Source:            source,
+			SHA256:            hex.EncodeToString(sha256Of(doc)),
+			Version:           strings.TrimSpace(x.VersionStamp),
+			PhoneLabel:        x.Profile.PhoneLabel,
+			LineLabel:         line.DisplayName,
+			LoadInformation:   strings.TrimSpace(x.LoadInformation),
+			AuthenticationURL: strings.TrimSpace(x.AuthenticationURL),
+			User:              user,
+			AuthUser:          authName,
+			PasswordSHA256:    password.sha256Hex(),
+			Proxy:             server.String(),
+			Transport:         transport,
+			Expires:           expires,
 		},
 		Server: server, Transport: transport, Password: password,
 	}, nil

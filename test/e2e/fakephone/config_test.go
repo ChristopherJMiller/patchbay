@@ -55,17 +55,20 @@ func TestParseSEP(t *testing.T) {
 		"desk": {
 			Source: "SEPD0C78915E8C8.cnf.xml", Version: "adc3b7d635474c7ea93068dadb6ffa35",
 			PhoneLabel: "Desk", LineLabel: "Desk", LoadInformation: "SIP45.9-4-2SR4-3S",
-			User: "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
+			AuthenticationURL: "http://192.168.0.240:8088/authenticate",
+			User:              "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
 		},
 		"hostile-label": {
 			Source: "SEPD0C78915E8C8.cnf.xml", Version: "adc3b7d635474c7ea93068dadb6ffa35",
 			PhoneLabel: `R&D;"Lab"<1>`, LineLabel: `R&D; "Lab" <1> Küche`, LoadInformation: "SIP45.9-4-2SR4-3S",
-			User: "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
+			AuthenticationURL: "http://192.168.0.240:8088/authenticate",
+			User:              "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
 		},
 		"long-label": {
 			Source: "SEPD0C78915E8C8.cnf.xml", Version: "adc3b7d635474c7ea93068dadb6ffa35",
 			PhoneLabel: "UpstairsOffi", LineLabel: "Upstairs Office Phone", LoadInformation: "SIP45.9-4-2SR4-3S",
-			User: "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
+			AuthenticationURL: "http://192.168.0.240:8088/authenticate",
+			User:              "100", AuthUser: "phone-desk", Proxy: "192.168.0.240:5060", Transport: "tcp", Expires: 600,
 		},
 		"lab-7965": {Source: "SEPD0C78915EBB5.cnf.xml"},
 	} {

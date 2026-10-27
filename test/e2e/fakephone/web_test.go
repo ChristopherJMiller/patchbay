@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -433,5 +435,94 @@ func TestRunNeverLogsSecrets(t *testing.T) {
 				t.Errorf("%s holds %q:\n%s", name, s, text)
 			}
 		}
+	}
+}
+
+// TestExecuteChecksAuthentication: POST /CGI/Execute GETs the SEP file's
+// authenticationURL with UserID, Password and devicename, and is refused
+// (401, CiscoIPPhoneError 4) unless the body is exactly AUTHORIZED; the
+// push is recorded, and an authorized one's first http item is fetched.
+func TestExecuteChecksAuthentication(t *testing.T) {
+	const (
+		password = "not-a-secret-push-password"
+		page     = `<CiscoIPPhoneText><Title>x</Title><Text>15:04  e2e</Text></CiscoIPPhoneText>`
+	)
+	var mu sync.Mutex
+	var queries []url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authenticate", func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		queries = append(queries, req.URL.Query())
+		mu.Unlock()
+		if req.URL.Query().Get("UserID") == "patchbay" && req.URL.Query().Get("Password") == password {
+			_, _ = w.Write([]byte("AUTHORIZED"))
+			return
+		}
+		_, _ = w.Write([]byte("UN-AUTHORIZED"))
+	})
+	mux.HandleFunc("/messages/desk.xml", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(page)) })
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	pbx, ts, opts := deskPhone(t, "pw")
+	ts.put("SEP"+deskMAC+".cnf.xml", []byte(strings.Replace(string(deskSEP(t, pbx, "pw", "")),
+		"http://127.0.0.1:8088/authenticate", srv.URL+"/authenticate", 1)))
+
+	sc := ciscoScript()
+	// Before the SEP file is read: 503.
+	h := startRun(t, sc, opts)
+	h.atStep("")
+	execute := func(user, pass, items string) (int, string) {
+		t.Helper()
+		form := url.Values{"XML": {"<CiscoIPPhoneExecute>" + items + "</CiscoIPPhoneExecute>"}}
+		req, err := http.NewRequest(http.MethodPost, h.web+"/CGI/Execute", strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(user, pass)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	items := `<ExecuteItem Priority="0" URL="Play:patchbay-chime.raw"/><ExecuteItem Priority="0" URL="` + srv.URL + `/messages/desk.xml?v=1"/>`
+	if code, _ := execute("patchbay", password, items); code != http.StatusServiceUnavailable {
+		t.Fatalf("before any SEP file: %d", code)
+	}
+
+	h = startRun(t, ciscoScript(script.Step{Label: "config", FetchConfig: &script.FetchConfig{}}), opts)
+	h.atStep("")
+
+	code, body := execute("patchbay", password, items)
+	if code != http.StatusOK || !strings.Contains(body, `<ResponseItem Status="0" Data="" URL=""/>`) {
+		t.Fatalf("authorized: %d %s", code, body)
+	}
+	code, body = execute("patchbay", "wrong", items)
+	if code != http.StatusUnauthorized || !strings.Contains(body, `<CiscoIPPhoneError Number="4"/>`) {
+		t.Fatalf("refused: %d %s", code, body)
+	}
+
+	s := h.state()
+	if len(s.Pushes) != 2 {
+		t.Fatalf("pushes %+v", s.Pushes)
+	}
+	wantItems := []string{"Play:patchbay-chime.raw", srv.URL + "/messages/desk.xml?v=1"}
+	if p := s.Pushes[0]; !p.Authorized || p.Status != 0 || !slices.Equal(p.Items, wantItems) || p.Fetched != "15:04  e2e" {
+		t.Errorf("first push %+v", p)
+	}
+	if p := s.Pushes[1]; p.Authorized || p.Status != 4 || !slices.Equal(p.Items, wantItems) || p.Fetched != "" {
+		t.Errorf("second push %+v", p)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 || queries[0].Get("UserID") != "patchbay" || queries[0].Get("devicename") != "SEP"+deskMAC {
+		t.Errorf("authentication queries %v", queries)
+	}
+	if b, _ := json.Marshal(s); bytes.Contains(b, []byte(password)) || bytes.Contains(b, []byte("wrong")) {
+		t.Errorf("State carries a password: %s", b)
 	}
 }

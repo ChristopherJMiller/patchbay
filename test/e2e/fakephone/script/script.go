@@ -24,7 +24,13 @@
 //     internal/agent/scrape's page types and MarshalPage) from the current
 //     Web, or 503 while Web.Down or before any Web was set; with
 //     Web.NetworkConfigurationBreaksOff and Web.EmptyDeviceLog, as a real
-//     CP-7945G on SIP 9.4(2)SR4-3 serves them.
+//     CP-7945G on SIP 9.4(2)SR4-3 serves them;
+//   - cisco mode: on POST /CGI/Execute (form field XML, Basic auth) it GETs
+//     its SEP file's authenticationURL with UserID, Password and
+//     devicename, refuses with 401 and CiscoIPPhoneError 4 unless the body
+//     is exactly AUTHORIZED, else answers Status 0, records the push in
+//     State.Pushes and fetches the first http item, recording that page's
+//     Text; it answers 503 before any SEP file was read.
 //
 // A step that fails ends the run: the phone logs why and exits 1 (the pod
 // fails and its log says which step). When the steps are done it keeps
@@ -568,6 +574,24 @@ type State struct {
 	Calls         []CallRecord         `json:"calls"`
 	// Signals are the signals received, in order.
 	Signals []string `json:"signals"`
+	// Pushes are the POST /CGI/Execute requests received, in order (cisco
+	// mode).
+	Pushes []PushRecord `json:"pushes"`
+}
+
+// PushRecord is one push the phone took on POST /CGI/Execute. It never
+// holds the Basic password: only whether the check allowed the push.
+type PushRecord struct {
+	At time.Time `json:"at"`
+	// Authorized is whether the authenticationURL answered AUTHORIZED.
+	Authorized bool `json:"authorized"`
+	// Items are the ExecuteItem URLs, in order.
+	Items []string `json:"items"`
+	// Fetched is the <Text> of the first http item's page ("" when none
+	// was fetched or it had none).
+	Fetched string `json:"fetched,omitempty"`
+	// Status is the ResponseItem Status answered: 0, or 4 when refused.
+	Status int `json:"status"`
 }
 
 // Config is what the phone read from its config document.
@@ -584,6 +608,8 @@ type Config struct {
 	LineLabel  string `json:"lineLabel,omitempty"`
 	// LoadInformation is the load the SEP file names (cisco mode).
 	LoadInformation string `json:"loadInformation,omitempty"`
+	// AuthenticationURL is the SEP file's authenticationURL (cisco mode).
+	AuthenticationURL string `json:"authenticationURL,omitempty"`
 	// User is the SIP user (the number); AuthUser the digest username (the
 	// device ID).
 	User     string `json:"user"`
@@ -693,5 +719,6 @@ func NewState(m Mode) State {
 		Notifies:      []NotifyRecord{},
 		Calls:         []CallRecord{},
 		Signals:       []string{},
+		Pushes:        []PushRecord{},
 	}
 }

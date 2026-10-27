@@ -91,6 +91,8 @@ var (
 //     token, and the same URL then answers 404 while laptop stays
 //     Registered (Review Focus 4);
 //   - provision: desk fetches its config over TFTP and registers;
+//   - push: `patchbay phone test-push desk` is taken by desk after its
+//     authenticationURL says AUTHORIZED, and desk fetches the page;
 //   - calls: 100 calls 150 and 150 calls 100, tones both ways, each
 //     callee seeing the caller's name;
 //   - person: 301 rings both; desk answers first, laptop's INVITE is
@@ -218,6 +220,40 @@ func TestDeskLoop(t *testing.T) {
 			if c := st.Config; c.PhoneLabel != deskLabel || c.User != deskNumber || c.AuthUser != deskID || c.Transport != "tcp" {
 				t.Errorf("desk read %+v", *c)
 			}
+			return ctx
+		}).
+		Assess("push: test-push reaches desk's screen", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// The CLI talks to the agent, which pushes to desk's pod on port 80;
+			// the fake asks the SEP file's authenticationURL (the agent's
+			// /authenticate) before it takes the push, then fetches the page.
+			out, err := h.patchbay(ctx, "phone", "test-push", deskName, "--text", "e2e", "--beep")
+			if err != nil {
+				t.Fatalf("test-push: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "status 0") {
+				t.Errorf("test-push printed %q, want status 0", out)
+			}
+			pagePrefix := "/messages/" + deskID + ".xml"
+			find := func(s script.State, match func(script.PushRecord) bool) bool {
+				return slices.ContainsFunc(s.Pushes, match)
+			}
+			shown := func(p script.PushRecord) bool {
+				return p.Authorized && p.Status == 0 && len(p.Items) == 2 && p.Items[0] == "Play:patchbay-chime.raw" &&
+					strings.Contains(p.Items[1], pagePrefix) && strings.Contains(p.Fetched, "e2e")
+			}
+			h.waitPhone(ctx, t, deskPod, "desk took the push and fetched its page", func(s script.State) (bool, string) {
+				return find(s, shown), fmt.Sprintf("%d pushes: %+v", len(s.Pushes), s.Pushes)
+			})
+
+			out, err = h.patchbay(ctx, "phone", "test-push", deskName, "--clear")
+			if err != nil {
+				t.Fatalf("test-push --clear: %v\n%s", err, out)
+			}
+			h.waitPhone(ctx, t, deskPod, "desk took the clear", func(s script.State) (bool, string) {
+				return find(s, func(p script.PushRecord) bool {
+					return p.Authorized && len(p.Items) == 1 && p.Items[0] == "Init:Services"
+				}), fmt.Sprintf("%d pushes: %+v", len(s.Pushes), s.Pushes)
+			})
 			return ctx
 		}).
 		Assess("calls: 100 and 150 call each other, tones both ways, names shown", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {

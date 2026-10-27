@@ -396,6 +396,7 @@ func (r *runner) snapshot() script.State {
 	s.Fetches = slices.Clone(s.Fetches)
 	s.Registrations = slices.Clone(s.Registrations)
 	s.Signals = slices.Clone(s.Signals)
+	s.Pushes = slices.Clone(s.Pushes)
 	s.Registered = time.Now().Before(r.reg.until) // refreshed while refreshes succeed
 	s.Notifies = make([]script.NotifyRecord, 0, len(r.notifies))
 	for _, n := range r.notifies {
