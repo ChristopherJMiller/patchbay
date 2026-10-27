@@ -37,8 +37,9 @@ its Helm fullname (`patchbay` when the release is called `patchbay`).
    ActionFailed, RequestIgnored, ApplyFailed on the devices; UnknownPhone,
    ConfigWritten, CompileFailed on `<fullname>-pbx-config` (or on
    `<fullname>-settings` before the first bundle); StateChanged,
-   SourceFailed and CallRefused on the Streams. A repeated Event is a
-   count on one Event; a new note is a new Event.
+   SourceFailed and CallRefused on the Streams; MessageShown, MessageHeld,
+   PushFailed and the rest on the Messages ([Messages](#messages)). A
+   repeated Event is a count on one Event; a new note is a new Event.
 4. **Metrics** (the chart's PodMonitor, `podMonitor.enabled`):
    `patchbay_agent_reachable` (0: the controller cannot poll the agent),
    `patchbay_asterisk_up` (0: Asterisk's AMI session is down; absent while
@@ -151,6 +152,146 @@ Bench results on a CP-7945G (SIP 9.4(2)SR4-3), patchbay 0.4.0-rc.1:
 
 Check push on a phone with `patchbay phone test-push <phone> [--text …] [--beep] [--clear] [--execute URI]…`.
 
+## Messages
+
+Text on a desk phone's screen, from Home Assistant or a shell. Each
+message is a `Message` resource naming one Phone; the controller alone
+decides when it shows and pushes the phone its page through the agent
+(the bench results above are what the 7945 does with it). The design is
+[docs/superpowers/specs/2026-10-26-phone-messages-design.md](superpowers/specs/2026-10-26-phone-messages-design.md).
+
+### Sending
+
+From a shell, with your kubeconfig:
+
+```sh
+patchbay phone message desk "Dinner!" -n <ns>      # prints the Message's name
+patchbay phone message desk "Water heater leak" --title Leak --urgent --expires 2h -n <ns>
+patchbay phone message desk "Fridge door open" --key fridge-door -n <ns>
+patchbay phone withdraw desk --key fridge-door -n <ns>
+patchbay messages -n <ns>                          # every Message: state, reason, key, sent, expires
+```
+
+The text is 1 to 256 characters and the title at most 32, neither with
+control characters; `--expires` is 0s to 24h (default 1h); `--key` is a
+DNS label. `patchbay messages` never prints the text (`kubectl -n <ns> get
+message <name> -o yaml` does), and `patchbay status` lists the Held ones
+with their reason. `kubectl -n <ns> get messages` shows phone, state,
+reason, key, urgent and expiry.
+
+From inside the cluster without Kubernetes credentials (Home Assistant):
+the messages endpoint, which the chart turns on with `messages.enabled`.
+It is the Service `<fullname>-messages` on port `messages.port` (9441),
+ClusterIP only, served by every controller replica. Every request needs
+`Authorization: Bearer <token>`, the token in the Secret
+`messages.tokenSecret.name` (key `messages.tokenSecret.key`, default
+`token`), which you create: the controller never mints it, since the
+caller holds the same value. It is read on every request, so a rotation
+needs no restart.
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST /v1/messages` | `{"to": ["desk"], "text": "Dinner!", "title": "", "urgent": false, "expires": "1h", "key": ""}` (only `to` and `text` required) | 201 `{"names": [...]}`: one Message per phone |
+| `POST /v1/withdraw` | `{"key": "fridge-door", "to": ["desk"]}` (no `to`: every phone) | 200 `{"withdrawn": 1}` |
+| `PUT /v1/house` | `{"quiet": true}`, `{"away": false}` or both | 200 the house as stored: `{"quiet": true, "away": false, "updatedAt": "…"}` |
+| `GET /v1/house` | | 200 the house |
+
+An error is `{"error": "…"}`: 400 for a body that is not exactly the
+fields above or breaks a limit (the text says which), 401 for a missing or
+wrong token, 413 for a body over 8 KiB, 503 while the token Secret or its
+key does not exist. The house state lives in the ConfigMap
+`<fullname>-house` (`house.json`), so it survives a restart; a house never
+told anything is neither quiet nor away, and messages are delivered.
+
+### What the phone shows
+
+Every current message, newest first, each with the time it was sent and
+`URGENT` before an urgent one's title ("18:02  URGENT Leak: Water heater
+leak"), under the title `patchbay` and a count. A page with a message the
+phone has not shown before plays the chime first; a page that only drops
+one (expired, withdrawn) or is sent again does not. When none is left the
+screen is cleared, back to the idle screen. Exit closes the page on the
+phone, but the messages stay current: the next push shows them again. The
+page holds up to 4000 bytes of text; past that the oldest are dropped for
+a "+N older" line.
+
+### States and reasons
+
+| State (reason) | Meaning |
+|---|---|
+| `Held` (`InCall`) | A person-to-person call is up on the phone, ringing included. Shown when it ends. |
+| `Held` (`QuietHours`) | The house is quiet and the message is not urgent. |
+| `Held` (`Away`) | Nobody is home and the message is not urgent. |
+| `Held` (`PhoneUnreachable`) | The agent does not answer, or the phone has no live registration. Shown once it is back. |
+| `Held` (`PushFailing`) | The last push to the phone failed; the status message says why. Retried 30 s after the failure, with the message on the page. |
+| `Shown` | On the phone's screen since `shownAt`. It stays Shown, and on every page, until it expires, is withdrawn or is replaced: a call, quiet hours or away never take a shown message back. |
+| `Expired` | `expiresAt` passed; one that arrived expired is never shown. |
+| `Withdrawn` | Withdrawn by its key. |
+| `Replaced` | A newer message to the same phone with the same key. |
+| `Failed` (`PhoneMissing`) | No Phone of that name. |
+| `Failed` (`PushUnsupported`) | Its model takes no pushes (`patchbay models`). |
+
+Expired, Withdrawn, Replaced and Failed are final; the controller deletes
+each a day after its `finishedAt`. Each change is an Event on the Message:
+`MessageShown`, `MessageHeld`, `MessageExpired`, `MessageWithdrawn`,
+`MessageReplaced`, and the Warnings `MessageFailed` and `PushFailed`.
+
+### When a message waits
+
+- **A person-to-person call** holds every message, urgent or not, ringing
+  included, and nothing at all is pushed to a phone while it lasts. **A
+  Stream call** (radio, TV) does not hold: the text shows and the chime
+  plays over the stream.
+- **Quiet hours and away** hold the messages that are not urgent. Urgent
+  skips both, never a call. Home Assistant owns both and PUTs them;
+  patchbay keeps the last state it was told. A `house.json` that does not
+  parse counts as quiet (only urgent messages go out), logged once.
+- **Expiry**: 1 hour after it was sent unless the sender says otherwise
+  (0s to 24h). An expired message leaves the queue and the screen.
+- **A key**: a newer message with the same key, to the same phone,
+  replaces the older one (a door that keeps opening shows once), and
+  withdrawing by key takes back every unfinished one with it, from the
+  queue or the screen.
+
+### Troubleshooting
+
+| Symptom | Cause | Action |
+|---|---|---|
+| `Held` `PushFailing`, `PushFailed` Events | The phone refused the push, or did not answer; the message names the agent's reason and the phone's answer. | `patchbay phone test-push <phone> -n <ns>`: one push straight through the agent, printing the phone's answer (`status 0` is accepted). Then the agent's log (`kubectl -n <ns> logs deploy/<fullname>-pbx -c agent`). |
+| test-push is refused (the phone answers `error 4` or `http 401`), and the agent logs a `device HTTP authenticate` line with `result=UN-AUTHORIZED` | The phone asked its authenticationURL with other credentials than the agent's: a push from something other than the agent (rightly refused), or a bug, since the agent answers with the credentials it pushes with. | The line names the method and the parameters the phone sent, never their values; report a refused test-push with it. |
+| test-push is refused and the agent logs no `device HTTP authenticate` line | The phone did not ask: it runs a SEP file without `authenticationURL` (from before 0.4.0, resynced once on the upgrade and never during a call), or cannot reach device HTTP :8088. | `patchbay status`: a ConfigStale phone resyncs when idle; `patchbay phone resync <name>`. From the voice VLAN, `http://<pbx.address>:8088/authenticate` answers `UN-AUTHORIZED`. |
+| `Held` `PhoneUnreachable` | The phone is not registered, or the controller cannot poll the agent. | The Phone's own state (`Unreachable`, `AgentUnreachable`): its table above. |
+| Everything not urgent stays `Held` `QuietHours` or `Away` | Home Assistant's last PUT said so, or `house.json` does not parse (the controller log says so). | `GET /v1/house`, or `kubectl -n <ns> get configmap <fullname>-house -o yaml`; PUT the state again. |
+| The endpoint answers 503 | The token Secret, or its key, does not exist. | Create it in the install's namespace. |
+| The endpoint answers 401 | The caller's token is not the Secret's. | Put the same value on both sides. |
+| A message shows with no chime | Only a page with a message the phone never showed chimes; a re-send (after an agent restart) and a withdraw or expiry are silent. | Nothing. |
+
+Known limits:
+
+- **A test-push to a phone that has Messages** does not stay: while one
+  is current the controller pushes its own page over it within seconds,
+  and with only finished ones (kept a day) its next decision clears it.
+- **After an agent restart** the agent has lost its pages, and the
+  controller sends the current page again, without the chime. If every
+  message finishes before that re-send, nothing is sent and the old text
+  stays on the screen until Exit.
+- **A phone that never comes back** keeps its last Message past the day:
+  the phone is still owed a clear, and the controller keeps the Message,
+  and goes on looking, until the phone takes one.
+- **`/authenticate` has no throttling.** It is on device HTTP :8088,
+  reachable from the voice VLAN, and answers whether a user and password
+  are the push account's; the password is 16 random alphanumerics (about
+  95 bits) the controller generated (`<fullname>-push`).
+
+### Upgrading to 0.4.0
+
+The SEP file gains `authenticationURL` and turns `phonePersonalization`
+on, so every Cisco phone's config changes: each resyncs once, never
+during a call. An agent on the new image refuses a bundle the old
+controller compiled (it has no push password) and waits, not ready, for
+the new controller's first compile; the upgrade rolls both together, so
+that is normally seconds.
+
 ## One Softphone
 
 | State | Cause | Action |
@@ -207,6 +348,8 @@ once; no `--reissue` is needed, as the controller publishes the URL.
   every phone re-fetches its config on its resync.
 - **A firmware digest filled in** needs a patchbay release; then
   `patchbay firmware load` the zip.
+- **0.4.0** (phone messages) resyncs every Cisco phone once:
+  [Upgrading to 0.4.0](#upgrading-to-040).
 
 ## Unknown phones
 
@@ -217,14 +360,19 @@ random MACs delays real ones (plan §11).
 
 ## Uninstall
 
-`helm uninstall` keeps the CRDs (and so every Phone and Softphone) and the
-firmware volume (`firmware.persistence.keep`). The controller's own objects
-are not Helm's; once the controller is gone, delete them by name:
+`helm uninstall` keeps the CRDs (and so every Phone, Softphone and
+Message) and the firmware volume (`firmware.persistence.keep`). The
+controller's own objects are not Helm's; once the controller is gone,
+delete them by name (`<fullname>-house` exists once the messages endpoint
+was told a house state):
 
 ```sh
-kubectl -n <ns> delete configmap <fullname>-pbx-config <fullname>-streams
-kubectl -n <ns> delete secret <fullname>-pbx-secrets <fullname>-ami <fullname>-agent-token
+kubectl -n <ns> delete configmap <fullname>-pbx-config <fullname>-streams <fullname>-house --ignore-not-found
+kubectl -n <ns> delete secret <fullname>-pbx-secrets <fullname>-ami <fullname>-push <fullname>-agent-token
 ```
+
+The messages token Secret is yours, not the controller's: delete it with
+whatever created it.
 
 Not by the `app.kubernetes.io/managed-by=patchbay-controller` label: each
 device Secret (`patchbay-<id>`, its SIP password and a softphone's token)

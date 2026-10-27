@@ -13,7 +13,11 @@ resources (Phone, Softphone, Person, Stream, Message)
    -> controller   Deployment; the ONLY decider and the ONLY status writer
         Compile()          -> ConfigMap pbx-config (placeholders, no secrets)
         driver.Decide()    -> status, actions
+        messages.Decide()  -> Message status, push actions (a page or a clear)
         GET /v1/observations, POST /v1/actions/... (agent control API, :9440)
+        messages endpoint :9441 (Service <fullname>-messages, ClusterIP, bearer
+                   token): creates Messages, records the house state
+                   (<fullname>-house); decides nothing
    -> PBX pod (hostNetwork, pinned node)
         agent      native sidecar: applies bundles, serves device HTTP :8088,
                    scrapes phones, talks AMI, keeps the observations.
@@ -54,7 +58,7 @@ pbx-config ConfigMap encoding), `internal/drivers` (Driver and the optional
 SettingsChecker, Device and the DeviceID format, Memory and its DeepCopy,
 UserText, RegistrationGrace, Observations, DecideSettings, Decision, Profile with
 EndpointOptions, FirmwareLoad), `internal/agent/api` (the control API's
-JSON, including the push action's `PushRequest`/`PushResponse`), and the agent's internal seams: `internal/agent/push` (the pusher and its page store), `internal/agent/sensor` (fetch
+JSON, including the push action's `PushRequest`/`PushResponse` and the observations' `DeviceObservations.Page` and `StreamCalls`), and the agent's internal seams: `internal/agent/push` (the pusher and its page store), `internal/agent/sensor` (fetch
 events, the file server's socket format, the scrape and firmware sensors),
 `internal/agent/provision` (one-time token grants), `internal/agent/layout`
 (mounts, uids, file modes, version directories), `internal/agent/ami/ami.go`
@@ -78,7 +82,7 @@ B added (docs/plans/release-b.md §4, and §13's review fixes): `internal/stream
 flags, defaults, timings and bounds, `CallLimitSlack` among them, the
 `Source`/`Decoder` seam, `FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
 kinds and frame), `internal/streambridge/api` (the bridge's control API
-JSON), `internal/controller/messages/api` (the phone messages endpoint's JSON, limits and `House`, with install's house ConfigMap, messages Service and Message Event reasons), the stream settings and `Bundle.Streams` in `internal/compile`
+JSON), `internal/controller/messages/api` (`messagesapi`: the phone messages endpoint's JSON, limits and `House`, with install's house ConfigMap, messages Service and Message Event reasons, and the controller's `--messages-bind-address`/`--messages-token-secret` flags with `controller.ParseMessagesToken`, which the chart renders and test/chart checks), the stream settings and `Bundle.Streams` in `internal/compile`
 (`streams_contract_test.go`), the push credential (`Settings.PushSecret`, `Bundle.Push`, `Index.Push`,
 `PushUsername`, install's `PushSecret`/`PushRef`, `Applier.PushCredentials`), and install's streams ConfigMap, names and
 Event reasons. Change them deliberately: the
@@ -102,16 +106,38 @@ departs from it, the departure is recorded here (and in the code's docs).
   a diagnostic that sends one push (a page of one message, a clear, or raw
   `--execute` URIs) straight to the agent, outside the controller's
   decisions. It reads the install's timezone from the `<fullname>-settings`
-  ConfigMap to render the page's time, falling back to UTC with a note.
-- **The messages endpoint** (not in the design): a small HTTP server inside
-  the controller process (`--messages-bind-address`, off when empty; port
-  9441 by default in the chart) that Home Assistant POSTs phone messages to
-  and PUTs the house state (quiet, away) to, behind a bearer token read from
-  a Secret on every request (`--messages-token-secret=<name>/<key>`, so
-  rotation needs no restart). It creates `Message` resources, one per
-  phone, and records the house state in the `<fullname>-house` ConfigMap;
-  it decides and delivers nothing, the Message reconciler does. Every
-  replica serves, not only the leader (`internal/controller/messages`).
+  ConfigMap (found by labels, `Env.Instance`) to render the page's time,
+  falling back to UTC with a note. A phone some Message names is the
+  controller's screen: a test page there is overwritten or cleared by its
+  next decision (docs/operations.md, "Known limits").
+- **The messages endpoint** (the design says only "a token-protected
+  patchbay endpoint inside the cluster"): a small HTTP server inside the
+  controller process (`--messages-bind-address`, off when empty) that Home
+  Assistant POSTs phone messages to and PUTs the house state (quiet, away)
+  to, behind a bearer token read from a Secret on every request
+  (`--messages-token-secret=<name>/<key>`, so rotation needs no restart;
+  no Secret is 503). It creates `Message` resources, one per phone, sets
+  `spec.withdrawn` for a withdraw, and records the house state in the
+  `<fullname>-house` ConfigMap; it decides and delivers nothing, the
+  Message reconciler does. Every replica serves, not only the leader
+  (`internal/controller/messages`). The chart turns it on with
+  `messages.enabled`: port `messages.port` (9441) on the controller pods,
+  the ClusterIP Service `<fullname>-messages`, and the token Secret
+  `messages.tokenSecret` names, which the operator creates. The controller
+  never mints it, unlike the agent token: the caller holds the same value
+  (at home, one SealedSecret source sealed into both namespaces).
+- **The controller creates and deletes Messages** (until 0.4.0 it only
+  read its resources and wrote their status, and never deleted anything;
+  the messages spec asks for a retention period): the messages endpoint
+  creates them and sets `spec.withdrawn`, and the Message reconciler deletes
+  each finished one (Expired, Withdrawn, Replaced, Failed) a day after its
+  `finishedAt` (`messages.RetainFinished`), unless its phone is still owed
+  a clear. That is the controller's only `delete`, on `messages` only
+  (test/chart's `TestChartControllerRole` refuses it anywhere else).
+- **A Message names one phone** (the spec: "a message names its target
+  phone(s)"): `spec.phone`, so each phone's copy has its own state,
+  `shownAt` and expiry. The endpoint fans its `to` list out into one
+  Message per phone; the CLI's `phone message` takes one phone.
 - **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
@@ -299,9 +325,10 @@ departs from it, the departure is recorded here (and in the code's docs).
 - **The controller's Role is least privilege**: it reads its resources and
   writes only their status (and phones'/softphones' finalizers, for
   `blockOwnerDeletion`); it creates ConfigMaps and Secrets and updates them
-  (pbx-config by name; a device Secret's name is per resource); it never
-  deletes or patches. So its objects outlive `helm uninstall` (§11 of the
-  plan says how to remove them).
+  (pbx-config, `<fullname>-streams` and `<fullname>-house` by name; a
+  device Secret's name is per resource); it never patches, and deletes
+  only finished Messages (above). So its objects outlive `helm uninstall`
+  (§11 of the plan says how to remove them).
 - **The controller refuses unusable Secrets** (`secrets.ErrInvalid`): a
   value outside its generator's alphabet, a Secret of another type or
   owner. The agent resolves values into config files unescaped, so a

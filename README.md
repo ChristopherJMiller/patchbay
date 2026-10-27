@@ -72,9 +72,15 @@ extensions (phones, softphones, people) and the streams, and picking one
 dials it; Linphone shows the same lists as its contacts
 ([docs/operations.md](docs/operations.md)).
 
+Phone messages (0.4.0, the first part of release C) put text on a Cisco
+desk phone's screen with a chime, from `patchbay phone message desk
+"Dinner!"` or, for Home Assistant, an in-cluster endpoint: held during a
+call, and in quiet hours or while nobody is home unless urgent, expired
+after an hour, withdrawn by key ([docs/operations.md](docs/operations.md#messages)).
+
 Planned releases: **A** core calling, **B** live audio streams, **C** phone
-extras (wallpaper, ringtones, speed dials, more of the Services menu, push
-messages).
+extras (messages, then wallpaper, ringtones, speed dials, more of the
+Services menu).
 
 ## Quickstart
 
@@ -174,8 +180,10 @@ internal/agent/        the PBX pod's sidecar (apply, device HTTP, AMI, observati
 internal/streams/      the stream document (streams.json), its UUIDs and the audio format
 internal/streambridge/ the stream bridge: AudioSocket server, sessions (ffmpeg), tuner pools, control API
 internal/controller/   the controller: Setup, and its pieces (install, secrets, bundle, poller,
-                       devices, numbers, discovery, metrics; bridgeclient and streamstate for Streams)
-internal/cli/          the client commands (status, softphone qr, phone resync, firmware load, models)
+                       devices, numbers, discovery, metrics; bridgeclient and streamstate for Streams;
+                       messages: the messages endpoint and the Message reconciler)
+internal/cli/          the client commands (status, softphone qr, phone resync, phone message, phone
+                       withdraw, phone test-push, messages, firmware load, models)
 charts/patchbay/       Helm chart: CRDs, controller, PBX pod (Asterisk, agent sidecar, file server),
                        the stream bridge
 test/e2e/              kind e2e suite; test/e2e/fakephone is the simulated 79x5 and Linphone,
