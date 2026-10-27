@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,14 +57,12 @@ func pushEnv(t *testing.T, objs ...client.Object) *testEnv {
 	return te
 }
 
-func leaseFor(fullname string) *coordinationv1.Lease {
-	return &coordinationv1.Lease{ObjectMeta: objectMeta(fullname+install.LeaseSuffix, testNow)}
-}
-
-func settingsMap(fullname, json string) *corev1.ConfigMap {
+func settingsMap(instance, json string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: install.NewNames(fullname).Settings, Namespace: testNamespace},
-		Data:       map[string]string{install.SettingsKey: json},
+		ObjectMeta: metav1.ObjectMeta{Name: instance + "-patchbay-settings", Namespace: testNamespace, Labels: map[string]string{
+			cli.LabelPartOf: cli.PartOf, cli.LabelComponent: "controller", cli.LabelInstance: instance,
+		}},
+		Data: map[string]string{install.SettingsKey: json},
 	}
 }
 
@@ -75,7 +72,7 @@ func sum16(s string) string {
 }
 
 func TestPhoneTestPush(t *testing.T) {
-	te := pushEnv(t, leaseFor("patchbay"), settingsMap("patchbay", `{"timezone": "America/Los_Angeles"}`))
+	te := pushEnv(t, settingsMap("patchbay", `{"timezone": "America/Los_Angeles"}`))
 	te.agent.pushAnswer.Sent = true
 	te.agent.pushAnswer.Phone = "status 0"
 	err := cli.PhoneTestPush(context.Background(), te.Env, "desk", cli.TestPush{Text: "hi", Beep: true})
@@ -101,7 +98,7 @@ func TestPhoneTestPush(t *testing.T) {
 }
 
 func TestPhoneTestPushDefaultText(t *testing.T) {
-	te := pushEnv(t, leaseFor("patchbay"), settingsMap("patchbay", `{"timezone": "UTC"}`))
+	te := pushEnv(t, settingsMap("patchbay", `{"timezone": "UTC"}`))
 	te.agent.pushAnswer = apiPushOK()
 	if err := cli.PhoneTestPush(context.Background(), te.Env, "desk", cli.TestPush{}); err != nil {
 		t.Fatal(err)
@@ -113,10 +110,9 @@ func TestPhoneTestPushDefaultText(t *testing.T) {
 
 func TestPhoneTestPushTimezoneUnreadable(t *testing.T) {
 	for name, objs := range map[string][]client.Object{
-		"no configmap": {leaseFor("patchbay")},
-		"no lease":     nil,
-		"bad zone":     {leaseFor("patchbay"), settingsMap("patchbay", `{"timezone": "Mars/Base"}`)},
-		"bad json":     {leaseFor("patchbay"), settingsMap("patchbay", `{`)},
+		"no configmap": nil,
+		"bad zone":     {settingsMap("patchbay", `{"timezone": "Mars/Base"}`)},
+		"bad json":     {settingsMap("patchbay", `{`)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			te := pushEnv(t, objs...)
@@ -135,16 +131,46 @@ func TestPhoneTestPushTimezoneUnreadable(t *testing.T) {
 }
 
 func TestPhoneTestPushTwoInstances(t *testing.T) {
-	te := pushEnv(t, leaseFor("one"), leaseFor("two"), settingsMap("one", `{"timezone": "America/Los_Angeles"}`))
+	la := `{"timezone": "America/Los_Angeles"}`
+	ny := `{"timezone": "America/New_York"}`
+	unlabeled := &corev1.ConfigMap{
+		ObjectMeta: objectMeta("stray-settings", testNow),
+		Data:       map[string]string{install.SettingsKey: `{"timezone": "Asia/Tokyo"}`},
+	}
+	for _, tc := range []struct{ name, instance, want string }{
+		{"no instance", "", "page cisco-7945 UTC | 09:30 x"},
+		{"one", "one", "page cisco-7945 America/Los_Angeles | 02:30 x"},
+		{"two", "two", "page cisco-7945 America/New_York | 05:30 x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			te := pushEnv(t, settingsMap("one", la), settingsMap("two", ny), unlabeled)
+			te.Instance = tc.instance
+			te.agent.pushAnswer = apiPushOK()
+			if err := cli.PhoneTestPush(context.Background(), te.Env, "desk", cli.TestPush{Text: "x"}); err != nil {
+				t.Fatal(err)
+			}
+			if p := te.agent.pushesSoFar()[0]; p.Page != tc.want {
+				t.Fatalf("page = %q, want %q", p.Page, tc.want)
+			}
+			note := te.errOut.String()
+			if (tc.instance == "") != strings.Contains(note, "--instance") {
+				t.Fatalf("err = %q", note)
+			}
+		})
+	}
+}
+
+func TestPhoneTestPushUnlabeledIgnored(t *testing.T) {
+	te := pushEnv(t, &corev1.ConfigMap{
+		ObjectMeta: objectMeta("stray-settings", testNow),
+		Data:       map[string]string{install.SettingsKey: `{"timezone": "Asia/Tokyo"}`},
+	})
 	te.agent.pushAnswer = apiPushOK()
 	if err := cli.PhoneTestPush(context.Background(), te.Env, "desk", cli.TestPush{Text: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	if p := te.agent.pushesSoFar()[0]; p.Page != "page cisco-7945 UTC | 09:30 x" {
-		t.Fatalf("page = %q", p.Page)
-	}
-	if !strings.Contains(te.errOut.String(), "--instance") {
-		t.Fatalf("err = %q", te.errOut.String())
+	if p := te.agent.pushesSoFar()[0]; p.Page != "page cisco-7945 UTC | 09:30 x" || te.errOut.Len() == 0 {
+		t.Fatalf("page = %q, err = %q", p.Page, te.errOut.String())
 	}
 }
 

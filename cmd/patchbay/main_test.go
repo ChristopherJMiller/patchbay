@@ -82,6 +82,7 @@ func TestClientCommandsCheckArgs(t *testing.T) {
 		{"phone", "test-push", "a", "b"},
 		{"phone", "test-push", "desk", "--clear", "--text", "x"},
 		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--beep"},
+		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--clear"},
 		{"softphone", "qr"},
 		{"firmware", "load"},
 		{"status", "extra"},

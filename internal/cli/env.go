@@ -28,6 +28,10 @@ type Env struct {
 	// Namespace is the PBX's namespace.
 	Namespace string
 
+	// Instance is the instance from ClientFlags.Instance (the Helm release):
+	// "" for any.
+	Instance string
+
 	// Agent opens the agent's control API: a pods/portforward to the PBX
 	// pod in production, an httptest.Server in tests. Commands that do not
 	// talk to the agent never call it.

@@ -92,6 +92,7 @@ func newEnv(cc clientcmd.ClientConfig, f ClientFlags, out, errOut io.Writer) (*E
 	return &Env{
 		Kube:      kube,
 		Namespace: ns,
+		Instance:  f.Instance,
 		Agent: &podAgentOpener{
 			kube:      kube,
 			namespace: ns,

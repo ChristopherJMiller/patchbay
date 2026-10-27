@@ -10,10 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -148,54 +146,41 @@ func installZone(ctx context.Context, env *Env) *time.Location {
 	return loc
 }
 
+// componentController is the component label of the chart's controller
+// objects, the settings ConfigMap among them.
+const componentController = "controller"
+
 func readZone(ctx context.Context, env *Env) (*time.Location, string) {
-	var leases coordinationv1.LeaseList
-	if err := env.Kube.List(ctx, &leases, client.InNamespace(env.Namespace)); err != nil {
-		return nil, "could not read the controller Leases: " + err.Error()
+	sel := client.MatchingLabels{LabelPartOf: PartOf, LabelComponent: componentController}
+	if env.Instance != "" {
+		sel[LabelInstance] = env.Instance
 	}
-	var fullnames []string
-	for _, l := range leases.Items {
-		if f, ok := strings.CutSuffix(l.Name, install.LeaseSuffix); ok {
-			fullnames = append(fullnames, f)
+	var cms corev1.ConfigMapList
+	if err := env.Kube.List(ctx, &cms, client.InNamespace(env.Namespace), sel); err != nil {
+		return nil, "could not list the settings ConfigMaps: " + err.Error()
+	}
+	var found []corev1.ConfigMap
+	for _, cm := range cms.Items {
+		if _, ok := cm.Data[install.SettingsKey]; ok {
+			found = append(found, cm)
 		}
 	}
-	if len(fullnames) > 1 {
-		var match []string
-		for _, f := range fullnames {
-			if instance := instanceOf(env); instance != "" && f == instance {
-				match = append(match, f)
-			}
-		}
-		if len(match) != 1 {
-			return nil, fmt.Sprintf("%d installs in namespace %s; --instance names the one to read the timezone from", len(fullnames), env.Namespace)
-		}
-		fullnames = match
+	switch {
+	case len(found) == 0:
+		return nil, "no settings ConfigMap in namespace " + env.Namespace + " to read the timezone from"
+	case len(found) > 1:
+		return nil, fmt.Sprintf("%d installs in namespace %s; --instance names the one to read the timezone from", len(found), env.Namespace)
 	}
-	if len(fullnames) == 0 {
-		return nil, "no controller Lease in namespace " + env.Namespace + ", so no settings to read the timezone from"
-	}
-	names := install.NewNames(fullnames[0])
-	var cm corev1.ConfigMap
-	if err := env.Kube.Get(ctx, client.ObjectKey{Namespace: env.Namespace, Name: names.Settings}, &cm); err != nil {
-		return nil, "could not read " + names.Settings + ": " + err.Error()
-	}
+	cm := found[0]
 	var s struct {
 		Timezone string `json:"timezone"`
 	}
 	if err := json.Unmarshal([]byte(cm.Data[install.SettingsKey]), &s); err != nil {
-		return nil, names.Settings + " " + install.SettingsKey + " does not parse: " + err.Error()
+		return nil, cm.Name + " " + install.SettingsKey + " does not parse: " + err.Error()
 	}
 	loc, err := time.LoadLocation(s.Timezone)
 	if err != nil || s.Timezone == "" {
-		return nil, fmt.Sprintf("%s has no usable timezone (%q)", names.Settings, s.Timezone)
+		return nil, fmt.Sprintf("%s has no usable timezone (%q)", cm.Name, s.Timezone)
 	}
 	return loc, ""
-}
-
-// instanceOf is the --instance the Env was built with, "" when unknown.
-func instanceOf(env *Env) string {
-	if o, ok := env.Agent.(*podAgentOpener); ok {
-		return o.instance
-	}
-	return ""
 }
