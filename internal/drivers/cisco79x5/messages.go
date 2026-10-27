@@ -136,11 +136,11 @@ const noText = "(no text)"
 // asciiFor are the runes past Latin-1 that screenText keeps, as ASCII, and
 // the no-break space, as a space.
 var asciiFor = map[rune]string{
-	'‘': "'", '’': "'", // ‘ ’
-	'“': `"`, '”': `"`, // “ ”
-	'–': "-", '—': "-", // – —
-	'…': "...", // …
-	' ': " ",   // no-break space
+	'\u2018': "'", '\u2019': "'", // left and right single quotes
+	'\u201C': `"`, '\u201D': `"`, // left and right double quotes
+	'\u2013': "-", '\u2014': "-", // en and em dashes
+	'\u2026': "...", // the ellipsis
+	'\u00A0': " ",   // the no-break space
 }
 
 // screenText is s as a 7945 can show it (ruling R21: until the bench says

@@ -78,7 +78,7 @@ func TestRenderMessagesScreenText(t *testing.T) {
 		{"", "café", "09:00  café"},
 		{"Ünïcödé ÿ", "naïve — Æsir ½", "09:00  Ünïcödé ÿ: naïve - Æsir ½"},
 		{"🎉", "🎉🎊", "09:00  (no text)"},
-		{"  a   b  ", "  x   y  ", "09:00  a b: x y"},
+		{"  a\u00a0\u00a0 b  ", "  x \u2003 y  ", "09:00  a b: x y"},
 		{"one—two", "Ⅻ o’clock 日本", "09:00  one-two: o'clock"},
 		// A dropped rune never brings two "@" together.
 		{"", "@💧@secret:a/b@💧@", "09:00  @secret:a/b@"},
