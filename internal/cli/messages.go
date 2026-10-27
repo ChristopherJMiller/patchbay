@@ -34,7 +34,8 @@ const DefaultMessageExpires = messagesapi.DefaultExpires
 type MessageOpts struct {
 	// Title is the heading ("" for none).
 	Title string
-	// Urgent shows the message in a call, in quiet hours and away.
+	// Urgent shows the message in quiet hours and away; a call in progress
+	// holds it like any other.
 	Urgent bool
 	// Expires is how long the message stays worth showing, 0s to 24h.
 	Expires time.Duration

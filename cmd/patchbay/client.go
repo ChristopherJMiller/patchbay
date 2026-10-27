@@ -187,8 +187,8 @@ nothing else; it cannot be combined with --text, --beep or --clear.`,
 		Use:   "message <phone> <text>",
 		Short: "Put a text on a desk phone",
 		Long: `Create a Message for the controller to deliver to a phone: it is shown when
-the phone is free (not in a call, not in quiet hours, not away) unless
---urgent, and dropped when --expires passes. A newer message with the same
+the phone is not in a call and, unless --urgent, outside quiet hours with
+someone home, and dropped when --expires passes. A newer message with the same
 --key replaces the older one on that phone. Prints the Message's name.
 The text is at most 256 characters and the title 32, neither with control
 characters; --expires is from 0s to 24h; --key is a DNS label.`,
@@ -196,7 +196,7 @@ characters; --expires is from 0s to 24h; --key is a DNS label.`,
 	}
 	mf := clientFlags(message)
 	message.Flags().StringVar(&mo.Title, "title", "", "a heading above the text")
-	message.Flags().BoolVar(&mo.Urgent, "urgent", false, "show it in a call, in quiet hours and away")
+	message.Flags().BoolVar(&mo.Urgent, "urgent", false, "show it in quiet hours and away too (never over a call)")
 	message.Flags().DurationVar(&mo.Expires, "expires", cli.DefaultMessageExpires, "how long it stays worth showing (0s to 24h)")
 	message.Flags().StringVar(&mo.Key, "key", "", "a newer message with this key replaces this one (a DNS label)")
 	message.RunE = func(cmd *cobra.Command, args []string) error {

@@ -62,7 +62,8 @@ type MessageRequest struct {
 	Title string `json:"title"`
 	// Text is the message, 1-256 characters, no control characters.
 	Text string `json:"text"`
-	// Urgent messages are shown in a call, in quiet hours and away.
+	// Urgent messages are shown in quiet hours and away; a call in
+	// progress holds them like any other.
 	Urgent bool `json:"urgent"`
 	// Expires is how long the message stays worth showing, a Go duration
 	// from 0s to 24h; "" means "1h".

@@ -35,8 +35,8 @@ type MessageSpec struct {
 	// +kubebuilder:validation:Pattern=`^[^\x00-\x1F\x7F-\x9F]*$`
 	Text string `json:"text"`
 
-	// Urgent messages are shown even when the phone is in a call, in quiet
-	// hours or away.
+	// Urgent messages are shown in quiet hours and while nobody is home;
+	// like any message, they wait for a call in progress to end.
 	// +optional
 	// +kubebuilder:default=false
 	Urgent bool `json:"urgent"`

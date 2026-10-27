@@ -101,8 +101,8 @@ spec:
                 urgent:
                   default: false
                   description: |-
-                    Urgent messages are shown even when the phone is in a call, in quiet
-                    hours or away.
+                    Urgent messages are shown in quiet hours and while nobody is home;
+                    like any message, they wait for a call in progress to end.
                   type: boolean
                 withdrawn:
                   default: false
