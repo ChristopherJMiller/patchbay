@@ -260,7 +260,12 @@ each a day after its `finishedAt`. Each change is an Event on the Message:
 - **Quiet hours and away** hold the messages that are not urgent. Urgent
   skips both, never a call. Home Assistant owns both and PUTs them;
   patchbay keeps the last state it was told. A `house.json` that does not
-  parse counts as quiet (only urgent messages go out), logged once.
+  parse counts as quiet (only urgent messages go out), logged once. They
+  hold only new messages: the silent pushes that keep a screen right
+  still go out in quiet hours and away, the page again without a message
+  that expired or was withdrawn, or the clear when none is left. So the
+  screen may light up briefly at night when a note expires; nothing
+  chimes.
 - **Expiry**: 1 hour after it was sent unless the sender says otherwise
   (0s to 24h). An expired message leaves the queue and the screen.
 - **A key**: a newer message with the same key, to the same phone,
