@@ -65,6 +65,10 @@ func TestClientCommandsLoadOnlyTheGivenKubeconfig(t *testing.T) {
 		{"phone", "test-push", "desk", "--text", "hi", "--beep"},
 		{"phone", "test-push", "desk", "--clear"},
 		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--execute", "Play:Chime.raw"},
+		{"phone", "message", "desk", "Dinner!", "--title", "Kitchen", "--urgent", "--expires", "0s", "--key", "dinner"},
+		{"phone", "withdraw", "desk", "--key", "dinner"},
+		{"messages"},
+		{"messages", "-n", "telephony"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := run(t, context.Background(), args...)
@@ -84,6 +88,13 @@ func TestClientCommandsCheckArgs(t *testing.T) {
 		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--beep"},
 		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--clear"},
 		{"softphone", "qr"},
+		{"phone", "message"},
+		{"phone", "message", "desk"},
+		{"phone", "message", "desk", "a", "b"},
+		{"phone", "withdraw"},
+		{"phone", "withdraw", "desk"},
+		{"phone", "withdraw", "a", "b", "--key", "k"},
+		{"messages", "extra"},
 		{"firmware", "load"},
 		{"status", "extra"},
 	} {

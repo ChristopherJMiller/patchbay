@@ -395,7 +395,7 @@ func newTestEnv(t *testing.T, objs ...client.Object) *testEnv {
 		t.Fatal(err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
-		WithStatusSubresource(&v1alpha1.Phone{}, &v1alpha1.Softphone{}, &v1alpha1.Person{}, &v1alpha1.Stream{}).
+		WithStatusSubresource(&v1alpha1.Phone{}, &v1alpha1.Softphone{}, &v1alpha1.Person{}, &v1alpha1.Stream{}, &v1alpha1.Message{}).
 		Build()
 	reg := testRegistry(t)
 	agent := newFakeAgent(t, reg)

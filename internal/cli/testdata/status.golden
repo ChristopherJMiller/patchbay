@@ -37,6 +37,9 @@ Stream kiro7 (707): Busy (pool hdhomerun)
 Stream radio (700): Unavailable
   Ready=False NoStreamBridge: streams are disabled (streamBridge.enabled is false): dialling 700 plays "not available"
 
+Messages:
+  Message msg-held (desk): Held, InCall: the phone is in a call
+
 Unknown phones:
   0200E2E10001 from 192.168.20.30, first seen 2026-10-15T09:27:00Z, last seen 2026-10-15T09:27:00Z, asked for SEP0200E2E10001.cnf.xml
   D0C78915EBB5 from 192.168.20.31, first seen 2026-10-15T09:20:00Z, last seen 2026-10-15T09:29:55Z, asked for SEPD0C78915EBB5.cnf.xml

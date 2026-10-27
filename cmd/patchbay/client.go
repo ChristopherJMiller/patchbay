@@ -181,5 +181,70 @@ nothing else; it cannot be combined with --text, --beep or --clear.`,
 		return cli.PhoneTestPush(cmd.Context(), e, args[0], push)
 	}
 	cmd.AddCommand(testPush)
+
+	var mo cli.MessageOpts
+	message := &cobra.Command{
+		Use:   "message <phone> <text>",
+		Short: "Put a text on a desk phone",
+		Long: `Create a Message for the controller to deliver to a phone: it is shown when
+the phone is free (not in a call, not in quiet hours, not away) unless
+--urgent, and dropped when --expires passes. A newer message with the same
+--key replaces the older one on that phone. Prints the Message's name.
+The text is at most 256 characters and the title 32, neither with control
+characters; --expires is from 0s to 24h; --key is a DNS label.`,
+		Args: cobra.ExactArgs(2),
+	}
+	mf := clientFlags(message)
+	message.Flags().StringVar(&mo.Title, "title", "", "a heading above the text")
+	message.Flags().BoolVar(&mo.Urgent, "urgent", false, "show it in a call, in quiet hours and away")
+	message.Flags().DurationVar(&mo.Expires, "expires", cli.DefaultMessageExpires, "how long it stays worth showing (0s to 24h)")
+	message.Flags().StringVar(&mo.Key, "key", "", "a newer message with this key replaces this one (a DNS label)")
+	message.RunE = func(cmd *cobra.Command, args []string) error {
+		e, err := env(cmd, g, mf)
+		if err != nil {
+			return err
+		}
+		return cli.PhoneMessage(cmd.Context(), e, args[0], args[1], mo)
+	}
+	cmd.AddCommand(message)
+
+	var withdrawKey string
+	withdraw := &cobra.Command{
+		Use:   "withdraw <phone> --key <key>",
+		Short: "Take back a phone's messages with a key",
+		Long: `Withdraw every unfinished message to the phone with the key; the controller
+clears the screen if one was showing. Prints how many it withdrew.`,
+		Args: cobra.ExactArgs(1),
+	}
+	wf := clientFlags(withdraw)
+	withdraw.Flags().StringVar(&withdrawKey, "key", "", "the key of the messages to take back")
+	_ = withdraw.MarkFlagRequired("key")
+	withdraw.RunE = func(cmd *cobra.Command, args []string) error {
+		e, err := env(cmd, g, wf)
+		if err != nil {
+			return err
+		}
+		return cli.PhoneWithdraw(cmd.Context(), e, args[0], withdrawKey)
+	}
+	cmd.AddCommand(withdraw)
+	return cmd
+}
+
+func newMessagesCmd(g *globalFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "messages",
+		Short: "List phone messages: state, reason, key, sent and expiry",
+		Long: `List every Message: unfinished ones first, newest first, then the finished
+ones. Times are UTC. The text is not shown (kubectl get message NAME -o yaml).`,
+		Args: cobra.NoArgs,
+	}
+	f := clientFlags(cmd)
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		e, err := env(cmd, g, f)
+		if err != nil {
+			return err
+		}
+		return cli.Messages(cmd.Context(), e)
+	}
 	return cmd
 }

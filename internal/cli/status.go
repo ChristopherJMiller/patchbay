@@ -75,7 +75,9 @@ type resourceRow struct {
 //     command that shows it, and for a Stream its listeners and tuner pool
 //     (`Stream king5 (705): Playing (2 listeners, pool hdhomerun)`) and,
 //     while Ready is not True, its last failure;
-//  3. the unknown phones the agent has seen ask for config.
+//  3. the Messages the controller is holding back, with their reason (a
+//     section only while there are any);
+//  4. the unknown phones the agent has seen ask for config.
 //
 // The resources are listed first; failing that is the only error. The
 // agent is reached through env.Agent (GET /v1/observations); when it
@@ -106,6 +108,23 @@ func Status(ctx context.Context, env *Env) error {
 		p.printf("\n")
 		for _, r := range rows {
 			printRow(p, r)
+		}
+	}
+	held, heldErr := heldMessages(ctx, env.Kube, env.Namespace)
+	switch {
+	case heldErr != nil:
+		p.printf("\nMessages: could not list: %s\n", printable(heldErr.Error()))
+	case len(held) > 0:
+		p.printf("\nMessages:\n")
+		for _, m := range held {
+			line := fmt.Sprintf("Message %s (%s): Held", m.Name, m.Spec.Phone)
+			if m.Status.Reason != "" {
+				line += ", " + m.Status.Reason
+			}
+			if m.Status.Message != "" {
+				line += ": " + m.Status.Message
+			}
+			p.printf("  %s\n", indentLines(printable(line)))
 		}
 	}
 	p.printf("\n")

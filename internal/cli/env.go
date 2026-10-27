@@ -20,7 +20,8 @@ import (
 // kubeconfig or the network directly.
 type Env struct {
 	// Kube reads Phones, Softphones, People, Streams, Pods and Secrets and
-	// patches the request annotations, all in Namespace. Its scheme holds
+	// patches the request annotations, and creates and updates Messages, all
+	// in Namespace. Its scheme holds
 	// the built-in types and v1alpha1 (built here: cli must not import
 	// internal/controller).
 	Kube client.Client

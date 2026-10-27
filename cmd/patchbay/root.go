@@ -50,6 +50,7 @@ Client commands need only a kubeconfig.`,
 		newFirmwareCmd(g),
 		newSoftphoneCmd(g),
 		newPhoneCmd(g),
+		newMessagesCmd(g),
 		newVersionCmd(),
 	)
 	return root

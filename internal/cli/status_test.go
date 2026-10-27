@@ -164,7 +164,10 @@ func statusObjects() []client.Object {
 			condition(v1alpha1.ConditionNumberConflict, metav1.ConditionFalse, v1alpha1.ReasonNoConflict, ""),
 		}},
 	}
-	return []client.Object{drone, radio, king5, kiro7, groove, tablet, kitchen, chris, desk, laptop, garage, other}
+	held := testMessage("msg-held", "desk", "dinner", v1alpha1.MessageStateHeld, v1alpha1.ReasonInCall, time.Minute)
+	held.Status.Message = "the phone is in a call"
+	shown := testMessage("msg-shown", "desk", "", v1alpha1.MessageStateShown, "", time.Minute)
+	return []client.Object{drone, radio, king5, kiro7, groove, tablet, kitchen, chris, desk, laptop, garage, other, held, shown}
 }
 
 func statusObservations() agentapi.Observations {
