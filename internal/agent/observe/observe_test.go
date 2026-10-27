@@ -729,3 +729,37 @@ func TestStreamCalls(t *testing.T) {
 		})
 	}
 }
+
+// An AudioSocket channel with no bridge shares nothing with a ringing phone
+// whose BridgeID is also empty: "" never matches "".
+func TestStreamCallsEmptyBridgeGuard(t *testing.T) {
+	f := newFixture(t)
+	f.ami.SetUp(true, "22.11.0")
+	f.ami.SetChannels(
+		ami.Channel{Name: "PJSIP/phone-desk-00000001", Endpoint: desk},
+		ami.Channel{Name: "AudioSocket/patchbay-streams.telephony.svc:9092-ede9025b", Application: "AppDial"},
+	)
+	f.store.Poll(context.Background())
+	if d := f.device(desk); d == nil || d.Calls != 1 || d.StreamCalls != 0 {
+		t.Errorf("desk = %+v; want Calls 1, StreamCalls 0", d)
+	}
+}
+
+// AMI going down clears StreamCalls along with Calls.
+func TestStreamCallsClearedWhenAMIDown(t *testing.T) {
+	f := newFixture(t)
+	f.ami.SetUp(true, "22.11.0")
+	f.ami.SetChannels(ami.Channel{
+		Name: "PJSIP/phone-desk-00000001", Endpoint: desk, Application: "Dial",
+		ApplicationData: "AudioSocket/patchbay-streams.telephony.svc:9092/ede9025b/c(slin16),,gS(7200)",
+	})
+	f.store.Poll(context.Background())
+	if d := f.device(desk); d == nil || d.StreamCalls != 1 {
+		t.Fatalf("desk = %+v; want StreamCalls 1", d)
+	}
+	f.ami.SetUp(false, "")
+	f.store.Poll(context.Background())
+	if d := f.device(desk); d != nil && d.StreamCalls != 0 {
+		t.Errorf("desk = %+v; StreamCalls survived AMI going down", d)
+	}
+}

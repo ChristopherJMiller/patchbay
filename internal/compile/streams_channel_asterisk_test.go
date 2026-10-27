@@ -94,9 +94,9 @@ func TestRealAsteriskStreamChannel(t *testing.T) {
 		"AUDIOSOCKET_CONNECTIONS": "1",
 	})
 
-	// The desk calls 704 (komo4) and stays up for 8 s, in the background.
+	// The desk calls 704 (komo4) and stays up for 12 s, in the background.
 	id := drivers.DeviceID(drivers.KindPhone, "desk")
-	callEnv := streamCallEnv(t, b, s, in.Secrets, id, s.SIPPort+310, "704", 8*time.Second)
+	callEnv := streamCallEnv(t, b, s, in.Secrets, id, s.SIPPort+310, "704", 12*time.Second)
 	called := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -110,22 +110,44 @@ func TestRealAsteriskStreamChannel(t *testing.T) {
 	}()
 
 	pass := string(in.Secrets[s.AMISecret])
+	// The hold starts at answer, after the SIP set-up, so poll until the
+	// call ends or 15 s pass, and stop at the first poll that sees the
+	// stream.
 	var chs []ami.Channel
-	deadline := time.Now().Add(7 * time.Second)
-	for time.Now().Before(deadline) {
+	var callErr error
+	ended := false
+	deadline := time.Now().Add(15 * time.Second)
+	for !ended && time.Now().Before(deadline) {
 		if chs = c.amiChannels(pass); observe.StreamCalls(chs)[id] > 0 {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case callErr, ended = <-called:
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	t.Logf("channels while the desk listens to 704: %+v", chs)
 	if got := observe.StreamCalls(chs); got[id] != 1 || len(got) != 1 {
 		t.Errorf("StreamCalls = %v; want the desk's one channel counted as a Stream call", got)
 	}
-	if err := <-called; err != nil {
-		t.Errorf("the desk's call: %v", err)
+	if !ended {
+		callErr = <-called
 	}
-	if after := c.amiChannels(pass); len(after) != 0 {
-		t.Logf("channels after the call (it may still be clearing): %+v", after)
+	if callErr != nil {
+		t.Errorf("the desk's call: %v", callErr)
+	}
+	// Once the call is over no channel is a Stream call (Asterisk may take a
+	// moment to clear them).
+	var after []ami.Channel
+	clearBy := time.Now().Add(10 * time.Second)
+	for {
+		after = c.amiChannels(pass)
+		if len(observe.StreamCalls(after)) == 0 || time.Now().After(clearBy) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if got := observe.StreamCalls(after); len(got) != 0 {
+		t.Errorf("after the call, StreamCalls = %v (channels %+v); want none", got, after)
 	}
 }

@@ -568,6 +568,8 @@ func copyScrape(w *api.WebScrape) *api.WebScrape {
 // stream bridge, and the Dial argument of the phone's own leg of a call
 // into a Stream. Asterisk's own word; the agent learns no stream names or
 // numbers.
+// The exact case is Asterisk's fixed channel technology name (chan_audiosocket
+// registers "AudioSocket"), so the match is case-sensitive on purpose.
 const audioSocketPrefix = "AudioSocket/"
 
 // StreamCalls counts, per PJSIP endpoint, the channels that are calls into a
