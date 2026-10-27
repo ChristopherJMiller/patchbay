@@ -32,3 +32,23 @@ func TestPages(t *testing.T) {
 		t.Error("Clear left the page")
 	}
 }
+
+func TestPagesAcknowledge(t *testing.T) {
+	var p push.Pages
+	if p.Acknowledged("phone-desk") != "" {
+		t.Fatal("an empty store has an acknowledgement")
+	}
+	p.Set("phone-desk", "v1", []byte("<a/>"))
+	if p.Acknowledged("phone-desk") != "" {
+		t.Error("Set acknowledged the page")
+	}
+	p.Acknowledge("phone-desk", "v1")
+	p.Set("phone-desk", "v2", []byte("<b/>"))
+	if got := p.Acknowledged("phone-desk"); got != "v1" {
+		t.Errorf("Set changed the acknowledgement to %q", got)
+	}
+	p.Clear("phone-desk")
+	if got := p.Acknowledged("phone-desk"); got != "" {
+		t.Errorf("Clear left the acknowledgement %q", got)
+	}
+}

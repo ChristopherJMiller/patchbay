@@ -14,6 +14,7 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/push"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 )
 
 const (
@@ -130,6 +131,9 @@ func TestPushPage(t *testing.T) {
 	if !ok || v != "abc" || string(page) != "<CiscoIPPhoneText/>" {
 		t.Errorf("stored page %q %q %v", v, page, ok)
 	}
+	if got := f.pages.Acknowledged("phone-desk"); got != "abc" {
+		t.Errorf("acknowledged %q, want abc", got)
+	}
 }
 
 func TestPushPageWithoutBeepOrVersion(t *testing.T) {
@@ -204,6 +208,9 @@ func TestPushPhoneError(t *testing.T) {
 	if v, _, ok := f.pages.Get("phone-desk"); !ok || v != "abc" {
 		t.Errorf("the page was not kept after a phone error: %q %v", v, ok)
 	}
+	if got := f.pages.Acknowledged("phone-desk"); got != "" {
+		t.Errorf("a phone error acknowledged %q", got)
+	}
 
 	f.ph.answer = `<CiscoIPPhoneResponse><ResponseItem Status="3" Data="" URL=""/></CiscoIPPhoneResponse>`
 	if resp := f.p.Push(context.Background(), api.PushRequest{Device: "phone-desk", Beep: true}); resp.Sent || resp.Phone != "status 3" {
@@ -228,9 +235,15 @@ func TestPushRefusals(t *testing.T) {
 	if resp := push1("phone-desk"); resp.Sent || resp.Error == "" {
 		t.Errorf("no credentials: %+v", resp)
 	}
+	if v, _, ok := f.pages.Get("phone-desk"); !ok || v != "v" || f.pages.Acknowledged("phone-desk") != "" {
+		t.Errorf("after a no-credentials refusal: stored %q %v, acknowledged %q; want stored, not acknowledged", v, ok, f.pages.Acknowledged("phone-desk"))
+	}
 	f.creds = true
 	if resp := push1("phone-nowhere"); resp.Sent || resp.Error == "" {
 		t.Errorf("no target: %+v", resp)
+	}
+	if v, _, ok := f.pages.Get("phone-nowhere"); !ok || v != "v" || f.pages.Acknowledged("phone-nowhere") != "" {
+		t.Errorf("after a no-target refusal: stored %q %v, acknowledged %q; want stored, not acknowledged", v, ok, f.pages.Acknowledged("phone-nowhere"))
 	}
 	for _, a := range []string{"127.0.0.1", "169.254.1.1", "224.0.0.1", "0.0.0.0", "::1"} {
 		f.addr = netip.MustParseAddr(a)
@@ -274,5 +287,123 @@ func TestNewRefusesIncompleteConfig(t *testing.T) {
 		if _, err := push.New(cfg); err == nil {
 			t.Errorf("%s: New accepted it", name)
 		}
+	}
+}
+
+func TestPushAcknowledgement(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if resp := f.p.Push(ctx, api.PushRequest{Device: "phone-desk", PageVersion: "v1", Page: "<one/>"}); !resp.Sent {
+		t.Fatalf("response %+v", resp)
+	}
+	if got := f.pages.Acknowledged("phone-desk"); got != "v1" {
+		t.Fatalf("acknowledged %q after a successful push, want v1", got)
+	}
+	// A failed push after a successful one: the new bytes are stored, the
+	// observation still shows the old version.
+	f.ph.answer = `<CiscoIPPhoneError Number="4"/>`
+	if resp := f.p.Push(ctx, api.PushRequest{Device: "phone-desk", PageVersion: "v2", Page: "<two/>"}); resp.Sent {
+		t.Fatalf("response %+v", resp)
+	}
+	if v, page, _ := f.pages.Get("phone-desk"); v != "v2" || string(page) != "<two/>" {
+		t.Errorf("stored %q %q, want the v2 bytes", v, page)
+	}
+	if got := f.pages.Acknowledged("phone-desk"); got != "v1" {
+		t.Errorf("acknowledged %q after a failed push, want v1", got)
+	}
+	// A failed Clear keeps both.
+	if resp := f.p.Push(ctx, api.PushRequest{Device: "phone-desk", Clear: true}); resp.Sent {
+		t.Fatalf("response %+v", resp)
+	}
+	if _, _, ok := f.pages.Get("phone-desk"); !ok || f.pages.Acknowledged("phone-desk") != "v1" {
+		t.Errorf("a failed Clear changed the page (%v) or its acknowledgement %q", ok, f.pages.Acknowledged("phone-desk"))
+	}
+	// A beep or a raw item does not acknowledge anything.
+	f.ph.answer = `<CiscoIPPhoneResponse><ResponseItem Status="0" Data="" URL=""/></CiscoIPPhoneResponse>`
+	f.p.Push(ctx, api.PushRequest{Device: "phone-desk", Beep: true})
+	if got := f.pages.Acknowledged("phone-desk"); got != "v1" {
+		t.Errorf("acknowledged %q after a beep, want v1", got)
+	}
+	// A successful Clear empties both.
+	if resp := f.p.Push(ctx, api.PushRequest{Device: "phone-desk", Clear: true}); !resp.Sent {
+		t.Fatalf("response %+v", resp)
+	}
+	if _, _, ok := f.pages.Get("phone-desk"); ok || f.pages.Acknowledged("phone-desk") != "" {
+		t.Errorf("a successful Clear left the page (%v) or version %q", ok, f.pages.Acknowledged("phone-desk"))
+	}
+}
+
+func TestPushDeviceNames(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if resp := f.p.Push(ctx, api.PushRequest{Device: "phone-desk.lab", PageVersion: "v", Page: "<p/>"}); !resp.Sent {
+		t.Errorf("phone-desk.lab: %+v", resp)
+	}
+	if want := strings.Replace(execFmt, "%s", item(deskURL+"/messages/phone-desk.lab.xml?v=v"), 1); f.ph.xml != want {
+		t.Errorf("XML %s, want %s", f.ph.xml, want)
+	}
+	before := f.hits()
+	for _, bad := range []string{"phone-../x", "phone-..x", "phone/x", "", ".phone", strings.Repeat("a", drivers.DeviceIDMaxLength+1)} {
+		if resp := f.p.Push(ctx, api.PushRequest{Device: bad, Page: "<p/>"}); resp.Sent || resp.Error == "" {
+			t.Errorf("%q: %+v, want a refusal", bad, resp)
+		}
+	}
+	if f.hits() != before {
+		t.Error("a refused device name reached the phone")
+	}
+	if resp := f.p.Push(ctx, api.PushRequest{Device: strings.Repeat("a", drivers.DeviceIDMaxLength), Page: "<p/>"}); !resp.Sent {
+		t.Errorf("a %d-character name: %+v", drivers.DeviceIDMaxLength, resp)
+	}
+}
+
+func TestPushHTTPFailureBeatsBody(t *testing.T) {
+	f := newFixture(t)
+	f.ph.status = http.StatusInternalServerError // with the default, good body
+	resp := f.p.Push(context.Background(), api.PushRequest{Device: "phone-desk", PageVersion: "v", Page: "<p/>"})
+	if resp.Sent || resp.Phone != "http 500" {
+		t.Errorf("response %+v, want http 500 and not sent", resp)
+	}
+	if f.pages.Acknowledged("phone-desk") != "" {
+		t.Error("a 500 acknowledged the page")
+	}
+}
+
+func TestPushEscapesRawItems(t *testing.T) {
+	f := newFixture(t)
+	if resp := f.p.Push(context.Background(), api.PushRequest{Device: "phone-desk", Execute: []string{`Play:a&b"c`}}); !resp.Sent {
+		t.Fatalf("response %+v", resp)
+	}
+	if !strings.Contains(f.ph.xml, `URL="Play:a&amp;b&#34;c"`) {
+		t.Errorf("XML %s, want & and \" escaped", f.ph.xml)
+	}
+}
+
+func TestPushUnreachablePhone(t *testing.T) {
+	f := newFixture(t)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadAddr := dead.Listener.Addr().String()
+	dead.Close() // nothing listens there now
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, deadAddr)
+		},
+	}}
+	p, err := push.New(push.Config{
+		Credentials:   func() (string, string, bool) { return pushUser, pushPass, true },
+		Target:        func(string) (netip.Addr, bool) { return f.addr, true },
+		DeviceHTTPURL: deskURL, Pages: f.pages, Client: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := p.Push(context.Background(), api.PushRequest{Device: "phone-desk", PageVersion: "v", Page: "<p/>"})
+	if resp.Sent || resp.Error == "" || len(resp.Error) > api.MaxPhoneAnswer {
+		t.Fatalf("response %+v", resp)
+	}
+	if strings.Contains(resp.Error, "http://") || strings.Contains(resp.Error, "/CGI/Execute") || strings.Contains(resp.Error, f.addr.String()) {
+		t.Errorf("the error carries the URL: %q", resp.Error)
+	}
+	if f.pages.Acknowledged("phone-desk") != "" {
+		t.Error("an unreachable phone acknowledged the page")
 	}
 }

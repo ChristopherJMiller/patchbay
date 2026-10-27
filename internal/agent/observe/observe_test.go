@@ -675,6 +675,10 @@ func TestTargetPrefersLiveContact(t *testing.T) {
 func TestObservationsCarryPage(t *testing.T) {
 	f := newFixture(t)
 	f.pages.Set(desk, "abc", []byte("<CiscoIPPhoneText/>"))
+	if d := f.device(desk); d != nil && d.Page != "" {
+		t.Fatalf("a stored but unacknowledged page is reported: %+v", d)
+	}
+	f.pages.Acknowledge(desk, "abc")
 	d := f.device(desk)
 	if d == nil || d.Page != "abc" {
 		t.Fatalf("the desk's observations %+v, want Page abc", d)

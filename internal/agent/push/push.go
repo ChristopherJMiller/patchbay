@@ -5,11 +5,12 @@
 // The order is fixed. The page is stored first, so that the phone's fetch of
 // it, which follows the Execute at once, finds it. Then the Execute goes out
 // as POST /CGI/Execute (form field XML, Basic auth with the push account);
-// the phone checks those credentials against its authenticationURL, which
-// device HTTP answers. A failed POST or a phone's error leaves the new page
-// stored and its version reported in the observations, so the controller
-// sees what the agent holds and decides whether to push again. Clear drops
-// the stored page.
+// device HTTP answers. A failed or refused push leaves the new page stored
+// (so it can be fetched, and a retry needs no resend) but changes nothing
+// the observations report: DeviceObservations.Page is the last version the
+// phone acknowledged (Status 0), so the controller never takes a page for
+// shown that the phone did not accept. A successful Clear drops the stored
+// page and the acknowledged version; a failed one keeps both.
 //
 // The agent never builds a page: it stores and serves the bytes it is given.
 // The credentials are read when used and appear in no log line, error or
@@ -37,6 +38,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/scrape"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/version"
 )
 
@@ -64,7 +66,7 @@ const (
 var rawPrefixes = []string{"Init:", "Key:", "SoftKey:", "Play:"}
 
 var (
-	deviceName  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+	deviceName  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	versionName = regexp.MustCompile(`^[A-Za-z0-9._-]*$`)
 	statusAttr  = regexp.MustCompile(`Status\s*=\s*["'](-?\d{1,6})["']`)
 	numberAttr  = regexp.MustCompile(`Number\s*=\s*["'](-?\d{1,6})["']`)
@@ -154,10 +156,7 @@ func (p *Pusher) Push(ctx context.Context, req api.PushRequest) api.PushResponse
 	// The page is stored before anything can fail, so the controller sees
 	// what the agent holds, and before the POST, so the phone's immediate
 	// fetch finds it.
-	switch {
-	case req.Clear:
-		p.cfg.Pages.Clear(req.Device)
-	case req.Page != "":
+	if req.Page != "" && !req.Clear {
 		p.cfg.Pages.Set(req.Device, req.PageVersion, []byte(req.Page))
 	}
 
@@ -175,6 +174,16 @@ func (p *Pusher) Push(ctx context.Context, req api.PushRequest) api.PushResponse
 	}
 
 	resp := p.post(ctx, addr, user, pass, executeXML(items))
+	if resp.Sent {
+		// Only the phone's Status 0 makes a page "on the phone" (or, for a
+		// clear, nothing on it); a failed push keeps both as they were.
+		switch {
+		case req.Clear:
+			p.cfg.Pages.Clear(req.Device)
+		case req.Page != "":
+			p.cfg.Pages.Acknowledge(req.Device, req.PageVersion)
+		}
+	}
 	p.cfg.Log.V(1).Info("push", "device", req.Device, "items", len(items), "sent", resp.Sent, "phone", resp.Phone, "error", resp.Error)
 	return resp
 }
@@ -183,7 +192,7 @@ func (p *Pusher) Push(ctx context.Context, req api.PushRequest) api.PushResponse
 // something the push never sends.
 func checkRequest(req api.PushRequest) error {
 	switch {
-	case !deviceName.MatchString(req.Device):
+	case len(req.Device) > drivers.DeviceIDMaxLength || !deviceName.MatchString(req.Device) || strings.Contains(req.Device, ".."):
 		return errors.New("the device name is not usable in a URL")
 	case len(req.PageVersion) > maxVersionLength || !versionName.MatchString(req.PageVersion):
 		return errors.New("the page version is not usable in a URL")
@@ -288,6 +297,9 @@ func (p *Pusher) post(ctx context.Context, addr netip.Addr, user, pass, doc stri
 // is success; any other status, a CiscoIPPhoneError or an HTTP failure is
 // not.
 func interpret(code int, answer []byte) api.PushResponse {
+	if code < 200 || code > 299 {
+		return api.PushResponse{Phone: fmt.Sprintf("http %d", code), Error: fmt.Sprintf("the phone answered HTTP %d", code)}
+	}
 	if m := numberAttr.FindSubmatch(answer); m != nil && bytes.Contains(answer, []byte("CiscoIPPhoneError")) {
 		return api.PushResponse{Phone: "error " + string(m[1]), Error: "the phone refused the push"}
 	}
@@ -301,9 +313,6 @@ func interpret(code int, answer []byte) api.PushResponse {
 		if len(all) > 0 {
 			return api.PushResponse{Sent: true, Phone: "status 0"}
 		}
-	}
-	if code < 200 || code > 299 {
-		return api.PushResponse{Phone: fmt.Sprintf("http %d", code), Error: fmt.Sprintf("the phone answered HTTP %d", code)}
 	}
 	return api.PushResponse{Error: "the phone's answer was not a CiscoIPPhoneResponse"}
 }

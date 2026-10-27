@@ -185,8 +185,9 @@ type DeviceObservations struct {
 	// A phone in a call is never resynced: a resync can drop the call.
 	Calls int `json:"calls,omitempty"`
 
-	// Page is the version of the message page the agent holds for the
-	// device (PushRequest.PageVersion), "" when it holds none. The agent
+	// Page is the version of the message page the phone last acknowledged (a
+	// CiscoIPPhoneResponse with Status 0) for the device, "" for none. A page
+	// merely stored, or refused, does not count. The agent
 	// keeps pages in memory, so a restart empties it and the controller
 	// sees that here.
 	Page string `json:"page,omitempty"`

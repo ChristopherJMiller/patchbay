@@ -72,7 +72,7 @@ type Config struct {
 	Status func() apply.Status
 	// Firmware is the firmware store sensor.
 	Firmware sensor.FirmwareSensor
-	// Pages is the message pages the agent holds, reported per device as
+	// Pages supplies the page version each phone last acknowledged, reported as
 	// DeviceObservations.Page (push.Pages). May be nil.
 	Pages PageSource
 	// Metrics may be nil.
@@ -85,9 +85,9 @@ type Config struct {
 	Log logr.Logger
 }
 
-// PageSource is the stored message pages, read by device (push.Pages).
+// PageSource is the page version each phone last acknowledged (push.Pages).
 type PageSource interface {
-	Get(device string) (version string, page []byte, ok bool)
+	Acknowledged(device string) string
 }
 
 // Limits.
@@ -512,7 +512,7 @@ func (s *Store) Document(now time.Time) api.Observations {
 			obs.Registration, seen = registrationOf(c), true
 		}
 		if s.cfg.Pages != nil {
-			if v, _, ok := s.cfg.Pages.Get(id); ok {
+			if v := s.cfg.Pages.Acknowledged(id); v != "" {
 				obs.Page, seen = v, true
 			}
 		}
