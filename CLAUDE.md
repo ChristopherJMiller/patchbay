@@ -138,6 +138,15 @@ departs from it, the departure is recorded here (and in the code's docs).
   phone(s)"): `spec.phone`, so each phone's copy has its own state,
   `shownAt` and expiry. The endpoint fans its `to` list out into one
   Message per phone; the CLI's `phone message` takes one phone.
+- **A refused push shows on the Message, not the Phone** (the messages
+  spec: "a phone whose push is refused shows it in its status"): each
+  unshown Message of that phone is Held `PushFailing`, its status message
+  naming the agent's reason and the phone's answer, with a Warning
+  `PushFailed` Event, and `patchbay status` lists the Held Messages with
+  their reason. The Phone's status, which its driver's Decide alone
+  writes, is unchanged: calls and registration are unaffected, and a
+  failed clear or silent re-send of a page already shown is in the
+  controller's log only.
 - **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
