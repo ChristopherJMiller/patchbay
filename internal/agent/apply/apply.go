@@ -126,6 +126,8 @@ type live struct {
 	// before intake hands it over again).
 	grants  []provision.Grant
 	account *account
+	// push is the push credential: nil while unknown, like account.
+	push *account
 	// verified is true once Asterisk was seen to hold it.
 	verified bool
 	// adopted is true for the version live when the agent started: a
@@ -232,6 +234,7 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 	next := &live{
 		version: v, index: r.Bundle.Index(), grants: grantsOf(v, r),
 		account: &account{r.Bundle.AMI.Username, r.AMIPassword},
+		push:    &account{r.Bundle.Push.Username, r.PushPassword},
 	}
 	cur := a.current()
 
@@ -245,6 +248,9 @@ func (a *Applier) Apply(ctx context.Context, r intake.Resolved) error {
 		}
 		if cur.account == nil {
 			cur.account = next.account
+		}
+		if cur.push == nil {
+			cur.push = next.push
 		}
 		acct := cur.account
 		a.mu.Unlock()
@@ -390,6 +396,19 @@ func (a *Applier) SettledGrants() (string, []provision.Grant) {
 		return "", nil
 	}
 	return c.version, slices.Clone(c.grants)
+}
+
+// PushCredentials are the live version's push account (the user and
+// password the phones' push requests carry): ok is false before the first
+// apply, and while an adopted version's password is not known yet (before
+// intake hands it over again).
+func (a *Applier) PushCredentials() (user, password string, ok bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cur == nil || a.cur.push == nil {
+		return "", "", false
+	}
+	return a.cur.push.username, a.cur.push.password, true
 }
 
 // Applied is the live version and its index. The index is shared: do not

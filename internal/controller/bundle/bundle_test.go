@@ -67,6 +67,7 @@ func settings() compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       names.AMIRef(),
+		PushSecret:      names.PushRef(),
 	}
 }
 
@@ -408,7 +409,7 @@ func TestWritesSecretsThenConfigMap(t *testing.T) {
 	if s < 0 || c < 0 || s > c {
 		t.Fatalf("writes %v: want pbx-secrets created before pbx-config", ops)
 	}
-	for _, want := range []string{"create Secret/" + names.AMISecret, "create Secret/" + names.AgentTokenSecret, "create Secret/" + deskSec} {
+	for _, want := range []string{"create Secret/" + names.AMISecret, "create Secret/" + names.PushSecret, "create Secret/" + names.AgentTokenSecret, "create Secret/" + deskSec} {
 		if i := indexOf(ops, want); i < 0 || i > s {
 			t.Errorf("writes %v: want %s before the bundle", ops, want)
 		}
@@ -682,8 +683,8 @@ func TestFirstReconcileWithNoResources(t *testing.T) {
 	if len(b.Devices) != 0 {
 		t.Errorf("devices %v, want none", b.Devices)
 	}
-	if want := []string{names.AMISecret + "_" + install.AMIPasswordKey}; !slices.Equal(slices.Sorted(maps.Keys(sec.Data)), want) {
-		t.Errorf("pbx-secrets keys %v, want only the AMI password", slices.Sorted(maps.Keys(sec.Data)))
+	if want := []string{names.AMISecret + "_" + install.AMIPasswordKey, names.PushSecret + "_" + install.PushPasswordKey}; !slices.Equal(slices.Sorted(maps.Keys(sec.Data)), want) {
+		t.Errorf("pbx-secrets keys %v, want only the AMI and push passwords", slices.Sorted(maps.Keys(sec.Data)))
 	}
 	if _, ok := b.Files[compile.TreeAsterisk+"/pjsip.conf"]; !ok {
 		t.Error("a bundle with no devices has no pjsip.conf")

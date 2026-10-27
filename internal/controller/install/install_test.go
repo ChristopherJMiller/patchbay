@@ -41,6 +41,7 @@ func TestNewNames(t *testing.T) {
 		ProjectedSecret:  "patchbay-pbx-secrets",
 		AgentTokenSecret: "patchbay-agent-token",
 		AMISecret:        "patchbay-ami",
+		PushSecret:       "patchbay-push",
 		Settings:         "patchbay-settings",
 		AgentService:     "patchbay-agent",
 		StreamsConfigMap: "patchbay-streams",
@@ -54,6 +55,9 @@ func TestNewNames(t *testing.T) {
 	}
 	if got := names.AMIRef(); got != (compile.SecretRef{Name: "patchbay-ami", Key: "password"}) {
 		t.Errorf("AMIRef = %+v", got)
+	}
+	if got := names.PushRef(); got != (compile.SecretRef{Name: "patchbay-push", Key: "password"}) {
+		t.Errorf("PushRef = %+v", got)
 	}
 	if got := names.AgentTokenRef(); got != (compile.SecretRef{Name: "patchbay-agent-token", Key: "token"}) {
 		t.Errorf("AgentTokenRef = %+v", got)
@@ -80,6 +84,7 @@ func settings() compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       names.AMIRef(),
+		PushSecret:      names.PushRef(),
 	}
 }
 
@@ -92,10 +97,32 @@ func TestCheckSettings(t *testing.T) {
 	if err := install.CheckSettings(other, names); err == nil || !strings.Contains(err.Error(), "fullname") {
 		t.Errorf("another install's AMI Secret: %v, want a fullname error", err)
 	}
+	wrongPush := settings()
+	wrongPush.PushSecret = install.NewNames("telephony-patchbay").PushRef()
+	if err := install.CheckSettings(wrongPush, names); err == nil || !strings.Contains(err.Error(), "pushSecret") {
+		t.Errorf("another install's push Secret: %v, want a pushSecret error", err)
+	}
 	invalid := settings()
 	invalid.SIPPort = 0
 	if err := install.CheckSettings(invalid, names); err == nil {
 		t.Error("invalid settings passed")
+	}
+}
+
+func TestCheckSettingsPushSecret(t *testing.T) {
+	bad := settings()
+	bad.PushSecret = compile.SecretRef{Name: names.PushSecret, Key: "other"}
+	if err := install.CheckSettings(bad, names); err == nil {
+		t.Error("a PushSecret other than the install's passed")
+	}
+}
+
+func TestGeneratePushPassword(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		v, err := install.GeneratePushPassword(nil)
+		if err != nil || len(v) != 16 || strings.Trim(v, drivers.Alphanumeric) != "" {
+			t.Fatalf("draw %d = %q, %v; want 16 alphanumerics", i, v, err)
+		}
 	}
 }
 
@@ -154,6 +181,7 @@ func compileFixture(t *testing.T) (compile.Bundle, map[compile.SecretRef][]byte)
 	})
 	gen(compile.ProvisioningTokenRef(laptopID), func() (string, error) { return install.GenerateProvisioningToken(nil) })
 	gen(names.AMIRef(), func() (string, error) { return install.GenerateAMIPassword(nil) })
+	gen(names.PushRef(), func() (string, error) { return install.GeneratePushPassword(nil) })
 	b, err := compile.Compile(reg, compile.Inputs{
 		Phones: []v1alpha1.Phone{{
 			ObjectMeta: metav1.ObjectMeta{Name: "desk", CreationTimestamp: created},
@@ -378,6 +406,7 @@ func TestGenerate(t *testing.T) {
 		}, 12},
 		{"provisioning token", func() (string, error) { return install.GenerateProvisioningToken(nil) }, 32},
 		{"AMI password", func() (string, error) { return install.GenerateAMIPassword(nil) }, 32},
+		{"push password", func() (string, error) { return install.GeneratePushPassword(nil) }, 16},
 	} {
 		v, err := c.gen()
 		if err != nil || len(v) != c.n || strings.Trim(v, drivers.Alphanumeric) != "" {

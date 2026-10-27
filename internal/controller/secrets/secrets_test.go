@@ -217,6 +217,7 @@ func TestEnsureCreatesDeviceSecrets(t *testing.T) {
 		compile.PasswordRef(laptopID):          l.Data[compile.SecretKeySIPPassword],
 		compile.ProvisioningTokenRef(laptopID): l.Data[compile.SecretKeyProvisioningToken],
 		names.AMIRef():                         ami.Data[install.AMIPasswordKey],
+		names.PushRef():                        f.secret(t, names.PushSecret).Data[install.PushPasswordKey],
 	}
 	if len(got) != len(want) {
 		t.Errorf("Ensure returned %d values, want %d", len(got), len(want))
@@ -247,6 +248,7 @@ func settings() compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24"},
 		AMISecret:       names.AMIRef(),
+		PushSecret:      names.PushRef(),
 	}
 }
 
@@ -257,8 +259,8 @@ func TestEnsureWritesNothingWhenComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w := f.w.take(); len(w) != 4 {
-		t.Fatalf("first Ensure wrote %v, want 4 creates", w)
+	if w := f.w.take(); len(w) != 5 {
+		t.Fatalf("first Ensure wrote %v, want 5 creates", w)
 	}
 	second, err := f.m.Ensure(ctx, []v1alpha1.Phone{*desk()}, []v1alpha1.Softphone{*laptop()})
 	if err != nil {
@@ -333,6 +335,50 @@ func TestEnsureRegeneratesDeleted(t *testing.T) {
 	}
 }
 
+// TestEnsureCreatesPushSecret: the push password is created once, as 16
+// alphanumerics, kept when it exists and returned under PushRef.
+func TestEnsureCreatesPushSecret(t *testing.T) {
+	f := newFixture(t, registry(t))
+	ctx := context.Background()
+	first, err := f.m.Ensure(ctx, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	push := f.secret(t, names.PushSecret)
+	alnum(t, "push password", push.Data[install.PushPasswordKey], install.PushPasswordLength)
+	if len(push.OwnerReferences) != 0 {
+		t.Errorf("the push Secret has owners %+v, want none", push.OwnerReferences)
+	}
+	managed(t, push)
+	if !bytes.Equal(first[names.PushRef()], push.Data[install.PushPasswordKey]) {
+		t.Error("Ensure returned another push password than it stored")
+	}
+	f.w.take()
+	second, err := f.m.Ensure(ctx, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := f.w.take(); len(w) != 0 {
+		t.Errorf("second Ensure wrote %v, want nothing", w)
+	}
+	if !bytes.Equal(second[names.PushRef()], first[names.PushRef()]) {
+		t.Error("the push password changed")
+	}
+
+	// A value that is already there is kept.
+	f = newFixture(t, registry(t), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: names.PushSecret},
+		Data:       map[string][]byte{install.PushPasswordKey: []byte("notAsecretPush1")},
+	})
+	got, err := f.m.Ensure(ctx, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got[names.PushRef()]) != "notAsecretPush1" || string(f.secret(t, names.PushSecret).Data[install.PushPasswordKey]) != "notAsecretPush1" {
+		t.Error("an existing push password was changed")
+	}
+}
+
 func TestEnsureAdopts(t *testing.T) {
 	for name, owners := range map[string][]metav1.OwnerReference{
 		"no owner": nil,
@@ -404,8 +450,8 @@ func TestInstallSecrets(t *testing.T) {
 		}
 		managed(t, s)
 	}
-	if len(got) != 1 || !bytes.Equal(got[names.AMIRef()], ami.Data[install.AMIPasswordKey]) {
-		t.Errorf("Ensure with no devices returned %d values, want only the AMI password", len(got))
+	if len(got) != 2 || !bytes.Equal(got[names.AMIRef()], ami.Data[install.AMIPasswordKey]) || !bytes.Equal(got[names.PushRef()], f.secret(t, names.PushSecret).Data[install.PushPasswordKey]) {
+		t.Errorf("Ensure with no devices returned %d values, want only the AMI and push passwords", len(got))
 	}
 	if _, ok := got[names.AgentTokenRef()]; ok {
 		t.Error("Ensure returned the agent token: Compile never reads it")
@@ -547,6 +593,10 @@ func TestEnsureRefusesUnusableSecrets(t *testing.T) {
 		"AMI password outside the alphabet": {
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: names.AMISecret},
 			Data:       map[string][]byte{install.AMIPasswordKey: []byte(value)},
+		},
+		"push password outside the alphabet": {
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: names.PushSecret},
+			Data:       map[string][]byte{install.PushPasswordKey: []byte(value)},
 		},
 		"agent token with a space": {
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: names.AgentTokenSecret},

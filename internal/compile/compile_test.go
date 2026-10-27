@@ -88,7 +88,8 @@ func TestSettingsJSON(t *testing.T) {
 		"numberPlan": {"devices": "1XX", "people": "3XX", "streams": "7XX", "echoTest": "600",
 			"emergency": "911", "reserved": ["2XX", "0", "9.", "*8"]},
 		"allowedNetworks": ["192.168.20.0/24", "192.168.0.0/24"],
-		"amiSecret": {"name": "patchbay-ami", "key": "password"}
+		"amiSecret": {"name": "patchbay-ami", "key": "password"},
+		"pushSecret": {"name": "patchbay-push", "key": "password"}
 	}`
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -107,6 +108,7 @@ func TestSettingsJSON(t *testing.T) {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       compile.SecretRef{Name: "patchbay-ami", Key: "password"},
+		PushSecret:      compile.SecretRef{Name: "patchbay-push", Key: "password"},
 	}
 	if !reflect.DeepEqual(s, want) {
 		t.Fatalf("decoded settings:\n got %+v\nwant %+v", s, want)

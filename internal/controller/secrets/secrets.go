@@ -7,7 +7,8 @@
 //     and blockOwnerDeletion, so the garbage collector removes it with the
 //     resource): sip-password under the model's driver PasswordPolicy, and
 //     for a Softphone provisioning-token (install.GenerateProvisioningToken);
-//   - <fullname>-ami (password, install.GenerateAMIPassword) and
+//   - <fullname>-ami (password, install.GenerateAMIPassword),
+//     <fullname>-push (password, install.GeneratePushPassword) and
 //     <fullname>-agent-token (token, install.GenerateAgentToken), unowned.
 //
 // The Manager is the only creator of these Secrets (the bundle reconciler
@@ -136,7 +137,7 @@ type spec struct {
 // Ensure creates or completes every Secret the install needs and returns
 // the values Compile reads (compile.Inputs.Secrets): the PasswordRef of
 // every Phone and Softphone whose model a driver serves, the
-// ProvisioningTokenRef of every Softphone, and the AMI password. It also
+// ProvisioningTokenRef of every Softphone, and the AMI and push passwords. It also
 // ensures the agent token. A device whose model no driver serves gets no
 // password (and, for a Phone, no Secret): it is never rendered.
 //
@@ -153,6 +154,14 @@ func (m *Manager) Ensure(ctx context.Context, phones []v1alpha1.Phone, softphone
 		return nil, err
 	}
 	out[m.names.AMIRef()] = ami[install.AMIPasswordKey]
+
+	push, err := m.ensure(ctx, spec{name: m.names.PushSecret, fields: []field{
+		alphanumeric(install.PushPasswordKey, func() (string, error) { return install.GeneratePushPassword(m.rand) }),
+	}})
+	if err != nil {
+		return nil, err
+	}
+	out[m.names.PushRef()] = push[install.PushPasswordKey]
 
 	if _, err := m.ensure(ctx, spec{name: m.names.AgentTokenSecret, fields: []field{{
 		key:      install.AgentTokenKey,

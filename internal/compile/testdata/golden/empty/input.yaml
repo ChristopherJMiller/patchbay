@@ -1,3 +1,4 @@
 # Settings only: every Asterisk file, the built-ins, no endpoints.
 secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-push, key: password, value: not-a-secret-push-0001}

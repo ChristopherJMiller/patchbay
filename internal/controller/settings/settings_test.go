@@ -49,6 +49,7 @@ func TestParseChartDefaults(t *testing.T) {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       compile.SecretRef{Name: "patchbay-ami", Key: "password"},
+		PushSecret:      compile.SecretRef{Name: "patchbay-push", Key: "password"},
 		StreamBridge:    "patchbay-streams.telephony.svc:9092",
 		Streams:         compile.StreamSettings{CallLimit: metav1.Duration{Duration: 2 * time.Hour}},
 	}

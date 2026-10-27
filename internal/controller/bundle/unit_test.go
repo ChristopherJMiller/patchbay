@@ -87,6 +87,7 @@ func TestWatchPredicates(t *testing.T) {
 		want bool
 	}{
 		{"AMI", secret("telephony", names.AMISecret, nil), true},
+		{"push", secret("telephony", names.PushSecret, nil), true},
 		{"agent token", secret("telephony", names.AgentTokenSecret, nil), true},
 		{"pbx-secrets", secret("telephony", names.ProjectedSecret, nil), true},
 		{"owned by a Phone", secret("telephony", "patchbay-phone-desk", owned(gv, string(drivers.KindPhone))), true},

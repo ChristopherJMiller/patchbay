@@ -15,6 +15,8 @@ type Resolved struct {
 	Files map[string][]byte
 	// AMIPassword is the AMI account's password.
 	AMIPassword string
+	// PushPassword is the push account's password.
+	PushPassword string
 	// Tokens maps each rendered softphone's device ID to its current
 	// one-time provisioning token.
 	Tokens map[string]string
@@ -88,6 +90,10 @@ func Resolve(b compile.Bundle, secretData map[string][]byte) (Resolved, error) {
 		return Resolved{}, errors.New("the bundle names no AMI password")
 	}
 	r.AMIPassword = string(values[b.AMI.Password])
+	if b.Push.Password == (compile.SecretRef{}) {
+		return Resolved{}, errors.New("the bundle names no push password")
+	}
+	r.PushPassword = string(values[b.Push.Password])
 	for id, d := range b.Devices {
 		if d.ProvisioningToken != nil && d.Version != "" {
 			r.Tokens[id] = string(values[*d.ProvisioningToken])

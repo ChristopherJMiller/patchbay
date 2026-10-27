@@ -17,6 +17,7 @@ people:
     spec: {number: "300", name: 'The "Family" <&> ; Ünïcödé', rings: [{phone: lab}, {phone: long}, {softphone: den}]}
 secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-push, key: password, value: not-a-secret-push-0001}
   - {name: patchbay-phone-lab, key: sip-password, value: not-a-secret-lab-0001}
   - {name: patchbay-phone-long, key: sip-password, value: not-a-secret-long-0001}
   - {name: patchbay-phone-spaced, key: sip-password, value: not-a-secret-spaced-0001}

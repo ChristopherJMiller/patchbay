@@ -21,6 +21,10 @@ const (
 	// AMIPasswordLength is the AMI password: alphanumerics, so it needs no
 	// escaping in manager.conf.
 	AMIPasswordLength = 32
+	// PushPasswordLength is the phones' push password: alphanumerics, and
+	// short: the 7945 refused a 32-character SIP password, and it may echo
+	// this one in a query string.
+	PushPasswordLength = 16
 	// AgentTokenBytes is the control API token's entropy; the token is
 	// these bytes in unpadded base64url (43 characters).
 	AgentTokenBytes = 32
@@ -84,6 +88,12 @@ func GenerateProvisioningToken(r io.Reader) (string, error) {
 // GenerateAMIPassword is the AMI password: AMIPasswordLength alphanumerics.
 func GenerateAMIPassword(r io.Reader) (string, error) {
 	return Generate(r, AMIPasswordLength, drivers.Alphanumeric)
+}
+
+// GeneratePushPassword is the push password: PushPasswordLength
+// alphanumerics.
+func GeneratePushPassword(r io.Reader) (string, error) {
+	return Generate(r, PushPasswordLength, drivers.Alphanumeric)
 }
 
 // GenerateAgentToken is the control API token: AgentTokenBytes random

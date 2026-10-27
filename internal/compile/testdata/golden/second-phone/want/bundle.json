@@ -1,5 +1,5 @@
 {
-  "version": "5350052fa974580774a99783a835da97e13cc4a499e22d4e96fa624cbc4f13a5",
+  "version": "bae69c7cc9840b7747cbda8add9511e0b193f2d3a4d4d5e2a07f3d2552911f6d",
   "devices": {
     "phone-desk": {
       "kind": "Phone",
@@ -30,6 +30,13 @@
     "username": "patchbay-agent",
     "password": {
       "name": "patchbay-ami",
+      "key": "password"
+    }
+  },
+  "push": {
+    "username": "patchbay",
+    "password": {
+      "name": "patchbay-push",
       "key": "password"
     }
   }

@@ -79,6 +79,9 @@ type Bundle struct {
 	// AMI is the account the compiled manager.conf defines, which the agent
 	// logs in with.
 	AMI AMIAccount
+	// Push is the account the agent authenticates the phones' push
+	// requests against and pushes with.
+	Push PushAccount
 
 	// Streams is streams.json (release B): every Stream the dialplan sends
 	// to the stream bridge, by UUID, with the tuner pools, sealed
@@ -136,6 +139,20 @@ type AMIAccount struct {
 	// (Settings.AMISecret).
 	Password SecretRef `json:"password"`
 }
+
+// PushAccount is the install-wide credential for pushing text to the phones
+// (/CGI/Execute, Basic auth): the phone presents it to the agent's
+// authentication URL and the agent presents it to the phone.
+type PushAccount struct {
+	// Username is PushUsername.
+	Username string `json:"username"`
+	// Password is the Secret key holding the generated push password
+	// (Settings.PushSecret).
+	Password SecretRef `json:"password"`
+}
+
+// PushUsername is the push account's user name.
+const PushUsername = "patchbay"
 
 // AMIUsername is the AMI user in the compiled manager.conf.
 const AMIUsername = "patchbay-agent"
@@ -200,6 +217,10 @@ type Settings struct {
 	// AMISecret is the Secret key holding the generated AMI password. The
 	// controller generates it; the compiler only references it.
 	AMISecret SecretRef `json:"amiSecret"`
+
+	// PushSecret is the Secret key holding the generated push password. The
+	// controller generates it; the compiler only references it.
+	PushSecret SecretRef `json:"pushSecret"`
 
 	// PhoneDefaults are house defaults for Phone spec fields. Optional.
 	PhoneDefaults PhoneDefaults `json:"phoneDefaults,omitzero"`
@@ -407,6 +428,7 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 		Files:   map[string][]byte{},
 		Devices: map[string]BundleDevice{},
 		AMI:     AMIAccount{Username: AMIUsername, Password: s.AMISecret},
+		Push:    PushAccount{Username: PushUsername, Password: s.PushSecret},
 	}
 	ctx := renderContext(s)
 	owners := map[string]string{} // bundle path -> the first device that rendered it

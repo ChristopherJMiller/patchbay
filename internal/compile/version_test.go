@@ -86,6 +86,9 @@ func TestVersions(t *testing.T) {
 		{"the AMI password", func(in *compile.Inputs, s *compile.Settings) {
 			in.Secrets[s.AMISecret] = []byte("not-a-secret-ami-0002")
 		}, nil, true},
+		{"the push password", func(in *compile.Inputs, s *compile.Settings) {
+			in.Secrets[s.PushSecret] = []byte("not-a-secret-push-0002")
+		}, nil, true},
 		{"a phone's label", func(in *compile.Inputs, _ *compile.Settings) {
 			in.Phones[0].Spec.Label = "Study"
 		}, []string{"phone-desk"}, false},

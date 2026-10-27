@@ -4,7 +4,7 @@ The PBX pod runs on node {{ .Values.pbx.nodeName }} (host network); phones reach
 SIP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.sip }} and TFTP at {{ .Values.pbx.address }}:{{ .Values.pbx.ports.tftp }}.
 
 The controller mints the install's Secrets (the agent token
-{{ include "patchbay.agentTokenSecretName" . }}, the AMI password, one per device) and
+{{ include "patchbay.agentTokenSecretName" . }}, the AMI and push passwords, one per device) and
 compiles every Phone, Softphone, Person and Stream into
 {{ include "patchbay.streamsName" . }} (streams.json), {{ include "patchbay.fullname" . }}-pbx-secrets, then {{ include "patchbay.fullname" . }}-pbx-config.
 The PBX pod waits in ContainerCreating until the token exists, and Asterisk
@@ -37,7 +37,7 @@ plays "not available".
 The controller's own install objects are not Helm's: `helm uninstall` leaves
 them. Once the controller is gone, remove them by name:
   kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config {{ include "patchbay.streamsName" . }}
-  kubectl -n {{ .Release.Namespace }} delete secret {{ include "patchbay.fullname" . }}-pbx-secrets {{ include "patchbay.fullname" . }}-ami {{ include "patchbay.agentTokenSecretName" . }}
+  kubectl -n {{ .Release.Namespace }} delete secret {{ include "patchbay.fullname" . }}-pbx-secrets {{ include "patchbay.fullname" . }}-ami {{ include "patchbay.fullname" . }}-push {{ include "patchbay.agentTokenSecretName" . }}
 Not by label: each device's Secret (patchbay-<id>: its SIP password, a
 softphone's provisioning token) carries the same labels, and goes with its
 Phone or Softphone. The CRDs, and so the Phones and Streams, survive

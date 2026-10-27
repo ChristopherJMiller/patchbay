@@ -91,6 +91,7 @@ func compiledConfigMap(t *testing.T) *corev1.ConfigMap {
 			compile.PasswordRef(laptopID):          []byte("notAsecretnotAsecret0003"),
 			compile.ProvisioningTokenRef(laptopID): []byte("notAsecretToken"),
 			names.AMIRef():                         []byte("notAsecretAMI"),
+			names.PushRef():                        []byte("notAsecretPush"),
 		},
 	}
 	b, err := compile.Compile(reg, in, compile.Settings{
@@ -104,6 +105,7 @@ func compiledConfigMap(t *testing.T) *corev1.ConfigMap {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24"},
 		AMISecret:       names.AMIRef(),
+		PushSecret:      names.PushRef(),
 	})
 	if err != nil {
 		t.Fatal(err)

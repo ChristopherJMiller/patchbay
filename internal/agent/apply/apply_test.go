@@ -582,6 +582,19 @@ func TestReloadErrorRollsBack(t *testing.T) {
 
 // TestFirstVersionWithoutAMI: before Asterisk runs, the first version is
 // written and swapped, Ready passes, and it is verified once AMI connects.
+func TestApplierPushCredentials(t *testing.T) {
+	e := newEnv(t)
+	if u, p, ok := e.a.PushCredentials(); ok || u != "" || p != "" {
+		t.Errorf("PushCredentials before any apply = %q, %q, %v", u, p, ok)
+	}
+	v1 := house(t)
+	e.mustApply(v1)
+	u, p, ok := e.a.PushCredentials()
+	if !ok || u != compile.PushUsername || p != v1.PushPassword || p == "" {
+		t.Errorf("PushCredentials = %q, %v, want %s and the resolved password", u, ok, compile.PushUsername)
+	}
+}
+
 func TestFirstVersionWithoutAMI(t *testing.T) {
 	e := newEnv(t)
 	if e.a.Ready() == nil {

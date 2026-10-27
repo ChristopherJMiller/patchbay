@@ -50,6 +50,7 @@ func testSettings(n install.Names) compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       n.AMIRef(),
+		PushSecret:      n.PushRef(),
 	}
 }
 
@@ -174,7 +175,7 @@ func (f *fixture) compile() compile.Bundle {
 			f.t.Fatal(err)
 		}
 	}
-	values := map[compile.SecretRef][]byte{f.names.AMIRef(): []byte("not-a-secret-ami")}
+	values := map[compile.SecretRef][]byte{f.names.AMIRef(): []byte("not-a-secret-ami"), f.names.PushRef(): []byte("not-a-secret-push")}
 	for _, p := range phones.Items {
 		values[compile.PasswordRef(drivers.DeviceID(drivers.KindPhone, p.Name))] = []byte("not-a-secret-password")
 	}

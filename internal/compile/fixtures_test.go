@@ -147,7 +147,7 @@ func ringSoftphone(name string) v1alpha1.RingTarget {
 // fakeSecrets holds an obviously fake value for every device secret of the
 // inputs (password, and token for softphones), and the AMI secret.
 func fakeSecrets(in *compile.Inputs, s compile.Settings) {
-	in.Secrets = map[compile.SecretRef][]byte{s.AMISecret: []byte("not-a-secret-ami-0001")}
+	in.Secrets = map[compile.SecretRef][]byte{s.AMISecret: []byte("not-a-secret-ami-0001"), s.PushSecret: []byte("not-a-secret-push-0001")}
 	for _, p := range in.Phones {
 		id := drivers.DeviceID(drivers.KindPhone, p.Name)
 		in.Secrets[compile.PasswordRef(id)] = []byte("not-a-secret-" + id)
@@ -172,6 +172,7 @@ func houseSettings() compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       compile.SecretRef{Name: "patchbay-ami", Key: "password"},
+		PushSecret:      compile.SecretRef{Name: "patchbay-push", Key: "password"},
 	}
 }
 

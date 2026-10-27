@@ -15,6 +15,7 @@ settings:
     reserved: ["2XX", "0", "9.", "*8"]
   allowedNetworks: [10.0.0.0/24]
   amiSecret: {name: pbx-ami, key: secret}
+  pushSecret: {name: pbx-push, key: secret}
 phones:
   - metadata: {name: desk, creationTimestamp: "2026-10-01T12:00:00Z"}
     spec: {model: cisco-7945, mac: D0C78915E8C8, number: "400", label: Desk}
@@ -26,6 +27,7 @@ people:
     spec: {number: "501", name: Chris, rings: [{softphone: chris-laptop}, {phone: desk}]}
 secrets:
   - {name: pbx-ami, key: secret, value: not-a-secret-ami-0002}
+  - {name: pbx-push, key: secret, value: not-a-secret-push-0002}
   - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
   - {name: patchbay-softphone-chris-laptop, key: sip-password, value: not-a-secret-laptop-0001}
   - {name: patchbay-softphone-chris-laptop, key: provisioning-token, value: not-a-secret-token-0001}

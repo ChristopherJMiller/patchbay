@@ -51,6 +51,7 @@ type Index struct {
 	Version string                  `json:"version"`
 	Devices map[string]BundleDevice `json:"devices"`
 	AMI     AMIAccount              `json:"ami"`
+	Push    PushAccount             `json:"push"`
 }
 
 // ConfigMapKey is the ConfigMap key of a bundle path: the path with "/"
@@ -128,7 +129,7 @@ func BundleFromConfigMap(data map[string]string, binaryData map[string][]byte) (
 	if idx.Version == "" {
 		return Bundle{}, fmt.Errorf("bundle: %s has no version", IndexKey)
 	}
-	b := Bundle{Files: map[string][]byte{}, Version: idx.Version, Devices: idx.Devices, AMI: idx.AMI}
+	b := Bundle{Files: map[string][]byte{}, Version: idx.Version, Devices: idx.Devices, AMI: idx.AMI, Push: idx.Push}
 	for key, v := range data {
 		if key == IndexKey {
 			continue

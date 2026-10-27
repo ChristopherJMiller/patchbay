@@ -124,6 +124,7 @@ always carries the call limit, and the tuner pools when there are any
     "reserved" $reserved)
   "allowedNetworks" $networks
   "amiSecret" (dict "name" (printf "%s-ami" (include "patchbay.fullname" .)) "key" "password")
+  "pushSecret" (dict "name" (printf "%s-push" (include "patchbay.fullname" .)) "key" "password")
 -}}
 {{- $display := include "patchbay.phoneDefaultsDisplay" . -}}
 {{- if $display -}}

@@ -557,6 +557,7 @@ func TestController(t *testing.T) {
 			owners := map[string]string{
 				names.AgentTokenSecret:              "",
 				names.AMISecret:                     "",
+				names.PushSecret:                    "",
 				names.ProjectedSecret:               "",
 				compile.DeviceSecretName(deskID):    "Phone/" + deskName,
 				compile.DeviceSecretName(kitchenID): "Phone/" + kitchenName,

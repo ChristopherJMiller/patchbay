@@ -87,6 +87,9 @@ func (s Settings) Validate() error {
 	if err := checkSecretRef(s.AMISecret); err != nil {
 		bad("amiSecret: %v", err)
 	}
+	if err := checkSecretRef(s.PushSecret); err != nil {
+		bad("pushSecret: %v", err)
+	}
 	if s.StreamBridge != "" && !bridgeAddress(s.StreamBridge) {
 		bad("streamBridge %q is not host:port", s.StreamBridge)
 	}

@@ -42,6 +42,7 @@ func testSettings() compile.Settings {
 		NumberPlan:      compile.DefaultNumberPlan(),
 		AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 		AMISecret:       names.AMIRef(),
+		PushSecret:      names.PushRef(),
 		StreamBridge:    install.StreamBridgeAddress(names, "telephony", bridgeapi.DefaultAudioSocketPort),
 		Streams: compile.StreamSettings{TunerPools: []compile.TunerPool{
 			{Name: "hdhomerun", Hosts: []string{"192.168.0.58"}, Max: 1},

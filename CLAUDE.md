@@ -78,7 +78,8 @@ flags, defaults, timings and bounds, `CallLimitSlack` among them, the
 `Source`/`Decoder` seam, `FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
 kinds and frame), `internal/streambridge/api` (the bridge's control API
 JSON), the stream settings and `Bundle.Streams` in `internal/compile`
-(`streams_contract_test.go`), and install's streams ConfigMap, names and
+(`streams_contract_test.go`), the push credential (`Settings.PushSecret`, `Bundle.Push`, `Index.Push`,
+`PushUsername`, install's `PushSecret`/`PushRef`, `Applier.PushCredentials`), and install's streams ConfigMap, names and
 Event reasons. Change them deliberately: the
 controller, agent, bridge, drivers and e2e fake phone all build on them. The release A plan, with the reasoning behind
 each contract, is [docs/plans/release-a.md](docs/plans/release-a.md); release

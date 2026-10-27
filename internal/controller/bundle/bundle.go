@@ -364,14 +364,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // WatchesSecret reports whether a change to this Secret can change the
 // bundle: one owned by a Phone or Softphone (a device Secret), the AMI
-// password, the agent token, or pbx-secrets itself (an edit is written
+// password, the push password, the agent token, or pbx-secrets itself (an edit is written
 // back).
 func (r *Reconciler) WatchesSecret(o client.Object) bool {
 	if o.GetNamespace() != r.cfg.Namespace {
 		return false
 	}
 	switch o.GetName() {
-	case r.cfg.Names.AMISecret, r.cfg.Names.AgentTokenSecret, r.cfg.Names.ProjectedSecret:
+	case r.cfg.Names.AMISecret, r.cfg.Names.PushSecret, r.cfg.Names.AgentTokenSecret, r.cfg.Names.ProjectedSecret:
 		return true
 	}
 	for _, ref := range o.GetOwnerReferences() {

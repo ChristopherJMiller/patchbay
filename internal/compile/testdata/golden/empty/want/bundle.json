@@ -1,10 +1,17 @@
 {
-  "version": "f9cd8b95cbf032c775effa33106f1ddf4c5720be6e378a36b1a1a99beb41de8d",
+  "version": "c3244f235afb03a83bc4964bb515c50769083c44a551ab73c9cafa970da8a7d0",
   "devices": {},
   "ami": {
     "username": "patchbay-agent",
     "password": {
       "name": "patchbay-ami",
+      "key": "password"
+    }
+  },
+  "push": {
+    "username": "patchbay",
+    "password": {
+      "name": "patchbay-push",
       "key": "password"
     }
   }

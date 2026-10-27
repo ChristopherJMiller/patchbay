@@ -10,6 +10,7 @@ people:
     spec: {number: "301", name: Chris, rings: [{phone: desk}, {softphone: chris-laptop}]}
 secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-push, key: password, value: not-a-secret-push-0001}
   - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
   - {name: patchbay-softphone-chris-laptop, key: sip-password, value: not-a-secret-laptop-0001}
   - {name: patchbay-softphone-chris-laptop, key: provisioning-token, value: not-a-secret-token-0001}

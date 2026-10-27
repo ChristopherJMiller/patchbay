@@ -53,7 +53,7 @@ rules:
     verbs: [update]
   # Secrets: it creates and completes the device Secrets
   # (patchbay-<device ID>, one name per resource, so no resourceNames),
-  # <fullname>-ami, <fullname>-agent-token and <fullname>-pbx-secrets; its
+  # <fullname>-ami, <fullname>-push, <fullname>-agent-token and <fullname>-pbx-secrets; its
   # cache watches them all, and a softphone's token rotation updates one in
   # place.
   - apiGroups: [""]

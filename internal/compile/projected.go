@@ -63,7 +63,7 @@ func SecretRefFromProjectedKey(key string) (SecretRef, error) {
 
 // SecretRefs lists every secret the bundle references, sorted by (Name,
 // Key) and unique: each placeholder in its files, each softphone's
-// provisioning token in the index, and the AMI password. They are exactly
+// provisioning token in the index, and the AMI and push passwords. They are exactly
 // the secrets Version covers, the keys the controller must project into
 // pbx-secrets, and the values the agent must resolve before it applies the
 // bundle (it refuses the whole version if one is missing). It fails if a
@@ -75,6 +75,9 @@ func (b Bundle) SecretRefs() ([]SecretRef, error) {
 	}
 	if b.AMI.Password != (SecretRef{}) {
 		refs = append(refs, b.AMI.Password)
+	}
+	if b.Push.Password != (SecretRef{}) {
+		refs = append(refs, b.Push.Password)
 	}
 	for _, d := range b.Devices {
 		if d.ProvisioningToken != nil {
@@ -88,5 +91,5 @@ func (b Bundle) SecretRefs() ([]SecretRef, error) {
 // holds under IndexKey, and what the agent keeps beside each applied
 // version (the version's bundle.json) to attribute fetches of that version.
 func (b Bundle) Index() Index {
-	return Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI}
+	return Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI, Push: b.Push}
 }

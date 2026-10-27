@@ -1,5 +1,5 @@
 {
-  "version": "02963c57d0b5c59c308d9d12b34944e10f8ffe30e15b180076e74a529a5eaf58",
+  "version": "546c56c80edae3e9c95c9761bd4aa889af9c0a91a12ebf9954aa07da42084fea",
   "devices": {
     "phone-desk": {
       "kind": "Phone",
@@ -32,6 +32,13 @@
     "username": "patchbay-agent",
     "password": {
       "name": "pbx-ami",
+      "key": "secret"
+    }
+  },
+  "push": {
+    "username": "patchbay",
+    "password": {
+      "name": "pbx-push",
       "key": "secret"
     }
   }

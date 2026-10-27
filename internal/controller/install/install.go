@@ -60,6 +60,10 @@ type Names struct {
 	// AMISecret is <fullname>-ami, key AMIPasswordKey: the generated AMI
 	// password (unowned). compile.Settings.AMISecret names it.
 	AMISecret string
+	// PushSecret is <fullname>-push, key PushPasswordKey: the generated
+	// password the phones' push requests and the agent's authentication
+	// URL share (unowned). compile.Settings.PushSecret names it.
+	PushSecret string
 	// Settings is <fullname>-settings, the chart's ConfigMap holding
 	// SettingsKey: compile.Settings as JSON. The controller reads the file
 	// it is mounted as; the object is only the target of CompileFailed
@@ -88,6 +92,8 @@ const (
 	AgentTokenKey = "token"
 	// AMIPasswordKey holds the AMI password in AMISecret.
 	AMIPasswordKey = "password"
+	// PushPasswordKey holds the push password in PushSecret.
+	PushPasswordKey = "password"
 	// SettingsKey holds compile.Settings as JSON in the Settings ConfigMap,
 	// and is the file name it is mounted as.
 	SettingsKey = "settings.json"
@@ -105,6 +111,7 @@ func NewNames(fullname string) Names {
 		ProjectedSecret:  fullname + "-pbx-secrets",
 		AgentTokenSecret: fullname + "-agent-token",
 		AMISecret:        fullname + "-ami",
+		PushSecret:       fullname + "-push",
 		Settings:         fullname + "-settings",
 		AgentService:     fullname + "-agent",
 		StreamsConfigMap: fullname + "-streams",
@@ -125,7 +132,7 @@ func (n Names) Validate() error {
 	}
 	for what, name := range map[string]string{
 		"configMap": n.ConfigMap, "projectedSecret": n.ProjectedSecret, "agentTokenSecret": n.AgentTokenSecret,
-		"amiSecret": n.AMISecret, "settings": n.Settings, "streamsConfigMap": n.StreamsConfigMap,
+		"amiSecret": n.AMISecret, "pushSecret": n.PushSecret, "settings": n.Settings, "streamsConfigMap": n.StreamsConfigMap,
 	} {
 		for _, p := range validation.IsDNS1123Subdomain(name) {
 			errs = append(errs, fmt.Errorf("install: %s name %q: %s", what, name, p))
@@ -145,6 +152,12 @@ func (n Names) AMIRef() compile.SecretRef {
 	return compile.SecretRef{Name: n.AMISecret, Key: AMIPasswordKey}
 }
 
+// PushRef is where the push password lives: what compile.Settings.PushSecret
+// must be.
+func (n Names) PushRef() compile.SecretRef {
+	return compile.SecretRef{Name: n.PushSecret, Key: PushPasswordKey}
+}
+
 // AgentTokenRef is where the control API token lives.
 func (n Names) AgentTokenRef() compile.SecretRef {
 	return compile.SecretRef{Name: n.AgentTokenSecret, Key: AgentTokenKey}
@@ -160,6 +173,10 @@ func CheckSettings(s compile.Settings, n Names) error {
 	if s.AMISecret != n.AMIRef() {
 		return fmt.Errorf("settings: amiSecret is %s/%s, but this install's AMI Secret is %s/%s: the chart and the controller disagree on the fullname",
 			s.AMISecret.Name, s.AMISecret.Key, n.AMISecret, AMIPasswordKey)
+	}
+	if s.PushSecret != n.PushRef() {
+		return fmt.Errorf("settings: pushSecret is %s/%s, but this install's push Secret is %s/%s: the chart and the controller disagree on the fullname",
+			s.PushSecret.Name, s.PushSecret.Key, n.PushSecret, PushPasswordKey)
 	}
 	return nil
 }

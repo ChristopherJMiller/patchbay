@@ -22,5 +22,6 @@ phones:
           days: [Monday, Tuesday, Wednesday, Thursday, Friday]
 secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-push, key: password, value: not-a-secret-push-0001}
   - {name: patchbay-phone-desk, key: sip-password, value: not-a-secret-desk-0001}
   - {name: patchbay-phone-kitchen, key: sip-password, value: not-a-secret-kitchen-0001}

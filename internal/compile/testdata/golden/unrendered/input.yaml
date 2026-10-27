@@ -8,4 +8,5 @@ people:
     spec: {number: "310", name: Reception, rings: [{phone: lobby}]}
 secrets:
   - {name: patchbay-ami, key: password, value: not-a-secret-ami-0001}
+  - {name: patchbay-push, key: password, value: not-a-secret-push-0001}
   - {name: patchbay-phone-lobby, key: sip-password, value: not-a-secret-lobby-0001}

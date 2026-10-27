@@ -32,6 +32,9 @@ type Install struct {
 // AMIRef is the AMI password's Secret key in every Install.
 var AMIRef = compile.SecretRef{Name: "patchbay-ami", Key: "password"}
 
+// PushRef is the push password's Secret key in every Install.
+var PushRef = compile.SecretRef{Name: "patchbay-push", Key: "password"}
+
 var created = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
 // House is the release A deployment: Phone desk (100, D0C78915E8C8),
@@ -49,8 +52,12 @@ func House() *Install {
 			NumberPlan:      compile.DefaultNumberPlan(),
 			AllowedNetworks: []string{"192.168.20.0/24", "192.168.0.0/24"},
 			AMISecret:       AMIRef,
+			PushSecret:      PushRef,
 		},
-		Secrets: map[compile.SecretRef][]byte{AMIRef: []byte("not-a-secret-ami-0001")},
+		Secrets: map[compile.SecretRef][]byte{
+			AMIRef:  []byte("not-a-secret-ami-0001"),
+			PushRef: []byte("not-a-secret-push-0001"),
+		},
 	}
 	in.AddPhone("desk", "D0C78915E8C8", "100", "Desk")
 	in.AddSoftphone("chris-laptop", "150", "Chris (laptop)")

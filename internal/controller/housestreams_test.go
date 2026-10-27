@@ -128,7 +128,7 @@ func TestHouseStreams(t *testing.T) {
 	}
 	b, err := compile.Compile(reg, compile.Inputs{
 		Streams: house,
-		Secrets: map[compile.SecretRef][]byte{s.AMISecret: []byte("not-a-secret-ami")},
+		Secrets: map[compile.SecretRef][]byte{s.AMISecret: []byte("not-a-secret-ami"), s.PushSecret: []byte("not-a-secret-push")},
 	}, s)
 	if err != nil {
 		t.Fatalf("compiling the house Streams: %v", err)

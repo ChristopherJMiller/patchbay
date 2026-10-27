@@ -17,6 +17,21 @@ var (
 	laptop = drivers.DeviceID(drivers.KindSoftphone, "chris-laptop")
 )
 
+func TestResolvePushPassword(t *testing.T) {
+	in := intaketest.House()
+	b := in.Compile(t)
+	r, err := intake.Resolve(b, in.SecretData(t, b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.PushPassword != string(in.Secrets[intaketest.PushRef]) || r.PushPassword == "" {
+		t.Errorf("PushPassword = %q", r.PushPassword)
+	}
+	if r.Bundle.Push.Username != compile.PushUsername {
+		t.Errorf("Push.Username = %q", r.Bundle.Push.Username)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	in := intaketest.House()
 	b := in.Compile(t)

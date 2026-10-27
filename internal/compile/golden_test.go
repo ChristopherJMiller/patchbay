@@ -127,7 +127,7 @@ func TestGolden(t *testing.T) {
 // it into <fullname>-streams).
 func goldenFiles(t *testing.T, b compile.Bundle) map[string][]byte {
 	t.Helper()
-	index, err := json.MarshalIndent(compile.Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI}, "", "  ")
+	index, err := json.MarshalIndent(compile.Index{Version: b.Version, Devices: b.Devices, AMI: b.AMI, Push: b.Push}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}

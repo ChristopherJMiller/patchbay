@@ -31,7 +31,7 @@ var ErrMissingSecret = errors.New("compile: a referenced secret has no value")
 // the agent sees the two objects change independently, so for a moment it
 // may hold one version's ConfigMap and another version's Secret.
 func (b Bundle) VersionWith(secrets map[SecretRef][]byte) (string, error) {
-	index, err := json.Marshal(Index{Devices: b.Devices, AMI: b.AMI})
+	index, err := json.Marshal(Index{Devices: b.Devices, AMI: b.AMI, Push: b.Push})
 	if err != nil {
 		return "", fmt.Errorf("compile: encoding the index: %w", err)
 	}

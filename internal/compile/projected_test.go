@@ -64,6 +64,7 @@ func TestSecretRefsBuiltin(t *testing.T) {
 	}
 	want := []compile.SecretRef{
 		s.AMISecret,
+		s.PushSecret,
 		compile.PasswordRef("phone-desk"),
 		compile.PasswordRef("softphone-chris-laptop"),
 		compile.ProvisioningTokenRef("softphone-chris-laptop"),
@@ -82,8 +83,26 @@ func TestSecretRefsBuiltin(t *testing.T) {
 			t.Errorf("%+v is referenced but the golden inputs have no value for it", r)
 		}
 	}
-	if idx := b.Index(); idx.Version != b.Version || len(idx.Devices) != len(b.Devices) || idx.AMI != b.AMI {
+	if idx := b.Index(); idx.Version != b.Version || len(idx.Devices) != len(b.Devices) || idx.AMI != b.AMI || idx.Push != b.Push {
 		t.Errorf("Index() = %+v does not match the bundle", idx)
+	}
+}
+
+func TestSecretRefsIncludePush(t *testing.T) {
+	in, s := loadGolden(t, "house")
+	b, err := compile.Compile(builtinRegistry(t), in, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Push != (compile.PushAccount{Username: compile.PushUsername, Password: s.PushSecret}) {
+		t.Errorf("Push = %+v", b.Push)
+	}
+	refs, err := b.SecretRefs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(refs, b.Push.Password) {
+		t.Errorf("SecretRefs() = %+v lacks the push password %+v", refs, b.Push.Password)
 	}
 }
 
