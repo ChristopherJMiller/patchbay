@@ -43,6 +43,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&Softphone{}, &SoftphoneList{},
 		&Person{}, &PersonList{},
 		&Stream{}, &StreamList{},
+		&Message{}, &MessageList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

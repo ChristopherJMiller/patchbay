@@ -33,6 +33,7 @@ func TestAddToSchemeRegistersEveryKind(t *testing.T) {
 		"Softphone", "SoftphoneList",
 		"Person", "PersonList",
 		"Stream", "StreamList",
+		"Message", "MessageList",
 	} {
 		if !s.Recognizes(v1alpha1.GroupVersion.WithKind(kind)) {
 			t.Errorf("scheme does not recognise %s", kind)

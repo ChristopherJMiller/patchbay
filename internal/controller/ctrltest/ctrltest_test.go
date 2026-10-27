@@ -25,8 +25,8 @@ func TestCRDDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
-	if err != nil || len(matches) != 4 {
-		t.Errorf("%s holds %v (%v), want the four CRDs", dir, matches, err)
+	if err != nil || len(matches) != 5 {
+		t.Errorf("%s holds %v (%v), want the five CRDs", dir, matches, err)
 	}
 }
 

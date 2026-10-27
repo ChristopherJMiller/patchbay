@@ -1,0 +1,172 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+    helm.sh/resource-policy: keep
+  name: messages.patchbay.chrismiller.xyz
+spec:
+  group: patchbay.chrismiller.xyz
+  names:
+    categories:
+      - patchbay
+    kind: Message
+    listKind: MessageList
+    plural: messages
+    singular: message
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .spec.phone
+          name: Phone
+          type: string
+        - jsonPath: .status.state
+          name: State
+          type: string
+        - jsonPath: .status.reason
+          name: Reason
+          type: string
+        - jsonPath: .spec.key
+          name: Key
+          type: string
+        - jsonPath: .spec.urgent
+          name: Urgent
+          type: boolean
+        - jsonPath: .spec.expiresAt
+          name: Expires
+          type: date
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: Message is one text for one desk phone.
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: |-
+                MessageSpec is one text bound for one desk phone. The endpoint and the
+                CLI fan a target list out into one Message per phone. Every field but
+                Withdrawn is immutable; Withdrawn may only go from false to true.
+              properties:
+                expiresAt:
+                  description: ExpiresAt is when the message stops being worth showing.
+                  format: date-time
+                  type: string
+                key:
+                  description: |-
+                    Key makes a newer Message with the same key (for the same phone)
+                    replace this one.
+                  maxLength: 63
+                  minLength: 1
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                  type: string
+                phone:
+                  description: Phone is the Phone (same namespace) the text is for.
+                  maxLength: 253
+                  minLength: 1
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                  type: string
+                text:
+                  description: Text is the message itself. No control characters.
+                  maxLength: 256
+                  minLength: 1
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
+                  type: string
+                title:
+                  default: ""
+                  description: Title is the heading shown above the text. No control characters.
+                  maxLength: 32
+                  minLength: 0
+                  pattern: ^[^\x00-\x1F\x7F-\x9F]*$
+                  type: string
+                urgent:
+                  default: false
+                  description: |-
+                    Urgent messages are shown even when the phone is in a call, in quiet
+                    hours or away.
+                  type: boolean
+                withdrawn:
+                  default: false
+                  description: Withdrawn takes the message back. It can only be set, never cleared.
+                  type: boolean
+              required:
+                - expiresAt
+                - phone
+                - text
+              type: object
+              x-kubernetes-validations:
+                - message: phone is immutable
+                  rule: self.phone == oldSelf.phone
+                - message: title is immutable
+                  rule: self.title == oldSelf.title
+                - message: text is immutable
+                  rule: self.text == oldSelf.text
+                - message: urgent is immutable
+                  rule: self.urgent == oldSelf.urgent
+                - message: expiresAt is immutable
+                  rule: self.expiresAt == oldSelf.expiresAt
+                - message: key is immutable
+                  rule: has(self.key) == has(oldSelf.key) && (!has(self.key) || self.key == oldSelf.key)
+                - message: withdrawn can only change from false to true
+                  rule: '!oldSelf.withdrawn || self.withdrawn'
+            status:
+              description: MessageStatus is written only by the controller.
+              properties:
+                finishedAt:
+                  description: FinishedAt is when it reached a final state.
+                  format: date-time
+                  type: string
+                message:
+                  description: Message says it for a person.
+                  maxLength: 2048
+                  type: string
+                observedGeneration:
+                  description: ObservedGeneration is the .metadata.generation this status describes.
+                  format: int64
+                  type: integer
+                reason:
+                  description: |-
+                    Reason is why it is Held or Failed (InCall, QuietHours, Away,
+                    PhoneMissing, PushUnsupported, PushFailing, PhoneUnreachable).
+                  type: string
+                shownAt:
+                  description: ShownAt is when the phone was told to show it.
+                  format: date-time
+                  type: string
+                state:
+                  description: State is the Message's fate so far.
+                  enum:
+                    - Held
+                    - Shown
+                    - Expired
+                    - Withdrawn
+                    - Replaced
+                    - Failed
+                  type: string
+              type: object
+          required:
+            - spec
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}

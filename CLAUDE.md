@@ -9,7 +9,7 @@ is in `docs/research/`.
 ## Architecture
 
 ```
-resources (Phone, Softphone, Person, Stream)
+resources (Phone, Softphone, Person, Stream, Message)
    -> controller   Deployment; the ONLY decider and the ONLY status writer
         Compile()          -> ConfigMap pbx-config (placeholders, no secrets)
         driver.Decide()    -> status, actions

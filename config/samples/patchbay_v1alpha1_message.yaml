@@ -1,0 +1,14 @@
+# One text for one phone. A Message is created by the controller's message
+# endpoint (Home Assistant) or the CLI; kubectl works too. Every field but
+# withdrawn is immutable, and expiresAt is required (an RFC 3339 time).
+# Set `spec.withdrawn: true` to take it back.
+apiVersion: patchbay.chrismiller.xyz/v1alpha1
+kind: Message
+metadata:
+  name: dinner
+spec:
+  phone: desk
+  title: Kitchen
+  text: Dinner is ready
+  expiresAt: "2099-01-01T00:00:00Z"
+  key: dinner

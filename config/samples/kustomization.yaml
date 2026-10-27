@@ -4,3 +4,4 @@ resources:
   - patchbay_v1alpha1_softphone.yaml
   - patchbay_v1alpha1_person.yaml
   - patchbay_v1alpha1_stream.yaml
+  - patchbay_v1alpha1_message.yaml

@@ -103,8 +103,8 @@ func TestSamplesAreValid(t *testing.T) {
 	ns := newNamespace(t)
 
 	paths, err := filepath.Glob(filepath.Join("..", "..", "config", "samples", "patchbay_v1alpha1_*.yaml"))
-	if err != nil || len(paths) != 4 {
-		t.Fatalf("expected 4 samples, got %v (err %v)", paths, err)
+	if err != nil || len(paths) != 5 {
+		t.Fatalf("expected 5 samples, got %v (err %v)", paths, err)
 	}
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
@@ -139,6 +139,13 @@ func TestSchemaRejects(t *testing.T) {
 		}}
 		mut(&p.Spec)
 		return p
+	}
+	msg := func(name string, mut func(*v1alpha1.MessageSpec)) *v1alpha1.Message {
+		m := &v1alpha1.Message{ObjectMeta: om(name), Spec: v1alpha1.MessageSpec{
+			Phone: "desk", Text: "Dinner is ready", ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour)),
+		}}
+		mut(&m.Spec)
+		return m
 	}
 	stream := func(name, source string) *v1alpha1.Stream {
 		return &v1alpha1.Stream{ObjectMeta: om(name), Spec: v1alpha1.StreamSpec{Number: "705", Name: "KING 5", Source: source}}
@@ -183,6 +190,11 @@ func TestSchemaRejects(t *testing.T) {
 		{"stream source with a user", stream("user", "https://chris@example.com/live"), "source must not carry credentials"},
 		{"stream source a .pls playlist", stream("pls", "https://api.somafm.com/groovesalad256.pls"), "source is a playlist"},
 		{"stream source a .M3U playlist", stream("m3u", "http://example.com/Radio.M3U"), "source is a playlist"},
+		{"message text too long", msg("long", func(s *v1alpha1.MessageSpec) { s.Text = strings.Repeat("a", 257) }), "spec.text"},
+		{"message text empty", msg("empty", func(s *v1alpha1.MessageSpec) { s.Text = "" }), "spec.text"},
+		{"message text with a control character", msg("ctl", func(s *v1alpha1.MessageSpec) { s.Text = "a\x07b" }), "spec.text"},
+		{"message title too long", msg("tlong", func(s *v1alpha1.MessageSpec) { s.Title = strings.Repeat("a", 33) }), "spec.title"},
+		{"message key with a slash", msg("slash", func(s *v1alpha1.MessageSpec) { s.Key = "a/b" }), "spec.key"},
 		// design §4 writes `number: 100`; the schema wants a string (CLAUDE.md,
 		// "Deviations from the design").
 		{"number as a bare YAML integer", bareNumberPhone(ns), "spec.number in body must be of type string"},
@@ -388,5 +400,52 @@ func TestSchemaDisplay(t *testing.T) {
 				t.Errorf("create = %v; want Invalid", err)
 			}
 		})
+	}
+}
+
+// TestSchemaMessageImmutability checks the Message CEL rules: every spec
+// field but withdrawn is immutable, and withdrawn only goes false to true.
+func TestSchemaMessageImmutability(t *testing.T) {
+	needEnvtest(t)
+	ctx := context.Background()
+	ns := newNamespace(t)
+	create := func(name string) *v1alpha1.Message {
+		m := &v1alpha1.Message{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}, Spec: v1alpha1.MessageSpec{
+			Phone: "desk", Title: "Kitchen", Text: "Dinner is ready", Key: "dinner",
+			ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second)),
+		}}
+		if err := testClient.Create(ctx, m); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return m
+	}
+	m := create("changes")
+	for name, mut := range map[string]func(*v1alpha1.MessageSpec){
+		"text":      func(s *v1alpha1.MessageSpec) { s.Text = "Changed" },
+		"title":     func(s *v1alpha1.MessageSpec) { s.Title = "Other" },
+		"phone":     func(s *v1alpha1.MessageSpec) { s.Phone = "other" },
+		"urgent":    func(s *v1alpha1.MessageSpec) { s.Urgent = true },
+		"key":       func(s *v1alpha1.MessageSpec) { s.Key = "other" },
+		"expiresAt": func(s *v1alpha1.MessageSpec) { s.ExpiresAt = metav1.NewTime(s.ExpiresAt.Add(time.Minute)) },
+	} {
+		var got v1alpha1.Message
+		if err := testClient.Get(ctx, client.ObjectKeyFromObject(m), &got); err != nil {
+			t.Fatal(err)
+		}
+		mut(&got.Spec)
+		err := testClient.Update(ctx, &got)
+		if err == nil || !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), "immutable") {
+			t.Errorf("changing %s: want an immutable rejection, got %v", name, err)
+		}
+	}
+
+	w := create("withdraw")
+	w.Spec.Withdrawn = true
+	if err := testClient.Update(ctx, w); err != nil {
+		t.Fatalf("withdrawn false to true: %v", err)
+	}
+	w.Spec.Withdrawn = false
+	if err := testClient.Update(ctx, w); err == nil || !strings.Contains(err.Error(), "withdrawn") {
+		t.Fatalf("withdrawn true to false: want rejection, got %v", err)
 	}
 }
