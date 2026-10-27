@@ -2,11 +2,13 @@ package messages
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
@@ -15,7 +17,9 @@ import (
 
 // Decide's outcomes: each row's status, the page pass, and the verdict.
 
-func (d *decider) remove(m *v1alpha1.Message) { d.deleted = append(d.deleted, m.Name) }
+// retire is row 1: the Message is deleted in the verdict unless its phone
+// is owed.
+func (d *decider) retire(m *v1alpha1.Message) { d.retired = append(d.retired, m) }
 
 func (d *decider) keep(m *v1alpha1.Message) {
 	if m.Status.FinishedAt != nil {
@@ -28,7 +32,7 @@ func (d *decider) keep(m *v1alpha1.Message) {
 
 func (d *decider) expire(m *v1alpha1.Message) {
 	msg := "expired"
-	if unshown(m) {
+	if d.unshown(m) {
 		msg = "expired before it was shown"
 	}
 	d.finish(m, v1alpha1.MessageStateExpired, "", msg)
@@ -36,7 +40,7 @@ func (d *decider) expire(m *v1alpha1.Message) {
 
 func (d *decider) withdraw(m *v1alpha1.Message) {
 	msg := "withdrawn"
-	if unshown(m) {
+	if d.unshown(m) {
 		msg = "withdrawn before it was shown"
 	}
 	d.finish(m, v1alpha1.MessageStateWithdrawn, "", msg)
@@ -90,9 +94,11 @@ func (d *decider) finish(m *v1alpha1.Message, state v1alpha1.MessageState, reaso
 	d.status[m.Name] = *st
 }
 
+// hold holds a Message never shown (every caller checks d.unshown first):
+// its shownAt is unset already, and hold never touches it.
 func (d *decider) hold(m *v1alpha1.Message, reason, msg string) {
 	st := d.set(m, v1alpha1.MessageStateHeld, reason, msg)
-	st.ShownAt, st.FinishedAt = nil, nil
+	st.FinishedAt = nil
 	d.status[m.Name] = *st
 }
 
@@ -109,7 +115,8 @@ func (d *decider) pushFailing(m *v1alpha1.Message, failure string) {
 	d.hold(m, v1alpha1.ReasonPushFailing, "pushing to "+string(m.Spec.Phone)+" failed: "+failure)
 }
 
-// screen decides one phone's page: Shown, a push, a clear, or nothing.
+// screen decides one phone's page: Shown, a push, a clear, or nothing, and
+// whether the phone is owed one.
 func (d *decider) screen(name string) {
 	pv, ok := d.in.Phones[name]
 	if !ok || !pv.pushable() {
@@ -117,21 +124,27 @@ func (d *decider) screen(name string) {
 	}
 	lines := d.page[name]
 	if len(lines) == 0 {
-		if pv.onPhone() != "" && pv.canPush(d.in.Now) {
+		if pv.onPhone() == "" {
+			return
+		}
+		d.owed[name] = true
+		if pv.canPush(d.in.Now) {
 			d.pushes = append(d.pushes, PagePush{Phone: name, DeviceID: pv.DeviceID, Clear: true})
 		}
 		return
 	}
 	shown := make([]drivers.MessageLine, len(lines))
+	uids := make([]types.UID, len(lines))
 	for i, l := range lines {
 		shown[i] = drivers.MessageLine{
 			Sent: l.m.CreationTimestamp.Time, Title: l.m.Spec.Title, Text: l.m.Spec.Text, Urgent: l.m.Spec.Urgent,
 		}
+		uids[i] = l.m.UID
 	}
 	page, err := pv.Renderer.RenderMessages(pv.Model, shown, d.in.Location)
 	if err != nil {
 		for _, l := range lines {
-			if unshown(l.m) {
+			if d.unshown(l.m) {
 				d.pushFailing(l.m, "rendering the page: "+err.Error())
 			}
 		}
@@ -141,24 +154,37 @@ func (d *decider) screen(name string) {
 	held := pv.onPhone() == version
 	beep := false
 	for _, l := range lines {
+		fresh := d.unshown(l.m)
 		switch {
-		case held || !unshown(l.m):
+		case held || !fresh:
 			d.show(l.m)
 		case l.failing:
 			d.pushFailing(l.m, pv.PushFailure)
 		}
-		beep = beep || unshown(l.m)
+		beep = beep || fresh
 	}
-	if held || !pv.canPush(d.in.Now) {
+	if held {
 		return
 	}
-	d.pushes = append(d.pushes, PagePush{Phone: name, DeviceID: pv.DeviceID, PageVersion: version, Page: page, Beep: beep})
+	d.owed[name] = true
+	if pv.canPush(d.in.Now) {
+		d.pushes = append(d.pushes, PagePush{
+			Phone: name, DeviceID: pv.DeviceID, PageVersion: version, Page: page, Beep: beep, Messages: uids,
+		})
+	}
 }
 
-// verdict keeps the statuses that changed, with their Events, and works
-// out when to look again.
+// verdict keeps the statuses that changed, with their Events, deletes the
+// retired Messages of phones that are not owed, and works out when to look
+// again.
 func (d *decider) verdict() Verdict {
-	v := Verdict{Status: map[string]v1alpha1.MessageStatus{}, Pushes: d.pushes, Delete: slices.Sorted(slices.Values(d.deleted))}
+	v := Verdict{Status: map[string]v1alpha1.MessageStatus{}, Pushes: d.pushes, Owed: slices.Sorted(maps.Keys(d.owed))}
+	for _, m := range d.retired {
+		if !d.owed[string(m.Spec.Phone)] {
+			v.Delete = append(v.Delete, m.Name)
+		}
+	}
+	slices.Sort(v.Delete)
 	for _, m := range d.msgs { // newest first
 		st, ok := d.status[m.Name]
 		if !ok || equality.Semantic.DeepEqual(st, m.Status) {
@@ -209,7 +235,10 @@ func event(m *v1alpha1.Message, st v1alpha1.MessageStatus) (Event, bool) {
 	return e, true
 }
 
-// requeue is how long until something changes on its own.
+// requeue is how long until something changes on its own: the next expiry
+// or deletion, at most PushRetry while a Message waits for an unreachable
+// phone or a failed push or a phone is owed, and an owed phone's retry.
+// A push failure on a phone that is owed nothing schedules nothing.
 func (d *decider) requeue(v Verdict) time.Duration {
 	var next time.Time
 	consider := func(t time.Time) {
@@ -217,7 +246,7 @@ func (d *decider) requeue(v Verdict) time.Duration {
 			next = t
 		}
 	}
-	retry := false
+	retry := len(v.Owed) > 0
 	for _, m := range d.msgs {
 		if slices.Contains(v.Delete, m.Name) {
 			continue
@@ -239,10 +268,9 @@ func (d *decider) requeue(v Verdict) time.Duration {
 			}
 		}
 	}
-	for name := range d.named {
-		if pv, ok := d.in.Phones[name]; ok && pv.PushFailure != "" {
+	for _, name := range v.Owed {
+		if pv := d.in.Phones[name]; pv.PushFailure != "" {
 			consider(pv.PushFailedAt.Add(PushRetry))
-			retry = true
 		}
 	}
 	if retry {

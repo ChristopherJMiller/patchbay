@@ -10,6 +10,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
@@ -18,6 +19,30 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
+
+// checkOwed: the verdict owes every phone it pushes to, and the phones in
+// notPushed besides.
+func checkOwed(t *testing.T, v messages.Verdict, notPushed []string) {
+	t.Helper()
+	want := slices.Clone(notPushed)
+	for _, p := range v.Pushes {
+		want = append(want, p.Phone)
+	}
+	slices.Sort(want)
+	want = slices.Compact(want)
+	if !slices.Equal(v.Owed, want) && (len(v.Owed) > 0 || len(want) > 0) {
+		t.Errorf("owed %v, want %v", v.Owed, want)
+	}
+}
+
+// uids are the UIDs of msgs.
+func uids(msgs ...v1alpha1.Message) []types.UID {
+	out := make([]types.UID, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.UID
+	}
+	return out
+}
 
 // at0 is the decision's clock in the table tests.
 var at0 = time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
@@ -42,7 +67,9 @@ func view(name string, edit ...func(*messages.PhoneView)) messages.PhoneView {
 // never decided.
 func message(name, phone string, created time.Time, edit ...func(*v1alpha1.Message)) v1alpha1.Message {
 	m := v1alpha1.Message{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Generation: 1, CreationTimestamp: metav1.NewTime(created)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: ns, UID: types.UID("uid-" + name), Generation: 1, CreationTimestamp: metav1.NewTime(created),
+		},
 		Spec: v1alpha1.MessageSpec{
 			Phone: v1alpha1.LocalName(phone), Title: "T " + name, Text: "text of " + name,
 			ExpiresAt: metav1.NewTime(created.Add(time.Hour)),
@@ -147,6 +174,9 @@ type decideCase struct {
 	pushes      []push
 	delete      []string
 	events      []string // "<message> <type> <reason>", in order
+	// owed are the phones owed a page or a clear that is not pushed now
+	// (every pushed phone is owed too).
+	owed []string
 }
 
 func TestDecide(t *testing.T) {
@@ -337,6 +367,7 @@ func TestDecide(t *testing.T) {
 				target: "m", row: "push-failing",
 				status: map[string]want{"m": held(v1alpha1.ReasonPushFailing)},
 				events: []string{ev("m", warning, install.EventReasonPushFailed)},
+				owed:   []string{desk},
 			},
 			{
 				name: "push-failing: pushed again once PushRetry has passed",
@@ -476,12 +507,57 @@ func TestDecide(t *testing.T) {
 				target: "m", row: "final",
 			},
 			{
-				name: "no clear during a call",
+				name: "no clear during a call: owed",
 				in: input([]v1alpha1.Message{message("m-old", desk, sent, shown(sent), withdrawn)},
 					view(desk, func(p *messages.PhoneView) { p.HeldPage, p.PersonCalls = oldVersion(t), 1 })),
 				target: "m-old", row: "withdrawn",
 				status: map[string]want{"m-old": {state: v1alpha1.MessageStateWithdrawn, shownAt: &sent, finished: true}},
 				events: []string{ev("m-old", normal, install.EventReasonMessageWithdrawn)},
+				owed:   []string{desk},
+			},
+			{
+				name: "finished-retained: kept while its phone is owed a clear it cannot take",
+				in: input([]v1alpha1.Message{
+					message("m-old", desk, at0.Add(-26*time.Hour), shown(at0.Add(-26*time.Hour)), withdrawn,
+						finished(v1alpha1.MessageStateWithdrawn, at0.Add(-25*time.Hour))),
+				}, view(desk, func(p *messages.PhoneView) {
+					p.HeldPage, p.Reachable = versionOf(t, message("m-old", desk, at0.Add(-26*time.Hour))), false
+				})),
+				target: "m-old", row: "finished-retained",
+				owed: []string{desk},
+			},
+			{
+				name: "finished-retained: kept while the clear it is owed goes out",
+				in: input([]v1alpha1.Message{
+					message("m-old", desk, at0.Add(-26*time.Hour), withdrawn, finished(v1alpha1.MessageStateWithdrawn, at0.Add(-25*time.Hour))),
+				}, view(desk, func(p *messages.PhoneView) {
+					p.HeldPage = versionOf(t, message("m-old", desk, at0.Add(-26*time.Hour)))
+				})),
+				target: "m-old", row: "finished-retained",
+				pushes: []push{{phone: desk, clear: true}},
+			},
+			{
+				name: "showing: a Message the shell's last push showed counts as shown while the cache is behind",
+				in: func() messages.Input {
+					fresh := message("m-new", desk, later)
+					in := input([]v1alpha1.Message{fresh, message("m-old", desk, sent, shown(sent), withdrawn)},
+						view(desk, func(p *messages.PhoneView) {
+							p.HeldPage = versionOf(t, fresh, message("m-old", desk, sent))
+							p.Showing = uids(fresh, old)
+						}))
+					in.House.Quiet = true
+					return in
+				}(),
+				target: "m-new", row: "current",
+				status: map[string]want{
+					"m-new": wantShown(at0),
+					"m-old": {state: v1alpha1.MessageStateWithdrawn, shownAt: &sent, finished: true},
+				},
+				pushes: []push{{phone: desk, page: []v1alpha1.Message{message("m-new", desk, later)}}},
+				events: []string{
+					ev("m-new", normal, install.EventReasonMessageShown),
+					ev("m-old", normal, install.EventReasonMessageWithdrawn),
+				},
 			},
 			{
 				name: "a phone no Message names is left alone (a test push stays)",
@@ -514,6 +590,7 @@ func TestDecide(t *testing.T) {
 			reached[messages.RuleNames()[rows[0]-1]] = true
 			v := messages.Decide(tc.in)
 			checkVerdict(t, tc.in, v, tc.status, tc.pushes, tc.delete, tc.events)
+			checkOwed(t, v, tc.owed)
 		})
 	}
 	for _, r := range messages.RuleNames() {
@@ -586,6 +663,9 @@ func checkVerdict(t *testing.T, in messages.Input, v messages.Verdict, status ma
 		if got.PageVersion != version || string(got.Page) != string(page) {
 			t.Errorf("push %d: page %s:\n%s\nwant %s:\n%s", i, got.PageVersion, got.Page, version, page)
 		}
+		if want := uids(p.page...); !slices.Equal(got.Messages, want) {
+			t.Errorf("push %d: Messages %v, want %v", i, got.Messages, want)
+		}
 	}
 	if !slices.Equal(v.Delete, del) {
 		t.Errorf("delete %v, want %v", v.Delete, del)
@@ -633,6 +713,35 @@ func TestDecideResendsAfterAgentRestart(t *testing.T) {
 	checkVerdict(t, in, messages.Decide(in), nil, nil, nil, nil)
 }
 
+// TestDecideOwedClearOutlivesRetention (ruling R16a): the last Message on
+// a phone is withdrawn during a call that lasts past RetainFinished. The
+// phone is owed a clear all along, so the Message is kept (and keeps the
+// phone named) until the call ends and the clear lands; then it is
+// deleted.
+func TestDecideOwedClearOutlivesRetention(t *testing.T) {
+	sent := at0.Add(-26 * time.Hour)
+	m := message("m", "desk", sent, shown(sent), withdrawn, finished(v1alpha1.MessageStateWithdrawn, at0.Add(-25*time.Hour)))
+	held := versionOf(t, message("m", "desk", sent))
+	in := input([]v1alpha1.Message{m}, view("desk", func(p *messages.PhoneView) { p.HeldPage, p.PersonCalls = held, 1 }))
+	v := messages.Decide(in)
+	checkVerdict(t, in, v, nil, nil, nil, nil)
+	checkOwed(t, v, []string{"desk"})
+	if v.RequeueAfter == 0 || v.RequeueAfter > messages.PushRetry {
+		t.Errorf("RequeueAfter %s, want at most PushRetry", v.RequeueAfter)
+	}
+
+	// The call ends: the clear goes out; m stays until it has landed.
+	in.Phones["desk"] = view("desk", func(p *messages.PhoneView) { p.HeldPage = held })
+	v = messages.Decide(in)
+	checkVerdict(t, in, v, nil, []push{{phone: "desk", clear: true}}, nil, nil)
+
+	// The clear landed: m is deleted.
+	in.Phones["desk"] = view("desk", func(p *messages.PhoneView) { p.HeldPage, p.PushedPage = held, messages.PageCleared })
+	v = messages.Decide(in)
+	checkVerdict(t, in, v, nil, nil, []string{"m"}, nil)
+	checkOwed(t, v, nil)
+}
+
 // TestDecideRequeue: RequeueAfter is the next time something changes on
 // its own: the earliest expiry, the earliest deletion, PushRetry while a
 // phone cannot be reached or a push failed, or the end of a push's retry
@@ -648,7 +757,22 @@ func TestDecideRequeue(t *testing.T) {
 		{"the earliest expiry", input([]v1alpha1.Message{
 			message("m1", "desk", sent, shown(sent), expires(at0.Add(20*time.Minute))),
 			message("m2", "desk", sent, shown(sent), expires(at0.Add(7*time.Minute))),
-		}, view("desk")), 7 * time.Minute},
+		}, view("desk", func(p *messages.PhoneView) {
+			p.HeldPage = versionOf(t, message("m2", "desk", sent), message("m1", "desk", sent))
+		})), 7 * time.Minute},
+		{"PushRetry while a page is owed (here, re-sent)", input([]v1alpha1.Message{
+			message("m1", "desk", sent, shown(sent), expires(at0.Add(20*time.Minute))),
+		}, view("desk")), messages.PushRetry},
+		{"PushRetry while a clear is owed during a call", input([]v1alpha1.Message{
+			message("m1", "desk", sent, shown(sent), withdrawn, finished(v1alpha1.MessageStateWithdrawn, at0.Add(-time.Minute))),
+		}, view("desk", func(p *messages.PhoneView) {
+			p.HeldPage, p.PersonCalls = versionOf(t, message("m1", "desk", sent)), 1
+		})), messages.PushRetry},
+		{"a failure on a phone owed nothing schedules nothing", input([]v1alpha1.Message{
+			message("m1", "desk", sent, finished(v1alpha1.MessageStateExpired, at0.Add(-time.Hour))),
+		}, view("desk", func(p *messages.PhoneView) {
+			p.PushFailure, p.PushFailedAt = "refused", at0.Add(-10*time.Second)
+		})), messages.RetainFinished - time.Hour},
 		{"a deletion", input([]v1alpha1.Message{
 			message("m1", "desk", sent, finished(v1alpha1.MessageStateExpired, at0.Add(-23*time.Hour))),
 		}, view("desk")), time.Hour},

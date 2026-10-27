@@ -10,6 +10,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/messages"
@@ -51,6 +52,11 @@ func (g gen) phones() map[string]messages.PhoneView {
 		pv.PersonCalls = pick(g, 0, 0, 0, 1, 2)
 		pv.HeldPage = pick(g, "", "", "0123456789abcdef")
 		pv.PushedPage = pick(g, "", "", "", messages.PageCleared, "fedcba9876543210")
+		for i := range 7 {
+			if g.chance(0.1) { // the shell's last push showed it; the cache may lag
+				pv.Showing = append(pv.Showing, types.UID(fmt.Sprintf("uid-m%d", i)))
+			}
+		}
 		if g.chance(0.2) {
 			pv.PushFailure = "the phone could not be reached"
 			pv.PushFailedAt = g.at(-time.Minute, 0)
@@ -137,7 +143,8 @@ func cloneInput(in messages.Input) messages.Input {
 }
 
 // apply is the input after the shell carried out v: statuses written,
-// Messages deleted, and each push succeeded (ok) or failed.
+// Messages deleted, each push succeeded (ok) or failed, and the failure of
+// a phone owed nothing forgotten.
 func apply(in messages.Input, v messages.Verdict, ok bool) messages.Input {
 	out := cloneInput(in)
 	out.Messages = out.Messages[:0]
@@ -156,11 +163,17 @@ func apply(in messages.Input, v messages.Verdict, ok bool) messages.Input {
 		case !ok:
 			pv.PushFailure, pv.PushFailedAt = "refused", in.Now
 		case p.Clear:
-			pv.PushedPage, pv.PushFailure = messages.PageCleared, ""
+			pv.PushedPage, pv.PushFailure, pv.Showing = messages.PageCleared, "", nil
 		default:
-			pv.PushedPage, pv.PushFailure = p.PageVersion, ""
+			pv.PushedPage, pv.PushFailure, pv.Showing = p.PageVersion, "", p.Messages
 		}
 		out.Phones[p.Phone] = pv
+	}
+	for name, pv := range out.Phones {
+		if pv.PushFailure != "" && !slices.Contains(v.Owed, name) {
+			pv.PushFailure, pv.PushFailedAt = "", time.Time{}
+			out.Phones[name] = pv
+		}
 	}
 	return out
 }
@@ -203,7 +216,7 @@ func TestDecideTotal(t *testing.T) {
 			case g.chance(0.5):
 				pv.HeldPage, pv.PushedPage = p.PageVersion, ""
 			default:
-				pv.PushedPage = p.PageVersion
+				pv.PushedPage, pv.Showing = p.PageVersion, p.Messages
 			}
 			in.Phones[p.Phone] = pv
 			v = messages.Decide(in)
@@ -230,6 +243,9 @@ func TestDecideTotal(t *testing.T) {
 			if len(v2.Pushes) > 0 || len(v3.Pushes) > 0 || len(v3.Status) > 0 || len(v3.Delete) > 0 {
 				fail("pushes ok=%v: no fixed point after two rounds:\nround 2 %+v\nround 3 %+v", ok, v2, v3)
 			}
+			later := map[string]int{}
+			checkTotal(in2, v2, fail, later)
+			checkTotal(in3, v3, fail, later)
 		}
 	}
 	for _, r := range messages.RuleNames() {
@@ -287,6 +303,46 @@ func checkTotal(in messages.Input, v messages.Verdict, fail func(string, ...any)
 		if st.Message == "" && !slices.Contains(finalStates, m.Status.State) {
 			fail("%s: no status message", name)
 		}
+		// Ruling R14: once shown, never held, and shownAt is never cleared
+		// or moved.
+		if m.Status.ShownAt != nil {
+			if st.State == v1alpha1.MessageStateHeld {
+				fail("%s: shown at %v, now Held %s", name, m.Status.ShownAt, st.Reason)
+			}
+			if st.ShownAt == nil || !st.ShownAt.Equal(m.Status.ShownAt) {
+				fail("%s: shownAt %v became %v", name, m.Status.ShownAt, st.ShownAt)
+			}
+		}
+	}
+	// Owed: every phone pushed to, and every pushable phone some Message
+	// names that cannot take its push now; nothing of a phone owed is
+	// deleted.
+	pushed := map[string]bool{}
+	for _, p := range v.Pushes {
+		pushed[p.Phone] = true
+	}
+	if !slices.IsSorted(v.Owed) {
+		fail("owed %v is not sorted", v.Owed)
+	}
+	for p := range pushed {
+		if !slices.Contains(v.Owed, p) {
+			fail("pushed to %s, which is not owed", p)
+		}
+	}
+	for _, name := range v.Owed {
+		pv, ok := in.Phones[name]
+		switch {
+		case !ok || !pv.Exists || pv.Push == drivers.Unsupported || pv.Renderer == nil || !named[name]:
+			fail("%s owed, but it cannot take a push or no Message names it", name)
+		case !pushed[name] && pv.PersonCalls == 0 && pv.Reachable &&
+			(pv.PushFailure == "" || !in.Now.Before(pv.PushFailedAt.Add(messages.PushRetry))):
+			fail("%s owed and not pushed, though it can take a push", name)
+		}
+	}
+	for _, name := range v.Delete {
+		if p := string(byName[name].Spec.Phone); slices.Contains(v.Owed, p) {
+			fail("%s deleted while %s is owed", name, p)
+		}
 	}
 	// No Message stays Shown at or past its expiry.
 	for _, m := range in.Messages {
@@ -325,7 +381,7 @@ func checkTotal(in messages.Input, v messages.Verdict, fail func(string, ...any)
 		if p.Beep {
 			fresh := false
 			for _, m := range in.Messages {
-				if string(m.Spec.Phone) != p.Phone || m.Status.ShownAt != nil {
+				if string(m.Spec.Phone) != p.Phone || m.Status.ShownAt != nil || slices.Contains(pv.Showing, m.UID) {
 					continue
 				}
 				switch messages.RuleNames()[messages.MatchingRows(in, m.Name)[0]-1] {

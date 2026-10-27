@@ -347,6 +347,125 @@ func TestReconcileDeletes(t *testing.T) {
 	}
 }
 
+// withdraw sets a Message's spec.withdrawn, as the endpoint does.
+func (s *shell) withdraw(t *testing.T, name string) {
+	t.Helper()
+	m := s.message(t, name)
+	m.Spec.Withdrawn = true
+	m.Generation++
+	if err := s.c.Update(context.Background(), &m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// inCall is desk registered at the clock's now, holding page, with calls
+// person calls up.
+func (s *shell) inCall(page string, calls int) {
+	s.holder.Set(registered(s.clock.Now(), func(d *agentapi.DeviceObservations) { d.Page, d.Calls = page, calls }))
+}
+
+// TestReconcileClearOwedThroughACall (ruling R16a): the last Message is
+// withdrawn during a call that outlasts RetainFinished. Nothing is pushed
+// during the call, but the phone is owed a clear, so the reconciler keeps
+// deciding every poll interval and keeps the Message; when the call ends
+// the clear goes out and the Message is deleted.
+func TestReconcileClearOwedThroughACall(t *testing.T) {
+	s := newShell(t, deskPhone(ns), newMessage("m", at0.Add(-time.Minute)))
+	s.actor.ack, s.actor.now = s.holder, s.clock.Now
+	s.holder.Set(registered(at0))
+	s.reconcile(t)
+	page := s.actor.take()[0].PageVersion
+
+	s.clock.add(time.Minute)
+	s.inCall(page, 1)
+	s.withdraw(t, "m")
+	if res := s.reconcile(t); res.RequeueAfter != install.PollInterval {
+		t.Errorf("a clear owed during a call: RequeueAfter %s, want the poll interval", res.RequeueAfter)
+	}
+	if m := s.message(t, "m"); m.Status.State != v1alpha1.MessageStateWithdrawn {
+		t.Errorf("m: %+v, want Withdrawn", m.Status)
+	}
+	if p := s.actor.take(); len(p) != 0 {
+		t.Errorf("pushed during a call: %+v", p)
+	}
+
+	s.clock.add(25 * time.Hour)
+	s.inCall(page, 1)
+	if res := s.reconcile(t); res.RequeueAfter != install.PollInterval || len(s.actor.take()) != 0 {
+		t.Errorf("still in the call a day on: RequeueAfter %s", res.RequeueAfter)
+	}
+	s.message(t, "m") // kept: its phone is owed a clear
+
+	s.clock.add(time.Second)
+	s.inCall(page, 0)
+	res := s.reconcile(t)
+	if p := s.actor.take(); len(p) != 1 || !p[0].Clear {
+		t.Errorf("the call ended: %+v, want a clear", p)
+	}
+	var m v1alpha1.Message
+	if err := s.c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "m"}, &m); !apierrors.IsNotFound(err) {
+		t.Errorf("m after the clear: %v, want it deleted", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter %s with nothing left", res.RequeueAfter)
+	}
+}
+
+// TestReconcileStaleCacheDoesNotChime: right after a push the cache can
+// still hold a status written before it. A re-render in that lag (here a
+// withdraw) does not chime for a Message the last push showed, and does
+// not take it for a new one.
+func TestReconcileStaleCacheDoesNotChime(t *testing.T) {
+	s := newShell(t, deskPhone(ns), newMessage("m0", at0.Add(-2*time.Minute)), newMessage("m1", at0.Add(-time.Minute)))
+	s.holder.Set(registered(at0))
+	s.reconcile(t)
+	if p := s.actor.take(); len(p) != 1 || !p[0].Beep {
+		t.Fatalf("the first push %+v, want one with the chime", p)
+	}
+	// The cache has not caught up with m1's Shown yet.
+	m1 := s.message(t, "m1")
+	m1.Status = v1alpha1.MessageStatus{}
+	if err := s.c.Status().Update(context.Background(), &m1); err != nil {
+		t.Fatal(err)
+	}
+	s.withdraw(t, "m0")
+	s.clock.add(time.Second)
+	s.reconcile(t)
+	p := s.actor.take()
+	if len(p) != 1 || p[0].Beep || strings.Contains(p[0].Page, "text of m0") || !strings.Contains(p[0].Page, "text of m1") {
+		t.Errorf("the re-render %+v, want m1 alone without the chime", p)
+	}
+	if m := s.message(t, "m1"); m.Status.State != v1alpha1.MessageStateShown {
+		t.Errorf("m1: %+v, want Shown", m.Status)
+	}
+}
+
+// TestReconcileForgetsFailure: once a phone is owed nothing, its push
+// failure is dropped and schedules nothing (no 30 s poll for a day).
+func TestReconcileForgetsFailure(t *testing.T) {
+	s := newShell(t, deskPhone(ns), newMessage("m", at0.Add(-time.Minute)))
+	s.holder.Set(registered(at0))
+	s.actor.answer(agentapi.PushResponse{}, errors.New("agentclient: POST /v1/actions/push: connection refused"))
+	s.reconcile(t)
+	if m := s.message(t, "m"); m.Status.Reason != v1alpha1.ReasonPushFailing || !strings.Contains(m.Status.Message, "connection refused") {
+		t.Fatalf("m: %+v, want Held PushFailing with the agent client's error", m.Status)
+	}
+	s.withdraw(t, "m")
+	s.clock.add(time.Second)
+	if res := s.reconcile(t); res.RequeueAfter != messages.RetainFinished {
+		t.Errorf("RequeueAfter %s, want only m's deletion (%s)", res.RequeueAfter, messages.RetainFinished)
+	}
+	// A new Message goes out at once: no retry wait is left.
+	if err := s.c.Create(context.Background(), newMessage("m2", s.clock.Now())); err != nil {
+		t.Fatal(err)
+	}
+	s.actor.answer(agentapi.PushResponse{Sent: true, Phone: "status 0"}, nil)
+	s.reconcile(t)
+	if p := s.actor.take(); len(p) != 2 || !p[1].Beep {
+		t.Errorf("pushes %+v, want the failed one, then m2 at once", p)
+	}
+}
+
 // TestPhoneViewOf: the shell's view of a Phone. A Stream call is not a
 // person call (stream-call-does-not-hold), so a Message is pushed during
 // one; a person call next to it holds.

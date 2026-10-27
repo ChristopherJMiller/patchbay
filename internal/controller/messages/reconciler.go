@@ -68,8 +68,9 @@ type Config struct {
 	// Recorder emits the Message Events.
 	Recorder events.EventRecorder
 	// Interval is how often the Messages are decided again while one is
-	// not final (ruling R16: calls end and phones register without an
-	// event this reconciler watches). 0: install.PollInterval.
+	// not final or a phone is owed a page or a clear (rulings R16, R16a:
+	// calls end and phones register without an event this reconciler
+	// watches). 0: install.PollInterval.
 	Interval time.Duration
 	// Now is the controller's clock. Nil: time.Now.
 	Now func() time.Time
@@ -134,6 +135,9 @@ type Reconciler struct {
 type phoneMemory struct {
 	pushed   string // the version pushed (PageCleared for a clear), "" for none
 	pushedAt time.Time
+	// showing are the Messages on the last page pushed successfully (none
+	// after a clear): PhoneView.Showing. Kept until the next success.
+	showing  []types.UID
 	failure  string
 	failedAt time.Time
 }
@@ -193,7 +197,8 @@ func (r *Reconciler) request(_ context.Context, o client.Object) []reconcile.Req
 // status writes, the Events of the statuses written, and the deletions.
 // Nothing is decided before the poller's first attempt has ended. It is
 // decided again at the verdict's RequeueAfter, and every Interval while a
-// Message is not final.
+// Message is not final or a phone is owed (Verdict.Owed). The push failure
+// of a phone owed nothing is forgotten.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	if req.Namespace != r.cfg.Namespace {
 		return ctrl.Result{}, nil
@@ -232,12 +237,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			r.log.Info("a push left for the next decision", "phone", p.Phone, "version", p.PageVersion, "clear", p.Clear)
 		}
 	}
+	r.forgetFailures(v.Owed)
 	conflict, err := r.apply(ctx, msgs.Items, v)
 	if err != nil {
 		return ctrl.Result{}, err // retried with the controller's backoff
 	}
 	after := v.RequeueAfter
-	if pending(msgs.Items, v) {
+	if len(v.Owed) > 0 || pending(msgs.Items, v) {
+		// Ruling R16a: a call's end, a registration and the agent's
+		// observations come with no event this reconciler watches.
 		after = earliest(after, r.cfg.Interval)
 	}
 	if conflict {
@@ -252,6 +260,16 @@ func earliest(a, b time.Duration) time.Duration {
 		return b
 	}
 	return a
+}
+
+// forgetFailures drops the push failure of each phone that is owed nothing
+// any more: it would only keep a retry wait going. r.mu is held.
+func (r *Reconciler) forgetFailures(owed []string) {
+	for name, m := range r.mem {
+		if m.failure != "" && !slices.Contains(owed, name) {
+			m.failure, m.failedAt = "", time.Time{}
+		}
+	}
 }
 
 // pending reports whether some Message is left in a state that is not
@@ -312,7 +330,7 @@ func (r *Reconciler) views(phones []v1alpha1.Phone, snap agentview.Snapshot, now
 			if m.pushed != "" && (now.Sub(m.pushedAt) >= PushedMemory || observed(m.pushed, pv.HeldPage)) {
 				m.pushed = ""
 			}
-			pv.PushedPage = m.pushed
+			pv.PushedPage, pv.Showing = m.pushed, m.showing
 			pv.PushFailure, pv.PushFailedAt = m.failure, m.failedAt
 		}
 		out[pv.Name] = pv
@@ -377,9 +395,9 @@ func (r *Reconciler) push(ctx context.Context, pushes []PagePush) {
 			continue
 		}
 		m.failure, m.failedAt = "", time.Time{}
-		m.pushed, m.pushedAt = p.PageVersion, at
+		m.pushed, m.pushedAt, m.showing = p.PageVersion, at, p.Messages
 		if p.Clear {
-			m.pushed = PageCleared
+			m.pushed, m.showing = PageCleared, nil
 		}
 		r.log.Info("pushed", "phone", p.Phone, "device", p.DeviceID, "version", p.PageVersion,
 			"beep", p.Beep, "clear", p.Clear, "answer", resp.Phone)

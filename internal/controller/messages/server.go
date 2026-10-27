@@ -1,16 +1,27 @@
-// Package messages is the controller's messages endpoint: the small HTTP
-// server Home Assistant POSTs phone messages to and PUTs the house state to
-// (wire contract: package messagesapi, internal/controller/messages/api).
+// Package messages is phone messages in the controller
+// (docs/superpowers/specs/2026-10-26-phone-messages-design.md), in three
+// parts:
 //
-// It creates Message resources, one per target phone, and records the house
-// state (quiet, away) in the <fullname>-house ConfigMap. It decides and
-// delivers nothing; the Message reconciler does. Every replica serves
-// (NeedLeaderElection is false): the writes are creates and
-// optimistic-concurrency updates, safe from any replica.
-//
-// The bearer token is read from a Secret through the manager's cached
-// client on every request, so a rotated token works without a restart. It
-// is never logged, echoed or put in an error.
+//   - Server, the messages endpoint: the small HTTP server Home Assistant
+//     POSTs phone messages to and PUTs the house state to (wire contract:
+//     package messagesapi, internal/controller/messages/api). It creates
+//     Message resources, one per target phone, and records the house state
+//     (quiet, away) in the <fullname>-house ConfigMap; it decides and
+//     delivers nothing. Every replica serves (NeedLeaderElection is false):
+//     the writes are creates and optimistic-concurrency updates, safe from
+//     any replica. The bearer token is read from a Secret through the
+//     manager's cached client on every request, so a rotated token works
+//     without a restart; it is never logged, echoed or put in an error.
+//   - Decide (decide.go, verdict.go), pure: every Message's status (Held
+//     with a reason, Shown, Expired, Withdrawn, Replaced, Failed) and every
+//     phone's screen (a page, with the chime for a Message never shown, or
+//     a clear) from the Messages, the house state and a PhoneView of each
+//     Phone. An ordered rule table, tested row by row.
+//   - Reconciler (reconciler.go), the leader-only shell: it builds Decide's
+//     input from the cache, the agent's snapshot and its memory of its own
+//     pushes, sends the pushes through the agent (agentview.Actor.Push),
+//     and writes what Decide returns: statuses, Events and the deletion of
+//     finished Messages a day old.
 package messages
 
 import (

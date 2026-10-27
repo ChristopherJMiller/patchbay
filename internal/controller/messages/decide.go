@@ -8,6 +8,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	messagesapi "github.com/ChristopherJMiller/patchbay/internal/controller/messages/api"
@@ -55,13 +56,25 @@ type PhoneView struct {
 	// show it or 30 s pass; "" when there is none. It is newer than
 	// HeldPage, so while it is set it is what the phone holds.
 	PushedPage string
+	// Showing are the UIDs of the Messages on the page the shell last pushed
+	// to the phone successfully (PagePush.Messages; none after a clear).
+	// They count as shown even while the cache still holds a status written
+	// before that push, so a re-render in that lag neither chimes nor holds
+	// them back.
+	Showing []types.UID
 	// PushFailure is why the shell's last push to the phone failed, ""
-	// once one has succeeded since; PushFailedAt is when it failed.
+	// once one has succeeded since or nothing is owed to the phone;
+	// PushFailedAt is when it failed.
 	PushFailure  string
 	PushFailedAt time.Time
 	// Renderer renders the model's message page; nil when its driver
 	// cannot.
 	Renderer drivers.MessageRenderer
+}
+
+// shows reports whether the shell's last push to the phone showed m.
+func (p PhoneView) shows(m *v1alpha1.Message) bool {
+	return m.UID != "" && slices.Contains(p.Showing, m.UID)
 }
 
 // onPhone is the page version the phone is taken to hold, "" for none:
@@ -116,6 +129,9 @@ type PagePush struct {
 	Phone, DeviceID, PageVersion string
 	Page                         []byte
 	Beep, Clear                  bool
+	// Messages are the UIDs of the Messages on the page, newest first; none
+	// for a clear. Once the push succeeds they are PhoneView.Showing.
+	Messages []types.UID
 }
 
 // Event is one Event to emit about a Message once its status is written.
@@ -138,6 +154,13 @@ type Verdict struct {
 	Pushes []PagePush
 	// Delete names the Messages to delete, sorted.
 	Delete []string
+	// Owed names the phones, sorted, whose screen is not yet what Decide
+	// wants: a page or a clear pushed in this verdict, or one that cannot
+	// go out now (a person call, unreachable, waiting PushRetry after a
+	// failure). The shell decides again every poll interval while any is
+	// owed (ruling R16a), and a phone's finished Messages are not deleted
+	// while it is.
+	Owed []string
 	// RequeueAfter is when something changes on its own (an expiry, a
 	// deletion, a retry); 0 for never.
 	RequeueAfter time.Duration
@@ -164,7 +187,7 @@ type rule struct {
 // a Message never shown (ruling R14): once Shown, a Message stays Shown
 // and on the page until it expires, is withdrawn or is replaced.
 var rules = []rule{
-	{"finished-retained", (*decider).isRetained, (*decider).remove},
+	{"finished-retained", (*decider).isRetained, (*decider).retire},
 	{"final", (*decider).isFinal, (*decider).keep},
 	{"expired", (*decider).isExpired, (*decider).expire},
 	{"withdrawn", (*decider).isWithdrawn, (*decider).withdraw},
@@ -183,7 +206,8 @@ var rules = []rule{
 // Message, first match wins:
 //
 //  1. finished-retained: a final state whose finishedAt is RetainFinished
-//     old: deleted;
+//     old: deleted, unless its phone is owed a page or a clear (then it is
+//     kept, and keeps the phone named, until the screen is right);
 //  2. final: Expired, Withdrawn, Replaced or Failed: kept as it is (a
 //     missing finishedAt is set to now, so it is deleted in time);
 //  3. expired: now is at or past expiresAt: Expired (never pushed, even
@@ -196,7 +220,8 @@ var rules = []rule{
 //  7. push-unsupported: its model does not take pushes, or its driver
 //     renders no page: Failed PushUnsupported;
 //
-// and, only for a Message never shown (shownAt unset),
+// and, only for a Message never shown (shownAt unset, and not on the page
+// the shell last pushed: PhoneView.Showing),
 //
 //  8. held-in-call: a person call is up on the phone, ringing included
 //     (a Stream call is not one), urgent or not: Held InCall;
@@ -217,12 +242,13 @@ var rules = []rule{
 // pushed, with the chime when one of them was never shown; their statuses
 // wait for the push (the shell decides again with its result). With no
 // current Message, a phone that holds a page is cleared; in a person call
-// nothing at all is pushed. A page that does not render holds its unshown
-// Messages PushFailing.
+// nothing at all is pushed. A phone whose page or clear is pushed now, or
+// cannot be (a call, unreachable, waiting), is Owed. A page that does not
+// render holds its unshown Messages PushFailing.
 //
 // RequeueAfter is the earliest expiry or deletion to come, at most
 // PushRetry while a Message waits for an unreachable phone or a failed
-// push, and the end of a phone's retry wait.
+// push or a phone is owed, and the end of an owed phone's retry wait.
 //
 // It is pure: no I/O, no clock but Now.
 func Decide(in Input) Verdict {
@@ -256,9 +282,13 @@ type decider struct {
 	// of them row 12 put there.
 	page map[string][]pageLine
 
-	status  map[string]v1alpha1.MessageStatus // decided, by name
-	deleted []string
-	pushes  []PagePush
+	status map[string]v1alpha1.MessageStatus // decided, by name
+	// retired are the Messages row 1 matched: deleted unless their phone
+	// is owed.
+	retired []*v1alpha1.Message
+	// owed are the phones whose screen is not yet what Decide wants.
+	owed   map[string]bool
+	pushes []PagePush
 }
 
 type phoneKey struct{ phone, key string }
@@ -272,7 +302,7 @@ func newDecider(in Input) *decider {
 	d := &decider{
 		in: in, now: statusTime(in.Now),
 		newest: map[phoneKey]*v1alpha1.Message{}, named: map[string]bool{}, page: map[string][]pageLine{},
-		status: map[string]v1alpha1.MessageStatus{},
+		status: map[string]v1alpha1.MessageStatus{}, owed: map[string]bool{},
 	}
 	for i := range in.Messages {
 		d.msgs = append(d.msgs, &in.Messages[i])
@@ -316,7 +346,15 @@ func (d *decider) phone(m *v1alpha1.Message) (PhoneView, bool) {
 	return pv, ok && pv.Exists
 }
 
-func unshown(m *v1alpha1.Message) bool { return m.Status.ShownAt == nil }
+// unshown reports whether m has never been shown: no shownAt, and not on
+// the page the shell last pushed to its phone (PhoneView.Showing).
+func (d *decider) unshown(m *v1alpha1.Message) bool {
+	if m.Status.ShownAt != nil {
+		return false
+	}
+	pv, _ := d.phone(m)
+	return !pv.shows(m)
+}
 
 // The rows' predicates.
 
@@ -357,23 +395,23 @@ func (d *decider) isPushUnsupported(m *v1alpha1.Message) bool {
 
 func (d *decider) isInCall(m *v1alpha1.Message) bool {
 	pv, _ := d.phone(m)
-	return unshown(m) && pv.PersonCalls > 0
+	return d.unshown(m) && pv.PersonCalls > 0
 }
 
 func (d *decider) isQuiet(m *v1alpha1.Message) bool {
-	return unshown(m) && !m.Spec.Urgent && d.in.House.Quiet
+	return d.unshown(m) && !m.Spec.Urgent && d.in.House.Quiet
 }
 
 func (d *decider) isAway(m *v1alpha1.Message) bool {
-	return unshown(m) && !m.Spec.Urgent && d.in.House.Away
+	return d.unshown(m) && !m.Spec.Urgent && d.in.House.Away
 }
 
 func (d *decider) isUnreachable(m *v1alpha1.Message) bool {
 	pv, _ := d.phone(m)
-	return unshown(m) && !pv.Reachable
+	return d.unshown(m) && !pv.Reachable
 }
 
 func (d *decider) isPushFailing(m *v1alpha1.Message) bool {
 	pv, _ := d.phone(m)
-	return unshown(m) && pv.PushFailure != ""
+	return d.unshown(m) && pv.PushFailure != ""
 }
