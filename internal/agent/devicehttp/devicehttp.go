@@ -121,20 +121,25 @@ type Config struct {
 	StateDir string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Credentials is the push account the phone asks about at /authenticate
+	// (apply.Applier.PushCredentials); ok false (or nil) answers every ask
+	// UN-AUTHORIZED.
+	Credentials func() (user, password string, ok bool)
 	// Log receives one line per request (V(1)) and every failure.
 	Log logr.Logger
 }
 
 // Server is device HTTP.
 type Server struct {
-	liveDir    string
-	stateDir   string
-	grants     provision.Source
-	settled    provision.Source
-	rec        sensor.FetchRecorder
-	now        func() time.Time
-	log        logr.Logger
-	pruneEvery time.Duration
+	liveDir     string
+	stateDir    string
+	grants      provision.Source
+	settled     provision.Source
+	rec         sensor.FetchRecorder
+	now         func() time.Time
+	log         logr.Logger
+	credentials func() (string, string, bool)
+	pruneEvery  time.Duration
 
 	// mu serialises spending and pruning, and guards what follows.
 	mu       sync.Mutex
@@ -158,7 +163,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		liveDir: cfg.LiveDir, stateDir: cfg.StateDir, grants: cfg.Grants, settled: cfg.Settled, rec: cfg.Recorder,
-		now: cfg.Now, log: cfg.Log, pruneEvery: pruneEvery, spent: map[tokenDigest]bool{},
+		now: cfg.Now, log: cfg.Log, credentials: cfg.Credentials, pruneEvery: pruneEvery, spent: map[tokenDigest]bool{},
 	}
 	if s.rec == nil {
 		s.rec = sensor.FetchRecorderFunc(func(sensor.FetchEvent) {})
@@ -254,6 +259,10 @@ func (w logWriter) Write(p []byte) (int, error) {
 
 // ServeHTTP answers one request.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == compile.AuthenticatePath && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		s.authenticate(w, r)
+		return
+	}
 	head := r.Method == http.MethodHead
 	if r.Method != http.MethodGet && !head {
 		w.Header().Set("Allow", "GET, HEAD")

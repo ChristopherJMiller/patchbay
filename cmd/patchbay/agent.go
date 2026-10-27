@@ -227,7 +227,7 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	// After the store: New re-records each persisted spend's served fetch.
 	dh, err := devicehttp.New(devicehttp.Config{
 		LiveDir: o.liveDir, Grants: applier, Settled: provision.SourceFunc(applier.SettledGrants),
-		Recorder: store, StateDir: o.stateDir, Log: log.WithName("devicehttp"),
+		Recorder: store, StateDir: o.stateDir, Credentials: applier.PushCredentials, Log: log.WithName("devicehttp"),
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)

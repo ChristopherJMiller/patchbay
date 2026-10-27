@@ -47,6 +47,11 @@ const (
 // Trees lists the four trees in a fixed order.
 var Trees = []string{TreeAsterisk, TreeTFTP, TreeHTTP, TreeProvisioning}
 
+// AuthenticatePath is the URL path of the phone's authenticationURL on
+// device HTTP: the phone asks it whether the credentials of an inbound
+// /CGI/Execute are good (devicehttp). It is not a bundle file.
+const AuthenticatePath = "/authenticate"
+
 // The phones' directory and Services menu, and the softphones' contacts, in
 // http/ (directory.go). Device HTTP serves http/<p> at /<p>.
 const (
