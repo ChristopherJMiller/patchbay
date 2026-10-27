@@ -215,6 +215,11 @@ phone, but the messages stay current: the next push shows them again. The
 page holds up to 4000 bytes of text; past that the oldest are dropped for
 a "+N older" line.
 
+A phone that restarts (a resync, which reboots a 79x5 and so follows
+every config change; a power cut) comes back on its idle screen. The
+agent sees it register under a new Call-ID, stops reporting its page, and
+the controller sends the page again, without the chime.
+
 ### States and reasons
 
 | State (reason) | Meaning |
@@ -264,7 +269,7 @@ each a day after its `finishedAt`. Each change is an Event on the Message:
 | Everything not urgent stays `Held` `QuietHours` or `Away` | Home Assistant's last PUT said so, or `house.json` does not parse (the controller log says so). | `GET /v1/house`, or `kubectl -n <ns> get configmap <fullname>-house -o yaml`; PUT the state again. |
 | The endpoint answers 503 | The token Secret, or its key, does not exist. | Create it in the install's namespace. |
 | The endpoint answers 401 | The caller's token is not the Secret's. | Put the same value on both sides. |
-| A message shows with no chime | Only a page with a message the phone never showed chimes; a re-send (after an agent restart) and a withdraw or expiry are silent. | Nothing. |
+| A message shows with no chime | Only a page with a message the phone never showed chimes; a re-send (after an agent or phone restart) and a withdraw or expiry are silent. | Nothing. |
 
 Known limits:
 

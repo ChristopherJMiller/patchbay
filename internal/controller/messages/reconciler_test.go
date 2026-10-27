@@ -241,6 +241,50 @@ func TestReconcileShowsInOneWrite(t *testing.T) {
 	}
 }
 
+// TestReconcileResendsAfterPhoneRestart: the agent showed the page, then
+// the phone restarted (a resync's action=restart): it registered under a
+// new Call-ID, so the agent took its Page back. The same page goes again,
+// once, without the chime; the Message stays Shown with no new Event.
+func TestReconcileResendsAfterPhoneRestart(t *testing.T) {
+	s := newShell(t, deskPhone(ns), newMessage("m", at0.Add(-time.Minute)))
+	s.actor.ack, s.actor.now = s.holder, s.clock.Now
+	s.holder.Set(registered(at0, func(d *agentapi.DeviceObservations) { d.Registration.CallID = "boot-1" }))
+	s.reconcile(t)
+	first := s.actor.take()
+	if len(first) != 1 || !first[0].Beep {
+		t.Fatalf("pushes %+v, want one page with the chime", first)
+	}
+	shownAt := s.message(t, "m").Status.ShownAt
+	s.events()
+	// The agent's observations show the page: nothing more.
+	s.clock.add(5 * time.Second)
+	s.reconcile(t)
+	if p := s.actor.take(); len(p) != 0 {
+		t.Fatalf("pushed again while the phone holds the page: %+v", p)
+	}
+
+	// The restart: a new Call-ID, no Page.
+	s.clock.add(5 * time.Second)
+	s.holder.Set(registered(s.clock.Now(), func(d *agentapi.DeviceObservations) { d.Registration.CallID = "boot-2" }))
+	s.reconcile(t)
+	p := s.actor.take()
+	if len(p) != 1 || p[0].Beep || p[0].Clear || p[0].PageVersion != first[0].PageVersion {
+		t.Fatalf("after the phone restarted: %+v, want the same page once, without the chime", p)
+	}
+	m := s.message(t, "m")
+	if m.Status.State != v1alpha1.MessageStateShown || m.Status.ShownAt == nil || !m.Status.ShownAt.Equal(shownAt) {
+		t.Errorf("status %+v, want Shown since %v", m.Status, shownAt)
+	}
+	if evs := s.events(); len(evs) != 0 {
+		t.Errorf("events %v on a re-send", evs)
+	}
+	s.clock.add(5 * time.Second)
+	s.reconcile(t)
+	if p := s.actor.take(); len(p) != 0 {
+		t.Errorf("pushed a third time: %+v", p)
+	}
+}
+
 // TestReconcilePushFailure (ruling R15): a failed push holds the Message
 // PushFailing with the agent's reason and a Warning PushFailed; nothing is
 // pushed again for PushRetry, then it is, and a success shows it.

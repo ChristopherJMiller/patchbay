@@ -190,6 +190,16 @@ func TestNotifyRefetchesAndReregisters(t *testing.T) {
 	if r := pbx.okRegisters()[before]; r.At.Sub(sent) > 2*time.Second {
 		t.Errorf("re-registered %s after the NOTIFY, want at once", r.At.Sub(sent))
 	}
+	// action=restart restarts the phone: it unregisters under its
+	// registration's Call-ID (refused here: the PBX has the new password
+	// already), then registers anew under another one.
+	oldCallID := pbx.okRegisters()[0].CallID
+	if r := pbx.okRegisters()[before]; r.CallID == oldCallID || r.Expires == 0 {
+		t.Errorf("the REGISTER after the restart %+v, want a new Call-ID (not %q)", r, oldCallID)
+	}
+	if !slices.ContainsFunc(pbx.registerLog(), func(r pbxRegister) bool { return r.Expires == 0 && r.CallID == oldCallID }) {
+		t.Error("the phone did not unregister before it restarted")
+	}
 	s = h.waitState(5*time.Second, "the new registration recorded", func(s script.State) bool {
 		last := s.Registrations[len(s.Registrations)-1]
 		return last.PasswordSHA256 == sha(newPassword) && last.Status == 200
@@ -212,6 +222,78 @@ func TestNotifyRefetchesAndReregisters(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if after := len(pbx.registerLog()); after != before {
 		t.Errorf("an unchanged config re-registered (%d -> %d REGISTERs)", before, after)
+	}
+}
+
+// TestRestartRegistersUnderNewCallID: a restart NOTIFY with nothing new in
+// the config restarts the phone all the same, as a 79x5 reboots: it
+// unregisters under its registration's Call-ID, fetches its config, and
+// registers anew under a new Call-ID (its CSeqs a new series), which its
+// refreshes keep. That new Call-ID is how the agent knows the screen is
+// idle. Its waitNotify ends once it is registered again.
+func TestRestartRegistersUnderNewCallID(t *testing.T) {
+	const password = "not-a-secret-restart"
+	pbx, _, opts := deskPhone(t, password)
+	pbx.mu.Lock()
+	pbx.maxGrant = 2 // refresh every second
+	pbx.mu.Unlock()
+	h := startRun(t, ciscoScript(
+		script.Step{Label: "config", FetchConfig: &script.FetchConfig{}},
+		script.Step{Label: "register", Register: &script.Register{}},
+		script.Step{Label: "notify", WaitNotify: &script.WaitNotify{Within: dur(10 * time.Second)}},
+		script.Step{Label: "end", WaitSignal: &script.WaitSignal{Name: "end"}},
+	), opts)
+	h.atStep("notify")
+	oldCallID := pbx.okRegisters()[0].CallID
+	before := len(pbx.registerLog())
+	if code := pbx.notify("service-control", "action=restart\r\nRegisterCallId={"+oldCallID+"}\r\n"); code != 200 {
+		t.Fatalf("NOTIFY answered %d", code)
+	}
+	s := h.atStep("end")
+	if n := s.Notifies[0]; !n.Refetched || len(s.Fetches) != 2 || !s.Registered {
+		t.Fatalf("after the restart: notify %+v, %d fetches, registered %t", n, len(s.Fetches), s.Registered)
+	}
+	waitFor(t, 3*time.Second, "a refresh under the new Call-ID", func() bool {
+		var n int
+		for _, r := range pbx.registerLog()[before:] {
+			if r.Status == 200 && r.CallID != oldCallID {
+				n++
+			}
+		}
+		return n >= 2
+	})
+	var unregistered bool
+	var newCallID string
+	for _, r := range pbx.registerLog()[before:] {
+		if r.Status != 200 {
+			continue
+		}
+		switch {
+		case r.Expires == 0:
+			if r.CallID != oldCallID || newCallID != "" {
+				t.Errorf("unregister %+v, want it first, under %q", r, oldCallID)
+			}
+			unregistered = true
+		case !unregistered:
+			t.Errorf("registered %+v before unregistering", r)
+		case r.CallID == oldCallID:
+			t.Errorf("registered again under the old Call-ID: %+v", r)
+		case newCallID == "":
+			newCallID = r.CallID
+			if r.CSeq > 2 {
+				t.Errorf("the first REGISTER after the restart has CSeq %d, want a new series", r.CSeq)
+			}
+		case r.CallID != newCallID:
+			t.Errorf("a refresh changed the Call-ID again: %+v", r)
+		}
+	}
+	if !unregistered || newCallID == "" {
+		t.Errorf("REGISTERs since the NOTIFY %+v, want an unregister, then a new Call-ID", pbx.registerLog()[before:])
+	}
+	// State reports each REGISTER's Call-ID.
+	s = h.state()
+	if first, last := s.Registrations[0], s.Registrations[len(s.Registrations)-1]; first.CallID != oldCallID || last.CallID != newCallID {
+		t.Errorf("State's registrations under %q ... %q, want %q ... %q", first.CallID, last.CallID, oldCallID, newCallID)
 	}
 }
 

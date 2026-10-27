@@ -107,7 +107,10 @@ var (
 //   - change-during-call: no resync while desk is on a call, one after it
 //     hangs up (Review Focus 5); a message sent during the call is Held
 //     InCall, nothing is pushed while it lasts, and after the BYE the
-//     message goes out with the chime;
+//     message goes out with the chime; then `patchbay phone resync desk`
+//     restarts desk (it registers under a new Call-ID: its screen is
+//     idle), and the controller pushes the same page once more, without
+//     the chime;
 //   - messages in quiet hours: with the house quiet (a tools pod PUTs it to
 //     the messages endpoint with the bearer token) a message stays Held
 //     QuietHours while an urgent one is pushed; withdrawing the urgent one
@@ -121,6 +124,7 @@ func TestDeskLoop(t *testing.T) {
 		desk, laptop       *tracker
 		deskPod, laptopPod string
 		deskIP             string
+		dinner             string // the first Message's name, current through the run
 	)
 	f := features.New("desk loop").
 		Setup(func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
@@ -396,7 +400,7 @@ func TestDeskLoop(t *testing.T) {
 			// first, which desk takes after its authenticationURL says
 			// AUTHORIZED, and fetches.
 			before := h.pushCount(ctx, t, deskPod)
-			dinner := h.message(ctx, t, "dinner")
+			dinner = h.message(ctx, t, "dinner")
 			h.waitPhone(ctx, t, deskPod, "desk took a push of a page holding dinner, the chime first",
 				pushedSince(before, messagePage(true, []string{"dinner"}, nil)))
 			h.waitMessage(ctx, t, dinner, "Shown", isShown)
@@ -458,6 +462,13 @@ func TestDeskLoop(t *testing.T) {
 			h.waitPhone(ctx, t, deskPod, "the held message pushed with the chime after the BYE",
 				pushedSince(pushesBefore, messagePage(true, []string{"call back", "dinner"}, nil)))
 			h.waitMessage(ctx, t, callBack, "Shown", isShown)
+
+			// That resync restarted desk (action=restart reboots a 79x5,
+			// which comes back on its idle screen, under a new Call-ID). It
+			// raced the chime push: whichever came first, desk ends on the
+			// page. One more resync, once desk holds the page, pins the rule:
+			// the same page again, once, without the chime.
+			h.resyncResendsPage(ctx, t, deskPod, []string{"call back", "dinner"}, callBack, dinner)
 			return ctx
 		}).
 		Assess("messages in quiet hours: held unless urgent; withdrawn by key", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {

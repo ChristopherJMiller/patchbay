@@ -10,10 +10,15 @@
 //
 // What a running phone does by itself, between and during steps:
 //   - cisco mode: on a service-control NOTIFY it answers 200 and, for
-//     action=restart or action=reset, fetches its config again (as
-//     FetchConfig); if the credentials, server or expiry it then holds
-//     differ from its registration's while it is refreshing, it REGISTERs
-//     again with the new ones at once;
+//     action=restart or action=reset, restarts as a 79x5 reboots: while it
+//     is refreshing a registration it unregisters (that registration's
+//     Call-ID), fetches its config again (as FetchConfig) and REGISTERs
+//     anew under a new Call-ID, refreshing from then on (not refreshing,
+//     it only fetches its config); the NOTIFY's handling ends once it is
+//     back. On a check-sync it fetches its config again and, if the
+//     credentials, server or expiry it then holds differ from its
+//     registration's while it is refreshing, REGISTERs again with the new
+//     ones at once;
 //   - both modes: while refreshing, it re-REGISTERs at half the granted
 //     expiry; it answers OPTIONS with 200; it answers an incoming INVITE as
 //     Answer says (no Answer: 486 Busy Here), sending ToneHz and counting
@@ -663,6 +668,9 @@ type RegistrationRecord struct {
 	// AuthUser and PasswordSHA256 are the credentials it used.
 	AuthUser       string `json:"authUser"`
 	PasswordSHA256 string `json:"passwordSHA256"`
+	// CallID is the REGISTER's Call-ID ("" when it got no answer). A phone
+	// keeps one for its registrations until it restarts.
+	CallID string `json:"callID,omitempty"`
 }
 
 // NotifyRecord is one NOTIFY the PBX sent the phone.

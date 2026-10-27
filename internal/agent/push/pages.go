@@ -14,7 +14,8 @@ import (
 // Stored bytes and acknowledgement differ on purpose. Set stores the bytes
 // before the push, so the phone's fetch finds them, and they stay after a
 // failed push; only Acknowledge (the phone answered Status 0) changes what
-// is reported as being on the phone.
+// is reported as being on the phone, and Unacknowledge (the phone
+// restarted, so its screen is idle) takes that back.
 type Pages struct {
 	mu    sync.Mutex
 	m     map[string]page
@@ -57,6 +58,16 @@ func (p *Pages) Acknowledge(device, version string) {
 		p.acked = map[string]string{}
 	}
 	p.acked[device] = version
+}
+
+// Unacknowledge forgets that the phone holds a page and keeps the stored
+// bytes: the phone restarted (observe.Store saw it register under a new
+// Call-ID), so it shows its idle screen, and the controller pushes the page
+// again.
+func (p *Pages) Unacknowledge(device string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.acked, device)
 }
 
 // Acknowledged is the page version the phone last acknowledged, "" for none.

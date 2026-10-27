@@ -196,6 +196,15 @@ type DeviceObservations struct {
 	// merely stored, or refused, does not count. The agent
 	// keeps pages in memory, so a restart empties it and the controller
 	// sees that here.
+	//
+	// A phone that restarts (a resync's action=restart, a restart's
+	// action=reset, a power blip) shows its idle screen, so the agent also
+	// empties Page when the device's contact comes back under a Call-ID
+	// other than the one its AMI polls last saw (a phone picks a new one
+	// when it boots), and the controller pushes the page again. The stored
+	// page stays, so the phone can still fetch it. The first Call-ID the
+	// agent sees of a device never empties Page, and neither does a fetch
+	// (every chime is a TFTP fetch).
 	Page string `json:"page,omitempty"`
 }
 

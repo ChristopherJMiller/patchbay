@@ -126,6 +126,9 @@ func (r *runner) sendRegister(ctx context.Context, acc account, expires, cfgExpi
 	}
 	if err == nil {
 		rec.Status = res.Response.StatusCode
+		if h := res.Response.CallID(); h != nil {
+			rec.CallID = h.Value()
+		}
 	}
 	r.mu.Lock()
 	if shared && res.CSeq > r.reg.cseq {
@@ -259,9 +262,10 @@ type notifyEntry struct {
 
 // onNotify handles a NOTIFY the phone has answered 200: it is recorded and,
 // in cisco mode, a service-control NOTIFY asking for action=restart or
-// action=reset (or a check-sync) makes the phone fetch its config again
-// and, if the credentials, server or expiry changed while it refreshes,
-// REGISTER with the new ones at once.
+// action=reset restarts the phone as a 79x5 restarts (restart), and a
+// check-sync makes it fetch its config again and, if the credentials,
+// server or expiry changed while it refreshes, REGISTER with the new ones
+// at once. Its handling is over (waitNotify) once the phone is back.
 func (r *runner) onNotify(req *sip.Request) {
 	e := &notifyEntry{
 		rec: script.NotifyRecord{
@@ -278,6 +282,13 @@ func (r *runner) onNotify(req *sip.Request) {
 		r.finishNotify(e, false)
 		return
 	}
+	if asksRestart(e.rec.Event, e.rec.Body) {
+		go func() {
+			r.restart(r.ctx)
+			r.finishNotify(e, true)
+		}()
+		return
+	}
 	go func() {
 		if _, err := r.fetchConfig(r.ctx); err != nil {
 			r.log.Warn("refetch", "error", err.Error())
@@ -285,6 +296,46 @@ func (r *runner) onNotify(req *sip.Request) {
 		r.finishNotify(e, true)
 		r.reregisterIfChanged()
 	}()
+}
+
+// restart is what a 79x5 does on a service-control restart or reset (and
+// what the Desk 7945 showed Asterisk, 2026-10-27: its contact removed "due
+// to request", then a new one): it unregisters, boots, fetches its config
+// and registers anew under a Call-ID it has not used, which the agent
+// takes for a restart (its screen is idle; observe.Store.Poll). A phone
+// that was not refreshing a registration only fetches its config again.
+func (r *runner) restart(ctx context.Context) {
+	r.mu.Lock()
+	registered, stepExpires := r.reg.refreshing, r.reg.stepExpires
+	r.mu.Unlock()
+	if registered {
+		// unregister stops the refresher first. Its REGISTER may be refused
+		// (the credentials changed under it); the phone boots anyway.
+		if err := r.unregister(ctx); err != nil {
+			r.log.Warn("restart: unregister", "error", err.Error())
+		}
+		r.regMu.Lock()
+		r.mu.Lock()
+		r.reg.callID, r.reg.cseq = "", 0 // a booted phone's REGISTERs are a new series
+		r.mu.Unlock()
+		r.regMu.Unlock()
+	}
+	if _, err := r.fetchConfig(ctx); err != nil {
+		r.log.Warn("refetch", "error", err.Error())
+	}
+	cfg := r.currentConfig()
+	if !registered || cfg == nil || ctx.Err() != nil {
+		return
+	}
+	expires := stepExpires
+	if expires == 0 {
+		expires = cfg.Public.Expires
+	}
+	status, granted, err := r.sendRegister(ctx, cfg.account(), expires, cfg.Public.Expires, true)
+	if err != nil || status != sip.StatusOK {
+		granted = 0 // the refresher retries after RetryAfter
+	}
+	r.startRefreshing(granted, stepExpires)
 }
 
 func (r *runner) finishNotify(e *notifyEntry, refetched bool) {
@@ -314,6 +365,12 @@ func asksRefetch(event, body string) bool {
 		}
 	}
 	return false
+}
+
+// asksRestart is whether a NOTIFY restarts a 79x5: a service-control one
+// with action=restart or action=reset (a check-sync only refetches).
+func asksRestart(event, body string) bool {
+	return event == "service-control" && asksRefetch(event, body)
 }
 
 func (r *runner) waitNotify(ctx context.Context, w *script.WaitNotify) error {

@@ -763,3 +763,83 @@ func TestStreamCallsClearedWhenAMIDown(t *testing.T) {
 		t.Errorf("desk = %+v; StreamCalls survived AMI going down", d)
 	}
 }
+
+// TestRestartTakesBackPage: a phone that registers under a new Call-ID has
+// restarted, so its screen is idle: its acknowledged Page goes (the stored
+// page stays). The first contact seen, and the same Call-ID again, keep it;
+// so does a contact that comes back under its old Call-ID after polls that
+// saw none (AMI down), while a new one after such polls (a rebooting phone
+// unregisters first) takes it back.
+func TestRestartTakesBackPage(t *testing.T) {
+	f := newFixture(t)
+	f.ami.SetUp(true, "22.11.0")
+	contact := func(callID string) ami.Contact {
+		return ami.Contact{
+			Endpoint: desk, AOR: "100", URI: "sip:100@192.168.20.5:52928;transport=tcp", Address: deskIP,
+			CallID: callID, ExpiresAt: t0.Add(10 * time.Minute),
+		}
+	}
+	page := func() string {
+		if d := f.device(desk); d != nil {
+			return d.Page
+		}
+		return ""
+	}
+	f.pages.Set(desk, "abc", []byte("<CiscoIPPhoneText/>"))
+	f.pages.Acknowledge(desk, "abc")
+
+	f.ami.SetContacts(contact("boot-1"))
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("the first contact took the Page back: %q, want abc", got)
+	}
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("the same Call-ID took the Page back: %q, want abc", got)
+	}
+	// Fetches (every chime is a TFTP fetch) are no restart.
+	f.store.RecordFetch(f.tftp("SEP"+deskMAC+".cnf.xml", deskIP, time.Second))
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("a fetch took the Page back: %q, want abc", got)
+	}
+
+	// AMI down, then back with the same contact: no restart.
+	f.ami.SetUp(false, "")
+	f.store.Poll(context.Background())
+	f.ami.SetUp(true, "22.11.0")
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("AMI coming back took the Page back: %q, want abc", got)
+	}
+
+	// A new Call-ID: the phone restarted.
+	f.ami.SetContacts(contact("boot-2"))
+	f.store.Poll(context.Background())
+	if got := page(); got != "" {
+		t.Fatalf("Page %q after a restart, want none", got)
+	}
+	if v, body, ok := f.pages.Get(desk); !ok || v != "abc" || string(body) != "<CiscoIPPhoneText/>" {
+		t.Errorf("the restart dropped the stored page: %q %q %v", v, body, ok)
+	}
+	// Pushed again and acknowledged: it stays while the Call-ID does.
+	f.pages.Acknowledge(desk, "abc")
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("Page %q after the re-push, want abc", got)
+	}
+
+	// A reboot that unregisters first: polls with no contact, then a new
+	// Call-ID.
+	f.ami.SetContacts()
+	f.store.Poll(context.Background())
+	f.store.Poll(context.Background())
+	if got := page(); got != "abc" {
+		t.Fatalf("an unregistered phone lost its Page: %q, want abc", got)
+	}
+	f.ami.SetContacts(contact("boot-3"))
+	f.store.Poll(context.Background())
+	if got := page(); got != "" {
+		t.Errorf("Page %q after a restart that unregistered first, want none", got)
+	}
+}

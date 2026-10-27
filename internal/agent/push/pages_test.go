@@ -52,3 +52,23 @@ func TestPagesAcknowledge(t *testing.T) {
 		t.Errorf("Clear left the acknowledgement %q", got)
 	}
 }
+
+// TestPagesUnacknowledge: a restarted phone's acknowledgement goes and its
+// stored page stays (the phone may still fetch it).
+func TestPagesUnacknowledge(t *testing.T) {
+	var p push.Pages
+	p.Unacknowledge("never-set")
+	p.Set("phone-desk", "v1", []byte("<a/>"))
+	p.Acknowledge("phone-desk", "v1")
+	p.Unacknowledge("phone-desk")
+	if got := p.Acknowledged("phone-desk"); got != "" {
+		t.Errorf("Unacknowledge left the acknowledgement %q", got)
+	}
+	if v, body, ok := p.Get("phone-desk"); !ok || v != "v1" || string(body) != "<a/>" {
+		t.Errorf("Unacknowledge dropped the stored page: %q %q %v", v, body, ok)
+	}
+	p.Acknowledge("phone-desk", "v1")
+	if got := p.Acknowledged("phone-desk"); got != "v1" {
+		t.Errorf("acknowledged again: %q, want v1", got)
+	}
+}

@@ -5,7 +5,9 @@
 //     socket, ServeFetchSocket) and device HTTP report, attributed to a
 //     device and kept in a ring of the 64 latest per device.
 //   - Sensor 2, AMI: Run polls the contacts (Registration) and channels
-//     (Calls) every PollEvery; both are cleared while AMI is down.
+//     (Calls) every PollEvery; both are cleared while AMI is down. A
+//     contact under a new Call-ID is a phone that restarted, which takes
+//     back its page acknowledgement (Poll).
 //   - Sensor 3, the phones' web pages: the scraper asks ScrapeTargets which
 //     phones to read and hands each result to RecordScrape.
 //   - Sensor 4, the firmware store, is read on each Document.
@@ -73,7 +75,8 @@ type Config struct {
 	// Firmware is the firmware store sensor.
 	Firmware sensor.FirmwareSensor
 	// Pages supplies the page version each phone last acknowledged, reported as
-	// DeviceObservations.Page (push.Pages). May be nil.
+	// DeviceObservations.Page, and Poll takes it back from a phone that
+	// restarted (push.Pages). May be nil.
 	Pages PageSource
 	// Metrics may be nil.
 	Metrics *metrics.Metrics
@@ -88,6 +91,9 @@ type Config struct {
 // PageSource is the page version each phone last acknowledged (push.Pages).
 type PageSource interface {
 	Acknowledged(device string) string
+	// Unacknowledge forgets the device's acknowledgement (not its stored
+	// page): the phone restarted, so its screen is idle.
+	Unacknowledge(device string)
 }
 
 // Limits.
@@ -119,6 +125,10 @@ type Store struct {
 	firstSeen map[contactKey]time.Time
 	calls     map[string]int
 	streams   map[string]int // of calls, the ones into a Stream
+	// callIDs is the Call-ID of each device's contact as the polls last saw
+	// it, kept through polls that see no contact (a phone that restarts
+	// unregisters first): a new one means the phone restarted (Poll).
+	callIDs map[string]string
 	// indexVersion and indexMACs are the applied index last seen, by
 	// device ID and MAC (syncIndex).
 	indexVersion string
@@ -150,6 +160,7 @@ func New(cfg Config) *Store {
 	return &Store{
 		cfg: cfg, devices: map[string]*device{}, unknown: map[string]*api.UnknownDevice{},
 		contacts: map[string]ami.Contact{}, firstSeen: map[contactKey]time.Time{}, calls: map[string]int{}, streams: map[string]int{},
+		callIDs: map[string]string{},
 	}
 }
 
@@ -168,7 +179,13 @@ func (s *Store) syncIndex(version string, idx compile.Index, ok bool) {
 		return
 	}
 	for id, mac := range s.indexMACs {
-		if d, still := idx.Devices[id]; !still || d.MAC != mac {
+		d, still := idx.Devices[id]
+		if !still {
+			// A phone swapped in by editing spec.mac keeps it: it registers
+			// under its own Call-ID, and its screen holds no page either.
+			delete(s.callIDs, id)
+		}
+		if !still || d.MAC != mac {
 			delete(s.devices, id)
 			s.cfg.Log.V(1).Info("forgetting a device that left the applied index or changed its MAC", "device", id)
 		}
@@ -398,6 +415,18 @@ func (s *Store) Run(ctx context.Context) error {
 }
 
 // Poll reads the contacts and channels once.
+//
+// A device whose contact now carries a Call-ID other than the one the
+// polls last saw for it has restarted: a phone keeps one Call-ID for its
+// registrations while it runs (RFC 3261 §10.2.4) and picks a new one when
+// it boots (a resync's action=restart, a restart's action=reset, a power
+// blip), and a booted phone shows its idle screen. So Poll takes back its
+// page acknowledgement (PageSource.Unacknowledge; the stored page stays),
+// and the controller pushes the page again, without the chime. The first
+// Call-ID the agent sees of a device is no restart, and the Call-ID last
+// seen is kept through polls that see no contact (a restarting phone
+// unregisters first, and AMI may be down). A fetch is never taken for a
+// restart: every chime is a TFTP fetch.
 func (s *Store) Poll(ctx context.Context) {
 	now := s.cfg.Now()
 	_, idx, _ := s.applied()
@@ -449,6 +478,19 @@ func (s *Store) Poll(ctx context.Context) {
 		} else {
 			firstSeen[k] = now
 		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(byDevice)) {
+		callID := byDevice[id].CallID
+		if callID == "" {
+			continue
+		}
+		if last, seen := s.callIDs[id]; seen && last != callID && s.cfg.Pages != nil && s.cfg.Pages.Acknowledged(id) != "" {
+			// Under mu, so no Document shows the new contact with the old
+			// acknowledgement.
+			s.cfg.Pages.Unacknowledge(id)
+			s.cfg.Log.Info("a phone registered under a new Call-ID: it restarted, so its screen holds no message page", "device", id)
+		}
+		s.callIDs[id] = callID
 	}
 	s.contacts, s.calls, s.streams, s.firstSeen = byDevice, calls, streams, firstSeen
 	n := len(byDevice)

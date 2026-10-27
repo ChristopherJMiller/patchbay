@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
+	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	messagesapi "github.com/ChristopherJMiller/patchbay/internal/controller/messages/api"
 	"github.com/ChristopherJMiller/patchbay/test/e2e/fakephone/script"
@@ -152,6 +154,98 @@ func messagePage(chime bool, has, lacks []string) func(script.PushRecord) bool {
 			}
 		}
 		return true
+	}
+}
+
+// pushVersion is the page version a push's page item names (its ?v=), ""
+// for none.
+func pushVersion(p script.PushRecord) string {
+	for _, item := range p.Items {
+		if u, err := url.Parse(item); err == nil && strings.HasPrefix(u.Path, compile.MessagesPathPrefix) {
+			return u.Query().Get("v")
+		}
+	}
+	return ""
+}
+
+// lastRegistration is the phone's latest accepted REGISTER that is not an
+// unregister, or nil.
+func lastRegistration(s script.State) *script.RegistrationRecord {
+	for i := len(s.Registrations) - 1; i >= 0; i-- {
+		if r := &s.Registrations[i]; r.Status == 200 && r.Expires > 0 {
+			return r
+		}
+	}
+	return nil
+}
+
+// resyncResendsPage is the restart rule end to end. desk holds a page
+// whose text has each of has: its last push took it, the agent reports
+// that version as its Page, and the agent has seen the Call-ID desk
+// registers under now. `patchbay phone resync desk` restarts it (a 79x5
+// reboots on action=restart, and its screen is idle after), it registers
+// under a new Call-ID, the agent takes its Page back, and the controller
+// pushes the same page once more, without the chime. The Messages named
+// stay Shown.
+func (h *harness) resyncResendsPage(ctx context.Context, t *testing.T, pod string, has []string, msgs ...string) {
+	t.Helper()
+	var version, callID, why string
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, stateTimeout, true, func(ctx context.Context) (bool, error) {
+		s, err := h.phoneState(ctx, pod)
+		if err != nil {
+			why = err.Error()
+			return false, nil //nolint:nilerr // keep polling: the next read may succeed
+		}
+		d := device(h.observations(ctx, t), deskID)
+		last, reg := "", lastRegistration(s)
+		if n := len(s.Pushes); n > 0 {
+			last = pushVersion(s.Pushes[n-1])
+		}
+		switch {
+		case d == nil || d.Registration == nil:
+			why = "the agent sees no registration of desk"
+		case last == "" || d.Page != last:
+			why = fmt.Sprintf("the agent reports page %q, desk's last push is of %q", d.Page, last)
+		case reg == nil || d.Registration.CallID != reg.CallID:
+			why = "the agent has not seen the Call-ID desk registers under yet"
+		default:
+			version, callID = last, reg.CallID
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("desk never settled on its page: %v (%s)", err, why)
+	}
+
+	before := h.pushCount(ctx, t, pod)
+	if out, err := h.patchbay(ctx, "phone", "resync", deskName); err != nil {
+		t.Fatalf("phone resync: %v\n%s", err, out)
+	}
+	h.waitPhone(ctx, t, pod, "desk restarted: registered under a new Call-ID", func(s script.State) (bool, string) {
+		r := lastRegistration(s)
+		return r != nil && r.CallID != callID, fmt.Sprintf("%d registrations", len(s.Registrations))
+	})
+	h.waitPhone(ctx, t, pod, "the same page pushed again, without the chime", pushedSince(before, func(p script.PushRecord) bool {
+		return messagePage(false, has, nil)(p) && pushVersion(p) == version
+	}))
+	// Exactly once: when the agent reports the page again, the controller
+	// takes it for held.
+	h.eventually(ctx, t, "the agent reports desk's page again", stateTimeout, func(o agentapi.Observations) (bool, string) {
+		d := device(o, deskID)
+		return d != nil && d.Page == version, fmt.Sprintf("%+v", d)
+	})
+	s, err := h.phoneState(ctx, pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if since := s.Pushes[min(before, len(s.Pushes)):]; len(since) != 1 {
+		t.Errorf("desk got %d pushes after its restart, want exactly one: %+v", len(since), since)
+	}
+	for _, m := range msgs {
+		if st := h.messageStatus(ctx, t, m); !isShown(st) {
+			t.Errorf("Message %s is %s %s after desk restarted, want Shown", m, st.State, st.Reason)
+		}
 	}
 }
 
