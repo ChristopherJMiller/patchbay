@@ -2,6 +2,27 @@ apiVersion: v1
 entries:
   patchbay:
   - apiVersion: v2
+    appVersion: 0.4.0-rc.2
+    created: "2026-10-27T14:10:03.902280013Z"
+    description: A Kubernetes-native PBX - Asterisk 22 plus the patchbay controller
+      and agent.
+    digest: 6424d80fdc4d95949c28ac19f3298f8f8cbf81591c8bacb2063ebfdac0bab422
+    home: https://github.com/ChristopherJMiller/patchbay
+    keywords:
+    - pbx
+    - asterisk
+    - sip
+    - voip
+    - operator
+    kubeVersion: '>=1.33.0-0'
+    name: patchbay
+    sources:
+    - https://github.com/ChristopherJMiller/patchbay
+    type: application
+    urls:
+    - https://github.com/ChristopherJMiller/patchbay/releases/download/v0.4.0-rc.2/patchbay-0.4.0-rc.2.tgz
+    version: 0.4.0-rc.2
+  - apiVersion: v2
     appVersion: 0.4.0-rc.1
     created: "2026-10-27T04:24:49.397203682Z"
     description: A Kubernetes-native PBX - Asterisk 22 plus the patchbay controller
@@ -148,4 +169,4 @@ entries:
     urls:
     - https://github.com/ChristopherJMiller/patchbay/releases/download/v0.1.0-rc.1/patchbay-0.1.0-rc.1.tgz
     version: 0.1.0-rc.1
-generated: "2026-10-27T04:24:49.396190328Z"
+generated: "2026-10-27T14:10:03.900589863Z"
