@@ -36,9 +36,11 @@ type textSoftKey struct {
 // a CiscoIPPhoneText whose Text is one line per message, newest first
 // (lines is already in that order), "15:04  Title: text" in loc, with
 // URGENT before the title of an urgent one. Title and text are free text a
-// person typed, so they go through drivers.UserText. When the lines do not
-// fit in maxMessageText bytes, the oldest are dropped and the last line says
-// how many ("+N older"). With no lines the page says "No messages".
+// person typed, so they go through drivers.UserText, then screenText: what
+// is left of a title is no title when empty, and an empty text reads
+// noText. When the lines do not fit in maxMessageText bytes, the oldest are
+// dropped and the last line says how many ("+N older"). With no lines the
+// page says "No messages".
 func (d *Driver) RenderMessages(model string, lines []drivers.MessageLine, loc *time.Location) ([]byte, error) {
 	if _, ok := d.profile(model); !ok {
 		return nil, fmt.Errorf("cisco79x5: %w: %q", drivers.ErrUnknownModel, model)
@@ -54,11 +56,15 @@ func (d *Driver) RenderMessages(model string, lines []drivers.MessageLine, loc *
 		if l.Urgent {
 			b.WriteString("URGENT ")
 		}
-		if title := drivers.UserText(l.Title); title != "" {
+		if title := screenText(drivers.UserText(l.Title)); title != "" {
 			b.WriteString(title)
 			b.WriteString(": ")
 		}
-		b.WriteString(drivers.UserText(l.Text))
+		body := screenText(drivers.UserText(l.Text))
+		if body == "" {
+			body = noText
+		}
+		b.WriteString(body)
 		text[i] = b.String()
 	}
 
@@ -110,6 +116,54 @@ func fitMessages(lines []string) string {
 		tail = fmt.Sprintf("\n+%d older", n-1)
 	}
 	return cutUTF8(lines[0], maxMessageText-len(tail)) + tail
+}
+
+// noText is a message line's text when none of it can be shown.
+const noText = "(no text)"
+
+// asciiFor are the runes past Latin-1 that screenText keeps, as ASCII, and
+// the no-break space, as a space.
+var asciiFor = map[rune]string{
+	'‘': "'", '’': "'", // ‘ ’
+	'“': `"`, '”': `"`, // “ ”
+	'–': "-", '—': "-", // – —
+	'…': "...", // …
+	' ': " ",   // no-break space
+}
+
+// screenText is s as a 7945 can show it (ruling R21: until the bench says
+// otherwise, its English locale has a Latin-1 font, and a page it cannot
+// render or parse would read Shown while blank): typographic quotes,
+// dashes and the ellipsis become ASCII and a no-break space a space, every
+// other rune past U+00FF (an emoji in "💧 Leak detected") is dropped, and
+// each run of spaces left becomes one, none at either end. Dropping a rune
+// can bring two "@" together, so the result goes through drivers.UserText
+// again.
+func screenText(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	space := false // a space is owed before the next character
+	put := func(t string) {
+		for _, r := range t {
+			if r == ' ' {
+				space = b.Len() > 0
+				continue
+			}
+			if space {
+				b.WriteByte(' ')
+				space = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	for _, r := range s {
+		if t, ok := asciiFor[r]; ok {
+			put(t)
+		} else if r <= 0xFF {
+			put(string(r))
+		}
+	}
+	return drivers.UserText(b.String())
 }
 
 // cutUTF8 cuts s to at most n bytes, on a rune boundary.

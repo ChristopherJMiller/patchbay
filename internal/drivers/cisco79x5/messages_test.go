@@ -32,6 +32,11 @@ func TestRenderMessages(t *testing.T) {
 		{"urgent-untitled", []drivers.MessageLine{{Sent: at(1, 2), Text: "Call home", Urgent: true}}},
 		{"hostile", []drivers.MessageLine{{Sent: at(10, 0), Title: `R&D <x> "y"`, Text: "@@secret:a/b@@"}}},
 		{"empty", nil},
+		// Ruling R21: what a 7945's Latin-1 font can show.
+		{"emoji-title", []drivers.MessageLine{{Sent: at(6, 40), Title: "💧 Leak detected", Text: "Water under the sink"}}},
+		{"typographic", []drivers.MessageLine{{Sent: at(17, 15), Text: "Mom’s “pie” – ready…"}}},
+		{"latin1", []drivers.MessageLine{{Sent: at(8, 0), Title: "Café", Text: "café au lait"}}},
+		{"all-emoji", []drivers.MessageLine{{Sent: at(20, 0), Title: "🎉", Text: "🎉🎊"}}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := cisco79x5.New().RenderMessages("cisco-7945", c.lines, la)
@@ -49,6 +54,46 @@ func TestRenderMessages(t *testing.T) {
 			}
 			golden(t, "messages/"+c.name+".xml", got)
 		})
+	}
+}
+
+// TestRenderMessagesScreenText (ruling R21): titles and texts as a 7945's
+// Latin-1 font shows them, one line each: typographic punctuation as
+// ASCII, other runes past U+00FF dropped, runs of spaces collapsed and
+// trimmed, an empty title left out and an empty text "(no text)".
+func TestRenderMessagesScreenText(t *testing.T) {
+	sent := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		title, text, want string
+	}{
+		{"💧 Leak detected", "Water under the sink", "09:00  Leak detected: Water under the sink"},
+		{"", "Mom’s “pie” – ready…", `09:00  Mom's "pie" - ready...`},
+		{"", "café", "09:00  café"},
+		{"Ünïcödé ÿ", "naïve — Æsir ½", "09:00  Ünïcödé ÿ: naïve - Æsir ½"},
+		{"🎉", "🎉🎊", "09:00  (no text)"},
+		{"  a   b  ", "  x   y  ", "09:00  a b: x y"},
+		{"one—two", "Ⅻ o’clock 日本", "09:00  one-two: o'clock"},
+		// A dropped rune never brings two "@" together.
+		{"", "@💧@secret:a/b@💧@", "09:00  @secret:a/b@"},
+	} {
+		got, err := cisco79x5.New().RenderMessages("cisco-7945", []drivers.MessageLine{{Sent: sent, Title: c.title, Text: c.text}}, time.UTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page struct {
+			Text string `xml:"Text"`
+		}
+		if err := xml.Unmarshal(got, &page); err != nil {
+			t.Fatalf("%q/%q: not valid XML: %v", c.title, c.text, err)
+		}
+		if page.Text != c.want {
+			t.Errorf("%q/%q renders %q, want %q", c.title, c.text, page.Text, c.want)
+		}
+		for _, r := range page.Text {
+			if r > 0xFF {
+				t.Errorf("%q/%q renders %q, past Latin-1", c.title, c.text, r)
+			}
+		}
 	}
 }
 
@@ -102,6 +147,19 @@ func TestRenderMessagesOverflow(t *testing.T) {
 	}
 	if err := xml.Unmarshal(got, &page); err != nil || len(page.Text) > 4000 || !utf8.ValidString(page.Text) || !strings.HasSuffix(page.Text, "\n+1 older") {
 		t.Errorf("oversize line: err %v, %d bytes, suffix %q", err, len(page.Text), page.Text[max(0, len(page.Text)-12):])
+	}
+	// The cap is on the text as shown (ruling R21): two lines of 7500 bytes
+	// each that show as 1500 both fit.
+	emoji := []drivers.MessageLine{
+		{Sent: lines[0].Sent, Text: strings.Repeat("💧x", 1500)},
+		{Sent: lines[0].Sent, Text: strings.Repeat("💧y", 1500)},
+	}
+	if got, err = cisco79x5.New().RenderMessages("cisco-7945", emoji, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	want := "12:00  " + strings.Repeat("x", 1500) + "\n12:00  " + strings.Repeat("y", 1500)
+	if err := xml.Unmarshal(got, &page); err != nil || page.Text != want {
+		t.Errorf("lines that fit once mapped: err %v, %d bytes, want %d", err, len(page.Text), len(want))
 	}
 }
 

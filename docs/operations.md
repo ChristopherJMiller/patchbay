@@ -215,6 +215,13 @@ phone, but the messages stay current: the next push shows them again. The
 page holds up to 4000 bytes of text; past that the oldest are dropped for
 a "+N older" line.
 
+The page holds only what a 7945's font can show (English locale,
+Latin-1): typographic quotes, dashes and `…` become `'`, `"`, `-` and
+`...`, every other character past Latin-1 is dropped (an emoji: "💧 Leak
+detected" shows "Leak detected"), and runs of spaces become one. Accented
+Latin-1 letters stay (`café`). A title left empty is no title; a text left
+empty shows `(no text)`.
+
 A phone that restarts (a resync, which reboots a 79x5 and so follows
 every config change; a power cut) comes back on its idle screen. The
 agent sees it register under a new Call-ID, stops reporting its page, and
