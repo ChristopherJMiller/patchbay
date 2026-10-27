@@ -104,6 +104,10 @@ var (
 //   - label: a new label reaches the phone's screen through one resync;
 //   - messages: `patchbay phone message desk dinner` reaches desk's screen
 //     with the chime, and the Message is Shown;
+//   - messages from Home Assistant: a tools pod POSTs a message with a key
+//     to the messages endpoint with the bearer token; it is created as
+//     posted and Shown, with the chime; POST /v1/withdraw with its key
+//     withdraws it, and the page goes again without it, silently;
 //   - change-during-call: no resync while desk is on a call, one after it
 //     hangs up (Review Focus 5); a message sent during the call is Held
 //     InCall, nothing is pushed while it lasts, and after the BYE the
@@ -404,6 +408,32 @@ func TestDeskLoop(t *testing.T) {
 			h.waitPhone(ctx, t, deskPod, "desk took a push of a page holding dinner, the chime first",
 				pushedSince(before, messagePage(true, []string{"dinner"}, nil)))
 			h.waitMessage(ctx, t, dinner, "Shown", isShown)
+			return ctx
+		}).
+		Assess("messages from Home Assistant: POSTed to the endpoint, withdrawn by key", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// Home Assistant's main path, through the API server, not the
+			// CLI: a tools pod POSTs to the messages Service with the bearer
+			// token. The house was never told anything, so it goes out.
+			before := h.pushCount(ctx, t, deskPod)
+			posted := h.postMessage(ctx, t, "ha-message", messagesapi.MessageRequest{
+				To: []string{deskName}, Title: "HA", Text: "from home assistant", Key: "ha-test",
+			})
+			h.waitPhone(ctx, t, deskPod, "desk took a push of a page holding the posted message, the chime first",
+				pushedSince(before, messagePage(true, []string{"from home assistant", "dinner"}, nil)))
+			h.waitMessage(ctx, t, posted, "Shown", isShown)
+
+			before = h.pushCount(ctx, t, deskPod)
+			var withdrew messagesapi.WithdrawResponse
+			sendEndpoint(ctx, t, "ha-withdraw", "POST", messagesapi.PathWithdraw,
+				messagesapi.WithdrawRequest{Key: "ha-test", To: []string{deskName}}, 200, &withdrew)
+			if withdrew.Withdrawn != 1 {
+				t.Errorf("POST %s withdrew %d, want 1", messagesapi.PathWithdraw, withdrew.Withdrawn)
+			}
+			h.waitPhone(ctx, t, deskPod, "a page without the withdrawn message, no chime",
+				pushedSince(before, messagePage(false, []string{"dinner"}, []string{"from home assistant"})))
+			h.waitMessage(ctx, t, posted, "Withdrawn", func(st v1alpha1.MessageStatus) bool {
+				return st.State == v1alpha1.MessageStateWithdrawn && st.FinishedAt != nil
+			})
 			return ctx
 		}).
 		Assess("change-during-call: no resync during a call, one after it", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {

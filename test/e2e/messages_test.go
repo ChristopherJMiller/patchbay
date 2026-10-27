@@ -255,6 +255,65 @@ func messagesURL(p string) string {
 	return fmt.Sprintf("http://%s.%s.svc:%d%s", names.MessagesService, namespace, messagesapi.DefaultPort, p)
 }
 
+// sendEndpoint sends body, as JSON, to the messages endpoint's path p from
+// a tools pod (label names it) with the bearer token from
+// messagesTokenSecret, as Home Assistant does, and decodes the answer's
+// body into out. An answer other than want fails the test.
+func sendEndpoint(ctx context.Context, t *testing.T, label, method, p string, body any, want int, out any) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := []corev1.EnvVar{secretEnv("TOKEN", messagesTokenSecret, messagesTokenKey)}
+	r := runTool(ctx, t, toolPod{name: label, env: env, args: []string{
+		"http", "send", method, messagesURL(p), "--expect-status", fmt.Sprint(want),
+		"--header", "Authorization: Bearer $(TOKEN)", "--header", "Content-Type: application/json", "--data", string(raw),
+	}}, true)
+	if !r.Succeeded {
+		t.Fatalf("%s %s %s was not answered %d:\n%s", method, p, raw, want, indent(r.Logs))
+	}
+	// The tool prints the status line, then the body; its own log lines
+	// may be JSON too, so the body is the line that decodes into out
+	// strictly.
+	for line := range strings.SplitSeq(r.Logs, "\n") {
+		if l := strings.TrimSpace(line); strings.HasPrefix(l, "{") {
+			dec := json.NewDecoder(strings.NewReader(l))
+			dec.DisallowUnknownFields()
+			if dec.Decode(out) == nil {
+				return
+			}
+		}
+	}
+	t.Fatalf("%s %s answered no body this test reads:\n%s", method, p, indent(r.Logs))
+}
+
+// postMessage POSTs req to the messages endpoint as Home Assistant does
+// (sendEndpoint) and returns the name of the one Message it created, which
+// it checks holds req.
+func (h *harness) postMessage(ctx context.Context, t *testing.T, label string, req messagesapi.MessageRequest) string {
+	t.Helper()
+	var resp messagesapi.MessageResponse
+	sendEndpoint(ctx, t, label, "POST", messagesapi.PathMessages, req, 201, &resp)
+	if len(resp.Names) != 1 {
+		t.Fatalf("POST %s for %v created %v, want one Message", messagesapi.PathMessages, req.To, resp.Names)
+	}
+	name := resp.Names[0]
+	var m v1alpha1.Message
+	if err := h.kube.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &m); err != nil {
+		t.Fatalf("Message %s: %v", name, err)
+	}
+	if string(m.Spec.Phone) != req.To[0] || m.Spec.Title != req.Title || m.Spec.Text != req.Text ||
+		m.Spec.Key != req.Key || m.Spec.Urgent != req.Urgent || m.Spec.Withdrawn {
+		t.Errorf("Message %s holds %+v, want the request %+v", name, m.Spec, req)
+	}
+	if life := m.Spec.ExpiresAt.Sub(m.CreationTimestamp.Time); life < messagesapi.DefaultExpires-time.Minute || life > messagesapi.DefaultExpires+time.Minute {
+		t.Errorf("Message %s lives %s, want the default %s", name, life, messagesapi.DefaultExpires)
+	}
+	t.Logf("Message %s: posted %q key %q", name, req.Text, req.Key)
+	return name
+}
+
 // putHouse PUTs upd to the messages endpoint's house path from a tools pod
 // (label names it), with the bearer token from messagesTokenSecret, as Home
 // Assistant does; then GETs the house until it reads back as upd set it.
