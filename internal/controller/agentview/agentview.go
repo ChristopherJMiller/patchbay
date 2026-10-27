@@ -1,8 +1,8 @@
 // Package agentview is the controller's view of the PBX agent and its way
 // of talking to it: what the leader-only poller publishes (Snapshot,
 // Observer, Holder), whom it tells (Changes, SnapshotFunc), and the actions
-// the device reconcilers send (Actor). docs/plans/release-a.md §6.2 is the
-// specification.
+// the device reconcilers and the Message reconciler send (Actor).
+// docs/plans/release-a.md §6.2 is the specification.
 //
 // It is a contract between W3's stages: controller-core builds the poller
 // and the HTTP client that implement it, controller-devices builds the
@@ -19,7 +19,7 @@
 //   - drivers.Observations are always built with Snapshot.For, so every
 //     driver sees the agent the same way.
 //   - An action counts as sent only when Actor returned no error and
-//     Sent=true (ActionFailure).
+//     Sent=true (ActionFailure, PushFailure).
 package agentview
 
 import (
@@ -126,14 +126,16 @@ func (h *Holder) Set(s Snapshot) {
 // network). Discovery is one (discovery.Reporter.Report).
 type SnapshotFunc func(ctx context.Context, s Snapshot)
 
-// Actor sends the agent's device actions: POST /v1/actions/resync and
-// /v1/actions/restart with the bearer token (internal/controller/agentclient
+// Actor sends the agent's device actions: POST /v1/actions/resync,
+// /v1/actions/restart (the device reconcilers) and /v1/actions/push (the
+// Message reconciler) with the bearer token (internal/controller/agentclient
 // implements it). err is a failure to get an answer (agent unreachable, a
 // non-200 status, a body that does not decode); an answer with Sent=false is
 // returned as it came, with a nil error.
 type Actor interface {
 	Resync(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
 	Restart(ctx context.Context, req agentapi.ActionRequest) (agentapi.ActionResponse, error)
+	Push(ctx context.Context, req agentapi.PushRequest) (agentapi.PushResponse, error)
 }
 
 // ActionFailure is why an action did not go out, or "" when it did: the
@@ -149,6 +151,26 @@ func ActionFailure(resp agentapi.ActionResponse, err error) string {
 	default:
 		return "the agent did not send it"
 	}
+}
+
+// PushFailure is why a push did not go out, or "" when it did: the error,
+// else the agent's Error when Sent is false, with the phone's answer when
+// there is one ("... (the phone answered status 4)").
+func PushFailure(resp agentapi.PushResponse, err error) string {
+	switch {
+	case err != nil:
+		return err.Error()
+	case resp.Sent:
+		return ""
+	}
+	msg := resp.Error
+	if msg == "" {
+		msg = "the agent did not send it"
+	}
+	if resp.Phone != "" {
+		msg += " (the phone answered " + resp.Phone + ")"
+	}
+	return msg
 }
 
 // DefaultChangesBuffer is the buffer of each Changes channel the

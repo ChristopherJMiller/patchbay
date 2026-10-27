@@ -274,6 +274,58 @@ func TestActions(t *testing.T) {
 	}
 }
 
+// TestPush: POST /v1/actions/push with the PushRequest as JSON; the agent's
+// PushResponse comes back as it came (Sent false with a nil error); a 401
+// with the current token is retried with the previous one; a non-200 is an
+// error quoting the agent.
+func TestPush(t *testing.T) {
+	var got []agentapi.PushRequest
+	var mu sync.Mutex
+	answer := agentapi.PushResponse{Sent: false, Error: "the phone did not accept the push", Phone: "status 4"}
+	a := &agent{t: t, accept: map[string]bool{previous: true}, handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != agentapi.PathActionPush || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("request %s %s (%s), want POST %s as JSON", r.Method, r.URL.Path, r.Header.Get("Content-Type"), agentapi.PathActionPush)
+		}
+		var req agentapi.PushRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("push body: %v", err)
+		}
+		mu.Lock()
+		got = append(got, req)
+		mu.Unlock()
+		writeJSON(w, http.StatusOK, answer)
+	}}
+	srv := httptest.NewServer(a)
+	defer srv.Close()
+	c := newClient(t, srv, tokens{current: current, previous: previous}, logr.Discard())
+	ctx := context.Background()
+
+	req := agentapi.PushRequest{Device: "phone-desk", PageVersion: "0123456789abcdef", Page: "<CiscoIPPhoneText/>", Beep: true}
+	resp, err := c.Push(ctx, req)
+	if err != nil || resp != answer {
+		t.Fatalf("Push = %+v, %v; want the agent's answer and a nil error", resp, err)
+	}
+	answer = agentapi.PushResponse{Sent: true, Phone: "status 0"}
+	clear := agentapi.PushRequest{Device: "phone-desk", Clear: true}
+	if resp, err := c.Push(ctx, clear); err != nil || !resp.Sent {
+		t.Fatalf("Push(clear) = %+v, %v", resp, err)
+	}
+	if len(got) != 2 || got[0].Device != req.Device || got[0].PageVersion != req.PageVersion || got[0].Page != req.Page ||
+		!got[0].Beep || got[0].Clear || got[1].Device != clear.Device || !got[1].Clear || got[1].Page != "" {
+		t.Errorf("the agent got %+v", got)
+	}
+	if auths := a.requests(); len(auths) != 4 || auths[0] != "Bearer "+current || auths[1] != "Bearer "+previous {
+		t.Errorf("authorizations %v, want each push tried with the current token, then the previous", auths)
+	}
+
+	a.handle = func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusBadRequest, agentapi.Error{Error: "no device named"})
+	}
+	if _, err := c.Push(ctx, agentapi.PushRequest{}); err == nil || !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "no device named") {
+		t.Fatalf("Push answered 400 = %v, want an error quoting the agent", err)
+	}
+}
+
 func TestTimeouts(t *testing.T) {
 	if agentclient.ObservationsTimeout != 5*time.Second || agentclient.ActionTimeout != 10*time.Second {
 		t.Fatalf("timeouts %s and %s, want 5s and 10s (plan W3.4)", agentclient.ObservationsTimeout, agentclient.ActionTimeout)
@@ -393,6 +445,8 @@ func TestNoTokenInErrorsOrLogs(t *testing.T) {
 	_, err := c.Observations(ctx)
 	errs = append(errs, err)
 	_, err = c.Resync(ctx, agentapi.ActionRequest{Device: "d"})
+	errs = append(errs, err)
+	_, err = c.Push(ctx, agentapi.PushRequest{Device: "d", Clear: true})
 	errs = append(errs, err)
 	srv.Close()
 	_, err = c.Restart(ctx, agentapi.ActionRequest{Device: "d"})

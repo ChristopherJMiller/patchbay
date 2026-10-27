@@ -66,7 +66,8 @@ pbx-secrets then pbx-config and read back with `ReadCompiled`, secret
 generation, Event reasons and which Events client-go joins into a series,
 the bounds on status and Event text), `internal/controller/agentview` (the poller's
 `Snapshot`, `Observer`/`Holder`, the `Changes` enqueue channels,
-`SnapshotFunc`, the `Actor` the device reconcilers send actions through),
+`SnapshotFunc`, the `Actor` the device reconcilers send actions through and
+the Message reconciler pushes through, `ActionFailure`/`PushFailure`),
 `internal/controller/ctrltest` (the shared envtest harness),
 `internal/cli/env.go` (the CLI's seams) and `test/e2e/fakephone/script`
 (what `fakephone run` does and reports, and the fake stream source). Release

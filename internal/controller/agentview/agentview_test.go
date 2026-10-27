@@ -85,6 +85,25 @@ func TestActionFailure(t *testing.T) {
 	}
 }
 
+func TestPushFailure(t *testing.T) {
+	for _, c := range []struct {
+		resp agentapi.PushResponse
+		err  error
+		want string
+	}{
+		{agentapi.PushResponse{Sent: true, Phone: "status 0"}, nil, ""},
+		{agentapi.PushResponse{Error: "no address is known for phone-desk"}, nil, "no address is known for phone-desk"},
+		{agentapi.PushResponse{Error: "the phone did not accept the push", Phone: "status 4"}, nil,
+			"the phone did not accept the push (the phone answered status 4)"},
+		{agentapi.PushResponse{}, nil, "the agent did not send it"},
+		{agentapi.PushResponse{Sent: true}, errors.New("401"), "401"},
+	} {
+		if got := agentview.PushFailure(c.resp, c.err); got != c.want {
+			t.Errorf("PushFailure(%+v, %v) = %q, want %q", c.resp, c.err, got, c.want)
+		}
+	}
+}
+
 func TestChangesNotify(t *testing.T) {
 	ctx := context.Background()
 	c := agentview.NewChanges(1)

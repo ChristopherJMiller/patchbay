@@ -1,7 +1,7 @@
 // Package agentclient is the controller's client of the agent's control API
 // (docs/plans/release-a.md W3.4, §7.1): GET /v1/observations for the
-// poller, POST /v1/actions/{resync,restart} for the device reconcilers
-// (agentview.Actor).
+// poller, POST /v1/actions/{resync,restart} for the device reconcilers and
+// POST /v1/actions/push for the Message reconciler (agentview.Actor).
 //
 // Every request carries the agent token as a bearer token. The agent
 // re-reads its token file when the controller regenerates the Secret, but
@@ -138,16 +138,30 @@ func (c *Client) Restart(ctx context.Context, req agentapi.ActionRequest) (agent
 	return c.action(ctx, agentapi.PathActionRestart, req)
 }
 
+// Push asks the agent to store a message page for a phone and push it (or
+// to clear the phone's screen). An answer with Sent=false (the phone
+// refused, or could not be reached) comes back with a nil error.
+func (c *Client) Push(ctx context.Context, req agentapi.PushRequest) (agentapi.PushResponse, error) {
+	return post[agentapi.PushResponse](ctx, c, agentapi.PathActionPush, req)
+}
+
 func (c *Client) action(ctx context.Context, path string, req agentapi.ActionRequest) (agentapi.ActionResponse, error) {
+	return post[agentapi.ActionResponse](ctx, c, path, req)
+}
+
+// post sends an action: req as JSON, the answer decoded into a Resp, within
+// actionTimeout.
+func post[Resp any](ctx context.Context, c *Client, path string, req any) (Resp, error) {
+	var zero Resp
 	ctx, cancel := context.WithTimeout(ctx, actionTimeout)
 	defer cancel()
 	body, err := json.Marshal(req)
 	if err != nil {
-		return agentapi.ActionResponse{}, fmt.Errorf("agentclient: encoding the action: %w", err)
+		return zero, fmt.Errorf("agentclient: encoding the action: %w", err)
 	}
-	var resp agentapi.ActionResponse
+	var resp Resp
 	if err := c.do(ctx, http.MethodPost, path, body, MaxActionResponseSize, &resp); err != nil {
-		return agentapi.ActionResponse{}, err
+		return zero, err
 	}
 	return resp, nil
 }

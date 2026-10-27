@@ -169,6 +169,13 @@ func (a *fakeActor) Restart(_ context.Context, req agentapi.ActionRequest) (agen
 	return a.call("restart", req)
 }
 
+// Push is the Message reconciler's action; the device reconcilers never
+// send it, so a call is recorded (a test's take sees it) and refused.
+func (a *fakeActor) Push(_ context.Context, req agentapi.PushRequest) (agentapi.PushResponse, error) {
+	_, _ = a.call("push", agentapi.ActionRequest{Device: req.Device})
+	return agentapi.PushResponse{}, errors.New("fakeActor: the device reconcilers do not push")
+}
+
 // take returns the calls since the last take.
 func (a *fakeActor) take() []actorCall {
 	a.mu.Lock()
