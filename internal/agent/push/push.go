@@ -44,8 +44,7 @@ import (
 
 const (
 	// ClearURI is the Execute item that returns a phone to its idle display.
-	// Unconfirmed on the real phone (the bench confirms or replaces it): it
-	// is the one place to change.
+	// The bench confirmed it on 2026-10-27 (CP-7945G, SIP 9.4(2)SR4-3).
 	ClearURI = "Init:Services"
 
 	// Timeout bounds each phase of the POST, like the scraper's.

@@ -175,12 +175,11 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		drivers.FeatureMeetMe: drivers.Untested,
 		// Release C features: documented as working on the 79x5, not yet
 		// tried against this firmware.
-		drivers.FeatureSpeedDial:        drivers.Untested,
-		drivers.FeatureServiceURL:       drivers.Untested,
-		drivers.FeatureWallpaper:        drivers.Untested,
-		drivers.FeatureCustomRingtones:  drivers.Untested,
-		drivers.FeatureXMLServices:      drivers.Untested,
-		drivers.FeaturePushNotification: drivers.Untested,
+		drivers.FeatureSpeedDial:       drivers.Untested,
+		drivers.FeatureServiceURL:      drivers.Untested,
+		drivers.FeatureWallpaper:       drivers.Untested,
+		drivers.FeatureCustomRingtones: drivers.Untested,
+		drivers.FeatureXMLServices:     drivers.Untested,
 		// Bench (§8.6): RTPRx push on SIP 9.4(2); a 2008 report says early
 		// 79x5 firmware ignored it.
 		drivers.FeatureRTPRx: drivers.Untested,
@@ -188,5 +187,7 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		// every day inactive and a 1 min idle timeout the 7945's screen goes
 		// dark a minute after the last key press. Wake-on-ring not yet seen.
 		drivers.FeatureDisplayPowerSave: drivers.Supported,
+		// Bench 2026-10-27 (CP-7945G, SIP 9.4(2)SR4-3): an authenticated /CGI/Execute push is accepted (Status 0); the phone asks authenticationURL by GET with UserID, Password, devicename; Play: chimes, a push wakes a dark screen, a newer push replaces the text, Init:Services returns to idle, Exit closes it.
+		drivers.FeaturePushNotification: drivers.Supported,
 	}
 }

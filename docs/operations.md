@@ -138,6 +138,17 @@ has applied its version: no resync is needed.
 | Directories shows only the call histories | The phone cannot reach device HTTP :8088, or gets no menu there. | curl `http://<pbx.address>:8088/directory.xml` from the voice VLAN; the agent's observations record each device HTTP fetch (transport `http8088`). |
 | An entry is missing | Over 32 entries, a Stream that cannot play (above), or a Phone or Softphone that does not hold its number (`Invalid`). | The resource's status says why. |
 
+### Pushed messages (bench 2026-10-27)
+
+Bench results on a CP-7945G (SIP 9.4(2)SR4-3), patchbay 0.4.0-rc.1:
+
+- An authenticated `POST /CGI/Execute` push is accepted (`CiscoIPPhoneResponse`, Status 0).
+- The phone checks credentials with a GET to the SEP `authenticationURL`, passing `UserID`, `Password` and `devicename`; the agent answers `AUTHORIZED`.
+- `Play:patchbay-chime.raw` (from the TFTP tree) chimes during a Stream call, and the stream's audio continues.
+- A push wakes a dark screen; a newer push replaces the shown text; `Init:Services` returns to the idle screen; the Exit softkey closes the message.
+
+Check push on a phone with `patchbay phone test-push <phone> [--text …] [--beep] [--clear]`.
+
 ## One Softphone
 
 | State | Cause | Action |
