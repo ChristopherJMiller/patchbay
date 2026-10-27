@@ -14,6 +14,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -21,6 +22,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/api/v1alpha1"
 	agentapi "github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
+	messagesapi "github.com/ChristopherJMiller/patchbay/internal/controller/messages/api"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers/softphone"
@@ -100,8 +102,16 @@ var (
 //   - transfer: kitchen calls desk, desk blind-transfers it to 150, and
 //     kitchen's audio reaches laptop;
 //   - label: a new label reaches the phone's screen through one resync;
+//   - messages: `patchbay phone message desk dinner` reaches desk's screen
+//     with the chime, and the Message is Shown;
 //   - change-during-call: no resync while desk is on a call, one after it
-//     hangs up (Review Focus 5);
+//     hangs up (Review Focus 5); a message sent during the call is Held
+//     InCall, nothing is pushed while it lasts, and after the BYE the
+//     message goes out with the chime;
+//   - messages in quiet hours: with the house quiet (a tools pod PUTs it to
+//     the messages endpoint with the bearer token) a message stays Held
+//     QuietHours while an urgent one is pushed; withdrawing the urgent one
+//     by its key pushes the page without it;
 //   - secret-heals: deleting desk's Secret gives a new password, which desk
 //     fetches after one resync and registers with; the old one gets 401.
 func TestDeskLoop(t *testing.T) {
@@ -122,6 +132,9 @@ func TestDeskLoop(t *testing.T) {
 					}
 				}
 			}
+			// ... and an earlier run's Messages and house state: this run's
+			// messages start from none, in a house nobody told anything.
+			h.forgetMessages(ctx, t)
 			desk = h.track(ctx, outer, "Phone", deskName)
 			laptop = h.track(ctx, outer, "Softphone", laptopName)
 			return ctx
@@ -376,6 +389,19 @@ func TestDeskLoop(t *testing.T) {
 			}
 			return ctx
 		}).
+		Assess("messages: a message reaches desk's screen, with the chime", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// desk is free (the label's resync went out, so the controller
+			// saw no call) and the house was never told anything: the
+			// controller pushes desk a page holding the message, the chime
+			// first, which desk takes after its authenticationURL says
+			// AUTHORIZED, and fetches.
+			before := h.pushCount(ctx, t, deskPod)
+			dinner := h.message(ctx, t, "dinner")
+			h.waitPhone(ctx, t, deskPod, "desk took a push of a page holding dinner, the chime first",
+				pushedSince(before, messagePage(true, []string{"dinner"}, nil)))
+			h.waitMessage(ctx, t, dinner, "Shown", isShown)
+			return ctx
+		}).
 		Assess("change-during-call: no resync during a call, one after it", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			h.signal(ctx, t, deskPod, "call-600")
 			h.waitPhone(ctx, t, deskPod, "desk on a call to 600", after(deskScript, "call-600"))
@@ -390,6 +416,14 @@ func TestDeskLoop(t *testing.T) {
 				return d.State == string(drivers.StateConfigStale) && c.Status == metav1.ConditionFalse &&
 					c.Reason == cisco79x5.ReasonStale && strings.Contains(c.Message, "waiting for the call to end"), ""
 			})
+			// messages: a message sent during the call waits for its end.
+			// ConfigStale "waiting for the call to end" is the controller's
+			// own snapshot counting the call (the Message reconciler reads
+			// the same one), so the Message is decided in the call, not in
+			// the poll before it.
+			pushesBefore := h.pushCount(ctx, t, deskPod)
+			callBack := h.message(ctx, t, "call back")
+			h.waitMessage(ctx, t, callBack, "Held InCall", isHeld(v1alpha1.ReasonInCall))
 			// The rule under test is "nothing during the call": watch for a
 			// while, as a person would stay on the line.
 			select {
@@ -404,6 +438,12 @@ func TestDeskLoop(t *testing.T) {
 				d.LastAction.Kind == v1alpha1.ActionResync && d.LastAction.Version == v {
 				t.Errorf("a resync of %.12s was recorded during the call: %+v", v, d.LastAction)
 			}
+			if n := h.pushCount(ctx, t, deskPod) - pushesBefore; n != 0 {
+				t.Errorf("desk got %d pushes during its call", n)
+			}
+			if st := h.messageStatus(ctx, t, callBack); !isHeld(v1alpha1.ReasonInCall)(st) {
+				t.Errorf("Message %s is %s %s during the call, want Held InCall", callBack, st.State, st.Reason)
+			}
 
 			h.signal(ctx, t, deskPod, "hangup")
 			h.waitPhone(ctx, t, deskPod, "one NOTIFY after the BYE, the new label", func(s script.State) (bool, string) {
@@ -413,6 +453,42 @@ func TestDeskLoop(t *testing.T) {
 			if n := h.notifyCount(ctx, t, deskPod) - before; n != 1 {
 				t.Errorf("desk got %d NOTIFYs after its call, want 1", n)
 			}
+			// After the BYE the held message goes out, newest first above
+			// dinner (still current), with the chime: it is new.
+			h.waitPhone(ctx, t, deskPod, "the held message pushed with the chime after the BYE",
+				pushedSince(pushesBefore, messagePage(true, []string{"call back", "dinner"}, nil)))
+			h.waitMessage(ctx, t, callBack, "Shown", isShown)
+			return ctx
+		}).
+		Assess("messages in quiet hours: held unless urgent; withdrawn by key", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
+			// Home Assistant's side: the house is quiet, PUT to the
+			// messages Service with the bearer token.
+			putHouse(ctx, t, "house-quiet", messagesapi.HouseUpdate{Quiet: ptr.To(true)})
+			laundry := h.message(ctx, t, "laundry done")
+			h.waitMessage(ctx, t, laundry, "Held QuietHours", isHeld(v1alpha1.ReasonQuietHours))
+			before := h.pushCount(ctx, t, deskPod)
+			leak := h.message(ctx, t, "leak", "--urgent", "--key", "k")
+			h.waitPhone(ctx, t, deskPod, "the urgent message pushed in quiet hours with the chime, the held one not on its page",
+				pushedSince(before, messagePage(true, []string{"leak", "call back", "dinner"}, []string{"laundry done"})))
+			h.waitMessage(ctx, t, leak, "Shown", isShown)
+			// Decided with the urgent one, and still waiting.
+			if st := h.messageStatus(ctx, t, laundry); !isHeld(v1alpha1.ReasonQuietHours)(st) {
+				t.Errorf("Message %s is %s %s once the urgent one is shown, want Held QuietHours", laundry, st.State, st.Reason)
+			}
+
+			// Withdrawn by its key: the page again without it, and no chime
+			// (nothing on it is new). call back and dinner are still
+			// current, so it is a page, not a clear.
+			before = h.pushCount(ctx, t, deskPod)
+			out, err := h.patchbay(ctx, "phone", "withdraw", deskName, "--key", "k")
+			if err != nil || !strings.Contains(out, "withdrew 1 message with key k") {
+				t.Fatalf("phone withdraw --key k: %v\n%s", err, out)
+			}
+			h.waitPhone(ctx, t, deskPod, "a page without the withdrawn message, no chime",
+				pushedSince(before, messagePage(false, []string{"call back", "dinner"}, []string{"leak", "laundry done"})))
+			h.waitMessage(ctx, t, leak, "Withdrawn", func(st v1alpha1.MessageStatus) bool {
+				return st.State == v1alpha1.MessageStateWithdrawn && st.FinishedAt != nil
+			})
 			return ctx
 		}).
 		Assess("secret-heals: a deleted Secret becomes a new password, fetched and registered with", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {

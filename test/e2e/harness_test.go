@@ -67,6 +67,12 @@ const (
 	agentService         = release + "-agent"
 	agentTokenSecret     = release + "-agent-token"
 
+	// The messages endpoint's bearer token: an operator's Secret, which the
+	// chart only names (test/e2e/values.yaml messages.tokenSecret, its key
+	// the chart's default). install creates it before the chart.
+	messagesTokenSecret = release + "-messages-token"
+	messagesTokenKey    = "token"
+
 	// The chart's default ports (test/e2e/values.yaml keeps them).
 	sipPort        = 5060
 	tftpPort       = 69
@@ -445,6 +451,20 @@ func (h *harness) install(ctx context.Context, _ *envconf.Config) (context.Conte
 		metav1.ListOptions{LabelSelector: phonePodLabel}); err != nil {
 		return ctx, fmt.Errorf("deleting old phone scripts: %w", err)
 	}
+	// The messages endpoint's token, as an operator creates it before the
+	// install (the chart only names it; Home Assistant holds the same
+	// value). A reused cluster keeps its own: the tools pods read it from
+	// the Secret, never from the harness.
+	token, err := randomHex(32)
+	if err != nil {
+		return ctx, err
+	}
+	if _, err := h.cs.CoreV1().Secrets(namespace).Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: messagesTokenSecret, Namespace: namespace},
+		Data:       map[string][]byte{messagesTokenKey: []byte(token)},
+	}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return ctx, fmt.Errorf("the messages token Secret: %w", err)
+	}
 
 	if h.reuse {
 		if err := h.notePriorPBX(ctx); err != nil {
@@ -654,8 +674,8 @@ func (h *harness) saveDiagnostics(ctx context.Context, label string) string {
 	var b strings.Builder
 	for _, args := range [][]string{
 		{"get", "all,pvc,events", "--namespace", namespace, "-o", "wide"},
-		{"get", "phones,softphones,people,streams,configmaps,secrets", "--namespace", namespace, "-o", "wide"},
-		{"get", "phones,softphones,people,streams", "--namespace", namespace, "-o", "yaml"},
+		{"get", "phones,softphones,people,streams,messages,configmaps,secrets", "--namespace", namespace, "-o", "wide"},
+		{"get", "phones,softphones,people,streams,messages", "--namespace", namespace, "-o", "yaml"},
 		{"get", "events.events.k8s.io", "--namespace", namespace, "--sort-by=.metadata.creationTimestamp"},
 		{"describe", "pods", "--namespace", namespace},
 		{"logs", "--namespace", namespace, "-l", "app.kubernetes.io/instance=" + release, "--all-containers", "--prefix", "--tail=300"},
