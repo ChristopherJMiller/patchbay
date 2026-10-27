@@ -16,6 +16,8 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
 
 const token = "test-token"
@@ -376,5 +378,29 @@ func TestPushRoute(t *testing.T) {
 	none := newSeamServer(t, Options{})
 	if code, body := doBody(t, none, http.MethodPost, api.PathActionPush, token, `{"device":"phone-desk"}`); code != http.StatusNotImplemented {
 		t.Errorf("push without a pusher = %d %s, want 501", code, body)
+	}
+}
+
+// TestPushRouteWorstCasePage (ruling R17): the request carrying the largest
+// page the 79x5 renders (4000 bytes of text, each a character XML escapes
+// to an entity, which JSON escapes again) is read whole.
+func TestPushRouteWorstCasePage(t *testing.T) {
+	page, err := cisco79x5.New().RenderMessages("cisco-7945", []drivers.MessageLine{
+		{Sent: pinned, Title: strings.Repeat(`"`, 32), Text: strings.Repeat("&", 5000), Urgent: true},
+	}, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(api.PushRequest{Device: "phone-desk", PageVersion: "0123456789abcdef", Page: string(page), Beep: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := &fakePusher{resp: api.PushResponse{Sent: true, Phone: "status 0"}}
+	ts := newSeamServer(t, Options{Push: fp})
+	if code, answer := doBody(t, ts, http.MethodPost, api.PathActionPush, token, string(body)); code != http.StatusOK {
+		t.Fatalf("a %d-byte request for a %d-byte page: %d %s, want 200", len(body), len(page), code, answer)
+	}
+	if len(fp.got) != 1 || fp.got[0].Page != string(page) {
+		t.Errorf("the pusher did not get the whole page")
 	}
 }

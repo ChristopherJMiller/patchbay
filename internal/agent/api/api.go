@@ -440,10 +440,14 @@ type ActionResponse struct {
 
 // Push limits.
 const (
-	// MaxPushBody is the largest push request body the agent reads.
-	MaxPushBody = 16 << 10
-	// MaxPushPage is the largest PushRequest.Page.
-	MaxPushPage = 8 << 10
+	// MaxPushBody is the largest push request body the agent reads: the
+	// largest page, JSON-encoded (an escaped "&amp;" becomes
+	// "&amp;"), and the rest of the request.
+	MaxPushBody = 48 << 10
+	// MaxPushPage is the largest PushRequest.Page. The 79x5's page holds
+	// at most 4000 bytes of text before XML escaping, which at most
+	// multiplies it by six, plus its markup.
+	MaxPushPage = 32 << 10
 	// MaxPushExecute is how many items one Execute holds (the phone's limit).
 	MaxPushExecute = 3
 	// MaxPhoneAnswer bounds PushResponse.Phone.

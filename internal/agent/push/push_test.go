@@ -2,6 +2,7 @@ package push_test
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,12 +10,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr/funcr"
 
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/push"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
+	"github.com/ChristopherJMiller/patchbay/internal/drivers/cisco79x5"
 )
 
 const (
@@ -133,6 +136,54 @@ func TestPushPage(t *testing.T) {
 	}
 	if got := f.pages.Acknowledged("phone-desk"); got != "abc" {
 		t.Errorf("acknowledged %q, want abc", got)
+	}
+}
+
+// worstPage is the largest message page the 79x5 renders: its Text holds
+// 4000 bytes of characters XML escapes to an entity ("&" -> "&amp;", '"'
+// -> "&#34;"), the most the renderer keeps before escaping.
+func worstPage(t *testing.T) []byte {
+	t.Helper()
+	lines := []drivers.MessageLine{
+		{Sent: time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC), Title: strings.Repeat(`"`, 32), Text: strings.Repeat("&", 5000), Urgent: true},
+	}
+	page, err := cisco79x5.New().RenderMessages("cisco-7945", lines, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(page), "&amp;"); n < 3900 {
+		t.Fatalf("the page holds %d escaped &, want about 4000", n)
+	}
+	return page
+}
+
+// TestPushLimits (ruling R17): the page and body limits fit the largest page
+// the controller renders, escaped and then JSON-encoded.
+func TestPushLimits(t *testing.T) {
+	if api.MaxPushPage != 32<<10 || api.MaxPushBody != 48<<10 {
+		t.Errorf("MaxPushPage %d, MaxPushBody %d; want 32 KiB and 48 KiB", api.MaxPushPage, api.MaxPushBody)
+	}
+	page := worstPage(t)
+	body, err := json.Marshal(api.PushRequest{Device: "phone-desk", PageVersion: "0123456789abcdef", Page: string(page), Beep: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) > api.MaxPushPage || len(body) > api.MaxPushBody {
+		t.Errorf("the worst page is %d bytes (limit %d), its request %d (limit %d)", len(page), api.MaxPushPage, len(body), api.MaxPushBody)
+	}
+}
+
+// TestPushWorstCasePage: the largest page RenderMessages makes passes the
+// pusher's checks and is stored and sent.
+func TestPushWorstCasePage(t *testing.T) {
+	f := newFixture(t)
+	page := worstPage(t)
+	resp := f.p.Push(context.Background(), api.PushRequest{Device: "phone-desk", PageVersion: "worst", Page: string(page), Beep: true})
+	if !resp.Sent {
+		t.Fatalf("the worst page (%d bytes) was refused: %+v", len(page), resp)
+	}
+	if v, stored, ok := f.pages.Get("phone-desk"); !ok || v != "worst" || string(stored) != string(page) {
+		t.Errorf("stored %q (%d bytes), %v", v, len(stored), ok)
 	}
 }
 
