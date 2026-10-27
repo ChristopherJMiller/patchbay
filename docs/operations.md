@@ -187,7 +187,8 @@ ClusterIP only, served by every controller replica. Every request needs
 `messages.tokenSecret.name` (key `messages.tokenSecret.key`, default
 `token`), which you create: the controller never mints it, since the
 caller holds the same value. It is read on every request, so a rotation
-needs no restart.
+needs no restart, and white space around it (the newline `echo` leaves)
+is ignored.
 
 | Request | Body | Answer |
 |---|---|---|

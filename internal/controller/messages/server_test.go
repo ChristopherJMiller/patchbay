@@ -172,6 +172,27 @@ func TestMessagesAuth(t *testing.T) {
 	}
 }
 
+// TestMessagesAuthTrimsToken: a token Secret written with a trailing
+// newline (echo, a heredoc) still authorizes the token itself, as the
+// agent's token does; a value that is only white space is no token.
+func TestMessagesAuthTrimsToken(t *testing.T) {
+	e := newEnv(t, tokenSecret(token+"\n"))
+	good := `{"to":["desk"],"text":"x"}`
+	if code, body := e.do(t, "POST", messagesapi.PathMessages, token, good); code != http.StatusCreated {
+		t.Fatalf("the token of a Secret ending in a newline: %d %s", code, body)
+	}
+	if code, _ := e.do(t, "POST", messagesapi.PathMessages, token+"x", good); code != http.StatusUnauthorized {
+		t.Errorf("a wrong token: %d", code)
+	}
+	e = newEnv(t, tokenSecret(" \n"))
+	if code, _ := e.do(t, "POST", messagesapi.PathMessages, "x", good); code != http.StatusServiceUnavailable {
+		t.Errorf("a Secret holding only white space: %d, want 503", code)
+	}
+	if n := len(e.list(t)); n != 0 {
+		t.Errorf("%d messages written with no token", n)
+	}
+}
+
 func TestMessagesNoSecret(t *testing.T) {
 	e := newEnv(t)
 	code, body := e.do(t, "POST", messagesapi.PathMessages, "anything", `{"to":["desk"],"text":"x"}`)

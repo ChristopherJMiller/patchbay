@@ -25,6 +25,7 @@
 package messages
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -169,13 +170,15 @@ func (s *Server) serveOn(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// auth requires the bearer token in the Secret now. No Secret or key is a
-// 503 (nothing is written), a missing or wrong token a 401.
+// auth requires the bearer token in the Secret now, white space around it
+// trimmed (a value written with `echo` or a heredoc ends in a newline, and
+// the agent's token is read the same way). No Secret or key, or only white
+// space, is a 503 (nothing is written), a missing or wrong token a 401.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var sec corev1.Secret
 		err := s.cfg.Client.Get(r.Context(), s.cfg.TokenSecret, &sec)
-		token := sec.Data[s.cfg.TokenKey]
+		token := bytes.TrimSpace(sec.Data[s.cfg.TokenKey])
 		if apierrors.IsNotFound(err) || (err == nil && len(token) == 0) {
 			writeError(w, http.StatusServiceUnavailable, "no messages token configured")
 			return
