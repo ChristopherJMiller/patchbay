@@ -296,8 +296,8 @@ func TestListParsing(t *testing.T) {
 	}
 	chans, err := c.Channels(ctx)
 	wantChans := []Channel{
-		{"PJSIP/phone-desk-0000002a", "phone-desk"}, {"PJSIP/softphone-laptop-0000002b", "softphone-laptop"},
-		{"Local/600@x-00000001;1", ""}, {"PJSIP/phone-front-desk-000000ff", "phone-front-desk"},
+		{Name: "PJSIP/phone-desk-0000002a", Endpoint: "phone-desk"}, {Name: "PJSIP/softphone-laptop-0000002b", Endpoint: "softphone-laptop"},
+		{Name: "Local/600@x-00000001;1"}, {Name: "PJSIP/phone-front-desk-000000ff", Endpoint: "phone-front-desk"},
 	}
 	if err != nil || !slices.Equal(chans, wantChans) {
 		t.Errorf("Channels = %+v, %v", chans, err)
@@ -632,5 +632,41 @@ func TestURIHost(t *testing.T) {
 	}
 	if got := canonicalIP("fe80::1%eth0"); got != "" {
 		t.Errorf("canonicalIP of a zoned address = %q", got)
+	}
+}
+
+// TestChannelsReadsBridgeFields: CoreShowChannel's Application,
+// ApplicationData and BridgeId (Asterisk 22) come through, which is what
+// tells a call into a Stream from a call between people.
+func TestChannelsReadsBridgeFields(t *testing.T) {
+	f := newFakeAMI(t, secret)
+	f.setReply(func(c *fakeConn, r fakeRequest) {
+		if r.action != "CoreShowChannels" {
+			return
+		}
+		c.send("Response: Success", "ActionID: "+r.id, "EventList: start", "Message: Channels will follow")
+		c.send("Event: CoreShowChannel", "ActionID: "+r.id, "Channel: PJSIP/phone-desk-00000000", "ChannelState: 6",
+			"Application: Dial", "ApplicationData: AudioSocket/patchbay-streams.telephony.svc:9092/ede9/c(slin16),,gS(10)", "BridgeId: 1b2c")
+		c.send("Event: CoreShowChannel", "ActionID: "+r.id, "Channel: AudioSocket/patchbay-streams.telephony.svc:9092-ede9",
+			"ChannelState: 6", "Application: AppDial", "ApplicationData: (Outgoing Line)", "BridgeId: 1b2c")
+		c.send("Event: CoreShowChannel", "ActionID: "+r.id, "Channel: PJSIP/phone-front-00000001", "ChannelState: 5")
+		c.send("Event: CoreShowChannelsComplete", "ActionID: "+r.id, "EventList: Complete", "ListItems: 3")
+	})
+	c := startConn(t, f, secret, logr.Discard())
+	waitUp(t, c)
+	got, err := c.Channels(ctx5s(t))
+	want := []Channel{
+		{
+			Name: "PJSIP/phone-desk-00000000", Endpoint: "phone-desk", Application: "Dial",
+			ApplicationData: "AudioSocket/patchbay-streams.telephony.svc:9092/ede9/c(slin16),,gS(10)", BridgeID: "1b2c",
+		},
+		{
+			Name: "AudioSocket/patchbay-streams.telephony.svc:9092-ede9", Application: "AppDial",
+			ApplicationData: "(Outgoing Line)", BridgeID: "1b2c",
+		},
+		{Name: "PJSIP/phone-front-00000001", Endpoint: "phone-front"},
+	}
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("Channels = %+v, %v\nwant %+v", got, err, want)
 	}
 }

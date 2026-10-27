@@ -58,7 +58,7 @@ JSON, including the push action's `PushRequest`/`PushResponse`), and the agent's
 events, the file server's socket format, the scrape and firmware sensors),
 `internal/agent/provision` (one-time token grants), `internal/agent/layout`
 (mounts, uids, file modes, version directories), `internal/agent/ami/ami.go`
-(the AMI client interface), `internal/agent/firmware/store.go` (the
+(the AMI client interface, and `Channel`'s `Application`, `ApplicationData` and `BridgeID`, which `observe.StreamCalls` reads to set `DeviceObservations.StreamCalls`, the part of `Calls` that is calls into a Stream; the cisco79x5 resync hold still waits on `Calls`), `internal/agent/firmware/store.go` (the
 firmware store interface) and `agent.Options` (what the control API
 serves); and the controller's (W3): `internal/controller/install` (the
 install's object names, keys, labels, the compiled bundle written as

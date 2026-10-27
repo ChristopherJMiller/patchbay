@@ -688,3 +688,44 @@ func TestObservationsCarryPage(t *testing.T) {
 		t.Errorf("a cleared page is still reported: %+v", d)
 	}
 }
+
+func TestStreamCalls(t *testing.T) {
+	const bridge = "AudioSocket/patchbay-streams.telephony.svc:9092-ede9025b"
+	cases := []struct {
+		name                 string
+		channels             []ami.Channel
+		deskCalls, deskPlays int
+	}{
+		{"the phone's leg dialling the bridge", []ami.Channel{
+			{Name: "PJSIP/phone-desk-00000000", Endpoint: desk, Application: "Dial", ApplicationData: "AudioSocket/patchbay-streams.telephony.svc:9092/ede9025b/c(slin16),,gS(7200)", BridgeID: "b1"},
+			{Name: bridge, Application: "AppDial", BridgeID: "b1"},
+		}, 1, 1},
+		{"a transferred stream: the phone's leg shares a bridge with the AudioSocket one", []ami.Channel{
+			{Name: "PJSIP/phone-desk-00000001", Endpoint: desk, Application: "Echo", BridgeID: "b2"},
+			{Name: bridge, Application: "AppDial", BridgeID: "b2"},
+		}, 1, 1},
+		{"a call to a person's softphone", []ami.Channel{
+			{Name: "PJSIP/phone-desk-00000002", Endpoint: desk, Application: "Dial", ApplicationData: "PJSIP/softphone-chris-laptop,30", BridgeID: "b3"},
+			{Name: "PJSIP/softphone-chris-laptop-00000003", Endpoint: laptop, Application: "AppDial", BridgeID: "b3"},
+		}, 1, 0},
+		{"ringing", []ami.Channel{
+			{Name: "PJSIP/phone-desk-00000004", Endpoint: desk},
+		}, 1, 0},
+		{"a stream on another bridge does not count", []ami.Channel{
+			{Name: "PJSIP/phone-desk-00000005", Endpoint: desk, Application: "Dial", ApplicationData: "PJSIP/softphone-chris-laptop,30", BridgeID: "b4"},
+			{Name: bridge, Application: "AppDial", BridgeID: "other"},
+		}, 1, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.ami.SetUp(true, "22.11.0")
+			f.ami.SetChannels(tc.channels...)
+			f.store.Poll(context.Background())
+			d := f.device(desk)
+			if d == nil || d.Calls != tc.deskCalls || d.StreamCalls != tc.deskPlays {
+				t.Errorf("desk = %+v; want Calls %d, StreamCalls %d", d, tc.deskCalls, tc.deskPlays)
+			}
+		})
+	}
+}

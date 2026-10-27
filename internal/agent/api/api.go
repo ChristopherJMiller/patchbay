@@ -185,6 +185,12 @@ type DeviceObservations struct {
 	// A phone in a call is never resynced: a resync can drop the call.
 	Calls int `json:"calls,omitempty"`
 
+	// StreamCalls is how many of Calls are calls into a Stream (radio or TV
+	// from the stream bridge), not to a person. Calls - StreamCalls are the
+	// person calls, which hold messages back; a Stream call does not. The
+	// agent classifies by channel shape and learns no stream names.
+	StreamCalls int `json:"streamCalls,omitempty"`
+
 	// Page is the version of the message page the phone last acknowledged (a
 	// CiscoIPPhoneResponse with Status 0) for the device, "" for none. A page
 	// merely stored, or refused, does not count. The agent

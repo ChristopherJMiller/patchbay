@@ -118,6 +118,7 @@ type Store struct {
 	contacts  map[string]ami.Contact
 	firstSeen map[contactKey]time.Time
 	calls     map[string]int
+	streams   map[string]int // of calls, the ones into a Stream
 	// indexVersion and indexMACs are the applied index last seen, by
 	// device ID and MAC (syncIndex).
 	indexVersion string
@@ -148,7 +149,7 @@ func New(cfg Config) *Store {
 	}
 	return &Store{
 		cfg: cfg, devices: map[string]*device{}, unknown: map[string]*api.UnknownDevice{},
-		contacts: map[string]ami.Contact{}, firstSeen: map[contactKey]time.Time{}, calls: map[string]int{},
+		contacts: map[string]ami.Contact{}, firstSeen: map[contactKey]time.Time{}, calls: map[string]int{}, streams: map[string]int{},
 	}
 }
 
@@ -420,6 +421,7 @@ func (s *Store) Poll(ctx context.Context) {
 	s.mu.Lock()
 	byDevice := map[string]ami.Contact{}
 	calls := map[string]int{}
+	var streams map[string]int
 	if err != nil {
 		s.cfg.Log.V(1).Info("no AMI poll: registrations and calls cleared", "error", err.Error())
 	} else {
@@ -437,6 +439,7 @@ func (s *Store) Poll(ctx context.Context) {
 				calls[ch.Endpoint]++
 			}
 		}
+		streams = StreamCalls(channels)
 	}
 	firstSeen := map[contactKey]time.Time{}
 	for id, c := range byDevice {
@@ -447,7 +450,7 @@ func (s *Store) Poll(ctx context.Context) {
 			firstSeen[k] = now
 		}
 	}
-	s.contacts, s.calls, s.firstSeen = byDevice, calls, firstSeen
+	s.contacts, s.calls, s.streams, s.firstSeen = byDevice, calls, streams, firstSeen
 	n := len(byDevice)
 	s.mu.Unlock()
 	s.cfg.Metrics.SetRegisteredEndpoints(n)
@@ -498,7 +501,7 @@ func (s *Store) Document(now time.Time) api.Observations {
 	defer s.mu.Unlock()
 	s.syncIndex(version, idx, ok)
 	for _, id := range slices.Sorted(maps.Keys(idx.Devices)) {
-		obs := api.DeviceObservations{Device: id, MAC: idx.Devices[id].MAC, Calls: s.calls[id]}
+		obs := api.DeviceObservations{Device: id, MAC: idx.Devices[id].MAC, Calls: s.calls[id], StreamCalls: s.streams[id]}
 		seen := obs.Calls > 0
 		if d := s.devices[id]; d != nil {
 			if len(d.fetches) > 0 {
@@ -559,4 +562,36 @@ func copyScrape(w *api.WebScrape) *api.WebScrape {
 	}
 	out.DeviceLog = slices.Clone(w.DeviceLog)
 	return &out
+}
+
+// audioSocketPrefix starts the name of a channel Asterisk bridges to the
+// stream bridge, and the Dial argument of the phone's own leg of a call
+// into a Stream. Asterisk's own word; the agent learns no stream names or
+// numbers.
+const audioSocketPrefix = "AudioSocket/"
+
+// StreamCalls counts, per PJSIP endpoint, the channels that are calls into a
+// Stream: radio or TV Asterisk plays from the stream bridge over AudioSocket.
+// It classifies by channel shape only. A channel is a Stream call when it is
+// dialling an AudioSocket channel (the leg of a call placed to a Stream), or
+// when it shares a bridge with an AudioSocket channel (a Stream call
+// transferred, whose first leg is gone). A ringing call has neither, and so is
+// a call between people.
+func StreamCalls(channels []ami.Channel) map[string]int {
+	streamBridges := map[string]bool{}
+	for _, ch := range channels {
+		if ch.BridgeID != "" && strings.HasPrefix(ch.Name, audioSocketPrefix) {
+			streamBridges[ch.BridgeID] = true
+		}
+	}
+	out := map[string]int{}
+	for _, ch := range channels {
+		if ch.Endpoint == "" {
+			continue
+		}
+		if strings.HasPrefix(ch.ApplicationData, audioSocketPrefix) || (ch.BridgeID != "" && streamBridges[ch.BridgeID]) {
+			out[ch.Endpoint]++
+		}
+	}
+	return out
 }

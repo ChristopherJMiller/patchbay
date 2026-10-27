@@ -135,6 +135,17 @@ type Channel struct {
 	// "PJSIP/" and its "-<sequence>" suffix), or "" for any other channel
 	// technology.
 	Endpoint string
+	// Application is the dialplan application the channel is running now
+	// (CoreShowChannel's Application), e.g. Dial or AppDial, or "" while it
+	// rings.
+	Application string
+	// ApplicationData is that application's argument, e.g.
+	// AudioSocket/patchbay-streams.telephony.svc:9092/<uuid>/c(slin16),,gS(10)
+	// on the phone's leg of a call into a Stream.
+	ApplicationData string
+	// BridgeID is the bridge the channel is in (BridgeId), "" for none. Two
+	// channels with the same BridgeID are talking to each other.
+	BridgeID string
 }
 
 // Notify is one SIP NOTIFY.

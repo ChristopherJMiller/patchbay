@@ -152,7 +152,10 @@ func (c *Conn) Channels(ctx context.Context) ([]Channel, error) {
 	out := make([]Channel, 0, len(items))
 	for _, m := range items {
 		name := m.get("Channel")
-		out = append(out, Channel{Name: name, Endpoint: channelEndpoint(name)})
+		out = append(out, Channel{
+			Name: name, Endpoint: channelEndpoint(name),
+			Application: m.get("Application"), ApplicationData: m.get("ApplicationData"), BridgeID: m.get("BridgeId"),
+		})
 	}
 	return out, nil
 }

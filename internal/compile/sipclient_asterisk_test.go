@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(sipClientEnv); mode != "" {
 		os.Exit(runSIPClient(mode))
 	}
+	if os.Getenv(amiChannelsEnv) != "" {
+		os.Exit(runAMIChannels())
+	}
 	if dir := os.Getenv(audioSocketEnv); dir != "" {
 		os.Exit(runAudioSocketServer(dir))
 	}

@@ -49,7 +49,7 @@ func TestObservationsRoundTrip(t *testing.T) {
 				NetworkConfiguration: &api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"},
 				DeviceLog:            []string{"Registered 100"},
 			},
-			Calls: 1, Page: "abc",
+			Calls: 1, StreamCalls: 1, Page: "abc",
 		}},
 		UnknownDevices: []api.UnknownDevice{{
 			MAC: "D0C78915EBB5", File: "SEPD0C78915EBB5.cnf.xml", Source: "192.168.20.101",
