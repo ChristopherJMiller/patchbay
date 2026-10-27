@@ -151,7 +151,8 @@ func (b *fakeBridge) count() int {
 // pbx-config, polls the agent with the token it minted, decides the Phone
 // Unseen from that document, reports the agent's unknown phone, compiles a
 // Stream into <fullname>-streams, polls the bridge and decides the Stream
-// Idle, and counts the Phone and the Stream in its metrics.
+// Idle, holds a Message for the unregistered Phone PhoneUnreachable, and
+// counts the Phone and the Stream in its metrics.
 func TestSetupWiresEverything(t *testing.T) {
 	needEnvtest(t)
 	ctx := context.Background()
@@ -309,6 +310,24 @@ func TestSetupWiresEverything(t *testing.T) {
 	if bridge.count() == 0 {
 		t.Error("the bridge was never polled")
 	}
+
+	// A Message for the Phone: the agent's document has no registration for
+	// it, so the Message reconciler holds it PhoneUnreachable.
+	msg := &v1alpha1.Message{
+		ObjectMeta: metav1.ObjectMeta{Name: "hello", Namespace: ns},
+		Spec:       v1alpha1.MessageSpec{Phone: "desk", Text: "hello", ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour))},
+	}
+	if err := testClient.Create(ctx, msg); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the Message held PhoneUnreachable", func() (bool, string) {
+		var m v1alpha1.Message
+		if err := testClient.Get(ctx, client.ObjectKeyFromObject(msg), &m); err != nil {
+			return false, err.Error()
+		}
+		return m.Status.State == v1alpha1.MessageStateHeld && m.Status.Reason == v1alpha1.ReasonPhoneUnreachable,
+			fmt.Sprintf("status %+v", m.Status)
+	})
 
 	// The metrics: the Phone by state, the config version, the agent.
 	rec := httptest.NewRecorder()

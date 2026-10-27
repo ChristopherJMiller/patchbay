@@ -52,7 +52,8 @@ var (
 // pbx-config, with <fullname>-streams written first), the poller of the
 // agent's observations, the Phone, Softphone and Person reconcilers, the
 // Stream reconciler with its poller of the stream bridge's observations,
-// discovery and the metrics.
+// the Message reconciler, discovery, the metrics and (when
+// opts.MessagesAddr is set) the messages endpoint.
 //
 // The pieces meet in three places, so no component hands state to another
 // in memory except through them:
@@ -60,9 +61,9 @@ var (
 //     which the device reconcilers, the poller and discovery read back
 //     (install.ReadCompiled);
 //   - an agentview.Holder: the poller publishes each snapshot of the
-//     agent's document in it, and the device reconcilers and the metrics
-//     read it (the poller is never a reconciler's dependency, so the order
-//     here has no cycle);
+//     agent's document in it, and the device reconcilers, the Message
+//     reconciler and the metrics read it (the poller is never a
+//     reconciler's dependency, so the order here has no cycle);
 //   - agentview.Changes: the poller enqueues the devices whose
 //     observations changed.
 //
@@ -70,6 +71,11 @@ var (
 // poller of the stream bridge, and reads what the bundle reconciler
 // compiled from <fullname>-streams (install.ReadStreams). It polls only
 // when the settings name a stream bridge.
+//
+// The Message reconciler (internal/controller/messages) reads the Messages
+// the endpoint creates and the house ConfigMap it writes, pushes through
+// the agent client, and decides again every install.PollInterval while a
+// Message is not final instead of reading agentview.Changes.
 //
 // Everything that decides or writes runs only on the leader: the
 // reconcilers and the poller. s is the install's settings (settings.Load,
@@ -182,6 +188,12 @@ func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Regi
 		Recorder: recorder, Metrics: m, Log: log.WithName("streams"),
 	}); err != nil {
 		return fmt.Errorf("controller: the Stream reconciler: %w", err)
+	}
+	if err := messages.Setup(mgr, messages.Config{
+		Client: c, Namespace: ns, Names: names, Settings: s, Registry: reg,
+		Observer: holder, Actor: agent, Recorder: recorder, Log: log.WithName("messages"),
+	}); err != nil {
+		return fmt.Errorf("controller: the Message reconciler: %w", err)
 	}
 	if opts.MessagesAddr != "" {
 		name, key, err := ParseMessagesToken(opts.MessagesToken)

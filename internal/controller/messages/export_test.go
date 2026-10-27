@@ -2,6 +2,9 @@ package messages
 
 // Internals the external tests (package messages_test) check.
 
+// PhoneViewOf is the shell's PhoneView of one Phone (phoneView).
+var PhoneViewOf = phoneView
+
 // RuleNames lists the rule table's row names, in order.
 func RuleNames() []string {
 	out := make([]string, len(rules))
