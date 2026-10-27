@@ -2,6 +2,7 @@ package compile_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"flag"
@@ -107,7 +108,7 @@ func TestGolden(t *testing.T) {
 				t.Fatalf("Compile: %v", err)
 			}
 			want := filepath.Join(goldenDir, name, "want")
-			got := goldenFiles(t, b)
+			got := onDisk(goldenFiles(t, b))
 			if *update {
 				if err := os.RemoveAll(want); err != nil {
 					t.Fatal(err)
@@ -120,6 +121,52 @@ func TestGolden(t *testing.T) {
 			crossCheck(t, name, in, s, b)
 		})
 	}
+}
+
+// digestSuffix marks a golden that stands for a binary file: the sidecar
+// x.sha256 holds the SHA-256 and byte length of x, so the repository tracks
+// no binary (CLAUDE.md rule 4). Both directions of the file-set check compare
+// stored names, so x.sha256 stands for x.
+const digestSuffix = ".sha256"
+
+// isBinary is git's heuristic (convert.c, gather_stats): in the first 8000
+// bytes, a NUL, a CR not followed by LF, or too many control bytes (more
+// than one per 128 printable). The mu-law chime has no NUL but is "-text"
+// to git all the same, which is what check-hygiene tests.
+func isBinary(b []byte) bool {
+	b = b[:min(len(b), 8000)]
+	printable, nonprintable := 0, 0
+	for i, c := range b {
+		switch {
+		case c == 0:
+			return true
+		case c == '\r':
+			if i+1 >= len(b) || b[i+1] != '\n' {
+				return true
+			}
+		case c == '\n', c == '\b', c == '\t', c == 033, c == '\f':
+			printable++
+		case c < 32 || c == 127:
+			nonprintable++
+		default:
+			printable++
+		}
+	}
+	return printable>>7 < nonprintable
+}
+
+// onDisk is the golden files as they are stored: a binary file becomes its
+// digest sidecar, so -update never writes the binary itself.
+func onDisk(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for p, content := range files {
+		if !isBinary(content) {
+			out[p] = content
+			continue
+		}
+		out[p+digestSuffix] = fmt.Appendf(nil, "%x  %d\n", sha256.Sum256(content), len(content))
+	}
+	return out
 }
 
 // goldenFiles is the bundle as golden files: every file at its path,
