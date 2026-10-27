@@ -355,7 +355,9 @@ func observed(pushed, held string) bool {
 // phoneView is what Decide needs of one Phone, from the resource, its
 // driver and the snapshot. Reachable needs the agent's latest poll to have
 // succeeded, at most install.StaleAfter ago, and a registration that has
-// not lapsed; person calls are the device's Calls less its StreamCalls.
+// not lapsed, give or take drivers.RegistrationGrace (a refresh lands a
+// moment after the expiry it extends, as the device reconcilers count it);
+// person calls are the device's Calls less its StreamCalls.
 func phoneView(p *v1alpha1.Phone, reg *drivers.Registry, signalling drivers.Signalling, snap agentview.Snapshot, now time.Time) PhoneView {
 	dev := drivers.PhoneDevice(p)
 	pv := PhoneView{Name: p.Name, DeviceID: dev.ID, Model: dev.Model, Exists: true, Push: drivers.Unsupported}
@@ -371,7 +373,7 @@ func phoneView(p *v1alpha1.Phone, reg *drivers.Registry, signalling drivers.Sign
 		pv.HeldPage = obs.Page
 		pv.PersonCalls = max(0, obs.Calls-obs.StreamCalls)
 		fresh := snap.AgentReachable && now.Sub(snap.PolledAt) <= install.StaleAfter
-		pv.Reachable = fresh && obs.Registration != nil && obs.Registration.ExpiresAt.After(now)
+		pv.Reachable = fresh && obs.Registration != nil && drivers.RegistrationLive(obs.Registration.ExpiresAt, now)
 	}
 	return pv
 }

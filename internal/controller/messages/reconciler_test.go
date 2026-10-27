@@ -536,6 +536,17 @@ func TestPhoneViewOf(t *testing.T) {
 		t.Errorf("a person call next to a Stream call: %+v, want Held InCall", v)
 	}
 
+	// A registration expired by this much, in a fresh poll.
+	expiredBy := func(by time.Duration) agentview.Snapshot {
+		return registered(at0, func(d *agentapi.DeviceObservations) { d.Registration.ExpiresAt = at0.Add(-by) })
+	}
+	// A refresh the controller has not seen yet: 10 s past its expiry, the
+	// registration is still live (drivers.RegistrationGrace, as the device
+	// reconcilers count it).
+	if pv := messages.PhoneViewOf(phone, reg, sig, expiredBy(10*time.Second), at0); !pv.Reachable {
+		t.Errorf("10 s past its expiry, within the registration grace: %+v, want reachable", pv)
+	}
+
 	for _, tc := range []struct {
 		name string
 		snap agentview.Snapshot
@@ -544,6 +555,7 @@ func TestPhoneViewOf(t *testing.T) {
 		{"the agent does not answer", func() agentview.Snapshot { s := registered(at0); s.AgentReachable = false; return s }(), at0},
 		{"the observations are stale", registered(at0), at0.Add(install.StaleAfter + time.Second)},
 		{"the registration lapsed", registered(at0.Add(-2 * time.Hour)), at0},
+		{"the registration lapsed past the grace", expiredBy(drivers.RegistrationGrace + time.Second), at0},
 		{"no registration", registered(at0, func(d *agentapi.DeviceObservations) { d.Registration = nil }), at0},
 		{"never seen", agentview.Snapshot{AgentReachable: true, PolledAt: at0, Polls: 1}, at0},
 	} {
