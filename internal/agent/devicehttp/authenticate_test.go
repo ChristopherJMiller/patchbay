@@ -99,7 +99,7 @@ func TestAuthenticateBasic(t *testing.T) {
 	must(t, err)
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || string(b) != "AUTHORIZED" {
+	if resp.StatusCode != http.StatusOK || string(b) != "AUTHORIZED" {
 		t.Fatalf("got %d %q", resp.StatusCode, b)
 	}
 }

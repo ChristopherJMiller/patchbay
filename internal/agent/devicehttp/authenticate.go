@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 )
@@ -17,6 +16,10 @@ const (
 
 	// maxAuthBody bounds the form body read from the phone.
 	maxAuthBody = 4 << 10
+
+	// What the log line records of the request's parameter names.
+	maxLoggedNames = 16
+	maxLoggedName  = 64
 )
 
 // authenticate answers the phone's question "are these the credentials of
@@ -28,29 +31,38 @@ const (
 // a fetch event.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBody)
-	vals := url.Values{}
+	vals := r.URL.Query()
 	if r.Method == http.MethodPost {
 		if err := r.ParseForm(); err == nil {
 			vals = r.Form // query and body
-		} else {
-			vals = r.URL.Query()
 		}
-	} else {
-		vals = r.URL.Query()
 	}
-	names := make([]string, 0, len(vals)+1)
+	keys := make([]string, 0, len(vals))
+	for k := range vals {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	// get prefers an exact-case name, else the lexically first match.
 	get := func(want string) string {
-		for k, v := range vals {
-			if strings.EqualFold(k, want) && len(v) > 0 {
-				return v[0]
+		if v := vals[want]; len(v) > 0 {
+			return v[0]
+		}
+		for _, k := range keys {
+			if strings.EqualFold(k, want) && len(vals[k]) > 0 {
+				return vals[k][0]
 			}
 		}
 		return ""
 	}
-	for k := range vals {
-		names = append(names, k)
+	// A LAN client chooses the names: log at most 16, each cut to 64 bytes.
+	names := make([]string, 0, maxLoggedNames+1)
+	for i, k := range keys {
+		if i == maxLoggedNames {
+			names = append(names, "...")
+			break
+		}
+		names = append(names, k[:min(len(k), maxLoggedName)])
 	}
-	slices.Sort(names)
 	user, pass := get("UserID"), get("Password")
 	if u, p, ok := r.BasicAuth(); ok {
 		names = append(names, "Authorization: Basic")
