@@ -187,7 +187,11 @@ func pjsipFeatures() map[drivers.Feature]drivers.Support {
 		// every day inactive and a 1 min idle timeout the 7945's screen goes
 		// dark a minute after the last key press. Wake-on-ring not yet seen.
 		drivers.FeatureDisplayPowerSave: drivers.Supported,
-		// Bench 2026-10-27 (CP-7945G, SIP 9.4(2)SR4-3): an authenticated /CGI/Execute push is accepted (Status 0); the phone asks authenticationURL by GET with UserID, Password, devicename; Play: chimes, a push wakes a dark screen, a newer push replaces the text, Init:Services returns to idle, Exit closes it.
+		// Bench 2026-10-27 (CP-7945G, SIP 9.4(2)SR4-3): an authenticated
+		// /CGI/Execute push is accepted (Status 0); the phone asks
+		// authenticationURL by GET with UserID, Password, devicename; Play:
+		// chimes, a push wakes a dark screen, a newer push replaces the text,
+		// Init:Services returns to idle, Exit closes it.
 		drivers.FeaturePushNotification: drivers.Supported,
 	}
 }

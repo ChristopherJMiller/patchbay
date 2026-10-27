@@ -142,12 +142,14 @@ has applied its version: no resync is needed.
 
 Bench results on a CP-7945G (SIP 9.4(2)SR4-3), patchbay 0.4.0-rc.1:
 
-- An authenticated `POST /CGI/Execute` push is accepted (`CiscoIPPhoneResponse`, Status 0).
-- The phone checks credentials with a GET to the SEP `authenticationURL`, passing `UserID`, `Password` and `devicename`; the agent answers `AUTHORIZED`.
-- `Play:patchbay-chime.raw` (from the TFTP tree) chimes during a Stream call, and the stream's audio continues.
-- A push wakes a dark screen; a newer push replaces the shown text; `Init:Services` returns to the idle screen; the Exit softkey closes the message.
+- An authenticated `/CGI/Execute` push is accepted (`CiscoIPPhoneResponse`, Status 0). The phone checks the credentials with a GET to `authenticationURL`, passing `UserID`, `Password` and `devicename`.
+- `Play:patchbay-chime.raw` (from the TFTP tree) chimes. During a Stream call the pushed text shows, the chime plays, and the stream's audio continues.
+- A push wakes a screen that display power-save turned off.
+- A newer push replaces the shown text.
+- `Init:Services` returns the phone to its idle screen.
+- Exit closes the message back to idle.
 
-Check push on a phone with `patchbay phone test-push <phone> [--text …] [--beep] [--clear]`.
+Check push on a phone with `patchbay phone test-push <phone> [--text …] [--beep] [--clear] [--execute URI]…`.
 
 ## One Softphone
 
