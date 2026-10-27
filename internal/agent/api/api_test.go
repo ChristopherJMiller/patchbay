@@ -49,7 +49,7 @@ func TestObservationsRoundTrip(t *testing.T) {
 				NetworkConfiguration: &api.NetworkConfiguration{CallManager1: "192.168.0.240  Active"},
 				DeviceLog:            []string{"Registered 100"},
 			},
-			Calls: 1,
+			Calls: 1, Page: "abc",
 		}},
 		UnknownDevices: []api.UnknownDevice{{
 			MAC: "D0C78915EBB5", File: "SEPD0C78915EBB5.cnf.xml", Source: "192.168.20.101",
@@ -89,5 +89,36 @@ func TestFirmwareUploadResponseJSON(t *testing.T) {
 		`"error":"the manifest has no SHA-256 for term45.default.loads yet"}`
 	if string(got) != want {
 		t.Fatalf("got %s\nwant %s", got, want)
+	}
+}
+
+func TestPushJSONRoundTrip(t *testing.T) {
+	req := api.PushRequest{
+		Device: "phone-desk", PageVersion: "abc", Page: "<CiscoIPPhoneText/>", Beep: true, Clear: true,
+		Execute: []string{"Key:Services"},
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"device":"phone-desk","pageVersion":"abc","page":"\u003cCiscoIPPhoneText/\u003e","beep":true,"clear":true,"execute":["Key:Services"]}`
+	if string(raw) != want {
+		t.Fatalf("request:\n got %s\nwant %s", raw, want)
+	}
+	var back api.PushRequest
+	if err := json.Unmarshal(raw, &back); err != nil || !reflect.DeepEqual(req, back) {
+		t.Fatalf("round trip: %+v, %v", back, err)
+	}
+	resp := api.PushResponse{Sent: true, Error: "e", Phone: "status 0"}
+	raw, err = json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rback api.PushResponse
+	if err := json.Unmarshal(raw, &rback); err != nil || rback != resp {
+		t.Fatalf("response round trip: %+v, %v", rback, err)
+	}
+	if string(raw) != `{"sent":true,"error":"e","phone":"status 0"}` {
+		t.Fatalf("response: %s", raw)
 	}
 }

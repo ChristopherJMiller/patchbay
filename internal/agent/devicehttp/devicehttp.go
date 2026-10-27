@@ -100,6 +100,11 @@ const (
 // its token is compared.
 var compareHook atomic.Pointer[func(int)]
 
+// PageSource is the stored message pages, read by device (push.Pages).
+type PageSource interface {
+	Get(device string) (version string, page []byte, ok bool)
+}
+
 // Config configures a Server.
 type Config struct {
 	// LiveDir is the live directory (compile.LiveDir).
@@ -125,6 +130,10 @@ type Config struct {
 	// (apply.Applier.PushCredentials); ok false (or nil) answers every ask
 	// UN-AUTHORIZED.
 	Credentials func() (user, password string, ok bool)
+	// Pages is the message pages pushed to the phones, served at
+	// compile.MessagesPathPrefix + <device>.xml (push.Pages). Nil serves
+	// none: the path answers the one 404.
+	Pages PageSource
 	// Log receives one line per request (V(1)) and every failure.
 	Log logr.Logger
 }
@@ -139,6 +148,7 @@ type Server struct {
 	now         func() time.Time
 	log         logr.Logger
 	credentials func() (string, string, bool)
+	pages       PageSource
 	pruneEvery  time.Duration
 
 	// mu serialises spending and pruning, and guards what follows.
@@ -163,7 +173,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		liveDir: cfg.LiveDir, stateDir: cfg.StateDir, grants: cfg.Grants, settled: cfg.Settled, rec: cfg.Recorder,
-		now: cfg.Now, log: cfg.Log, credentials: cfg.Credentials, pruneEvery: pruneEvery, spent: map[tokenDigest]bool{},
+		now: cfg.Now, log: cfg.Log, credentials: cfg.Credentials, pages: cfg.Pages, pruneEvery: pruneEvery, spent: map[tokenDigest]bool{},
 	}
 	if s.rec == nil {
 		s.rec = sensor.FetchRecorderFunc(func(sensor.FetchEvent) {})
@@ -269,6 +279,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeText(w, http.StatusMethodNotAllowed, notAllowedBody, false)
 		return
 	}
+	if name, ok := strings.CutPrefix(r.URL.Path, compile.MessagesPathPrefix); ok {
+		s.message(w, name, head)
+		return
+	}
 	src := sourceOf(r.RemoteAddr)
 	if token, ok := strings.CutPrefix(r.URL.Path, api.ProvisioningPathPrefix); ok {
 		if head {
@@ -280,6 +294,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveTree(w, r.URL.Path, head, src)
+}
+
+// message serves a phone's pushed message page, <device>.xml. A name with no
+// stored page behind it (an unknown device, nothing stored, a name that is
+// not <device>.xml) gets the one 404 every unknown path gets. It is not a
+// fetch: it records nothing.
+func (s *Server) message(w http.ResponseWriter, name string, head bool) {
+	device, ok := strings.CutSuffix(name, ".xml")
+	if ok && device != "" && !strings.Contains(device, "/") && s.pages != nil {
+		if _, page, held := s.pages.Get(device); held {
+			if err := writeDocument(w, xmlContentType, page, head, true); err != nil {
+				s.log.V(1).Info("the client did not take its message page", "device", device, "error", err.Error())
+			}
+			return
+		}
+	}
+	writeText(w, http.StatusNotFound, notFoundBody, head)
 }
 
 // provision serves a softphone's document to the holder of its token,

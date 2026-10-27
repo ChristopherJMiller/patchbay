@@ -40,6 +40,7 @@ package observe
 import (
 	"context"
 	"maps"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -52,6 +53,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/api"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/apply"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/metrics"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/scrape"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
@@ -70,6 +72,9 @@ type Config struct {
 	Status func() apply.Status
 	// Firmware is the firmware store sensor.
 	Firmware sensor.FirmwareSensor
+	// Pages is the message pages the agent holds, reported per device as
+	// DeviceObservations.Page (push.Pages). May be nil.
+	Pages PageSource
 	// Metrics may be nil.
 	Metrics *metrics.Metrics
 	// PollEvery is how often Run polls AMI; 0 means 5 s.
@@ -78,6 +83,11 @@ type Config struct {
 	Now func() time.Time
 	// Log receives dropped events and poll failures.
 	Log logr.Logger
+}
+
+// PageSource is the stored message pages, read by device (push.Pages).
+type PageSource interface {
+	Get(device string) (version string, page []byte, ok bool)
 }
 
 // Limits.
@@ -352,6 +362,26 @@ func (s *Store) ScrapeTargets(now time.Time) []sensor.ScrapeTarget {
 	return out
 }
 
+// Target is the address to push to for one device: the live contact's, else
+// the source of the latest attributed served fetch (the ScrapeTargets rule),
+// refused when it cannot be a phone's (scrape.Scrapeable). The second result
+// is false when the device has no usable address.
+func (s *Store) Target(device string) (netip.Addr, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	address := ""
+	if c, ok := s.contacts[device]; ok && c.Address != "" {
+		address = c.Address
+	} else if d := s.devices[device]; d != nil && d.lastServed != nil {
+		address = d.lastServed.source
+	}
+	if address == "" {
+		return netip.Addr{}, false
+	}
+	a, err := scrape.Scrapeable(address)
+	return a, err == nil
+}
+
 // Run polls AMI every PollEvery until ctx is done; it returns nil then.
 func (s *Store) Run(ctx context.Context) error {
 	t := time.NewTicker(s.cfg.PollEvery)
@@ -480,6 +510,11 @@ func (s *Store) Document(now time.Time) api.Observations {
 		}
 		if c, ok := s.contacts[id]; ok {
 			obs.Registration, seen = registrationOf(c), true
+		}
+		if s.cfg.Pages != nil {
+			if v, _, ok := s.cfg.Pages.Get(id); ok {
+				obs.Page, seen = v, true
+			}
 		}
 		if seen {
 			doc.Devices = append(doc.Devices, obs)

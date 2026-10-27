@@ -462,3 +462,9 @@ func (s *Scraper) get(ctx context.Context, host, path string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Scrapeable parses a phone's address and refuses one that cannot be a
+// phone's (loopback, unspecified, multicast, link-local, broadcast, or with
+// a zone). The push uses the same rule, so the agent talks to a phone's web
+// server only at an address it would scrape.
+func Scrapeable(address string) (netip.Addr, error) { return scrapeable(address) }

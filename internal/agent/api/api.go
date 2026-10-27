@@ -27,6 +27,11 @@ const (
 	// PathActionRestart is POST with an ActionRequest: reboot a phone
 	// (Cisco service-control, action=reset).
 	PathActionRestart = "/v1/actions/restart"
+	// PathActionPush is POST with a PushRequest: store a message page for a
+	// phone and push it over the phone's /CGI/Execute (or clear the screen,
+	// or send raw Execute URIs). Answered 200 with a PushResponse once the
+	// request decoded and named a device.
+	PathActionPush = "/v1/actions/push"
 	// PathFirmware is the firmware upload endpoint's prefix: PUT
 	// FirmwarePath(load, name) with the file's bytes as the body (and a
 	// Content-Length of at most MaxFirmwareFileSize) stores one file of a
@@ -179,6 +184,12 @@ type DeviceObservations struct {
 	// Calls is how many channels are up on the device's endpoint now (AMI).
 	// A phone in a call is never resynced: a resync can drop the call.
 	Calls int `json:"calls,omitempty"`
+
+	// Page is the version of the message page the agent holds for the
+	// device (PushRequest.PageVersion), "" when it holds none. The agent
+	// keeps pages in memory, so a restart empties it and the controller
+	// sees that here.
+	Page string `json:"page,omitempty"`
 }
 
 // Transport is how a file was fetched.
@@ -418,6 +429,61 @@ type ActionResponse struct {
 
 	// Error is why it was not sent (no contact, AMI down, ...).
 	Error string `json:"error,omitempty"`
+}
+
+// Push limits.
+const (
+	// MaxPushBody is the largest push request body the agent reads.
+	MaxPushBody = 16 << 10
+	// MaxPushPage is the largest PushRequest.Page.
+	MaxPushPage = 8 << 10
+	// MaxPushExecute is how many items one Execute holds (the phone's limit).
+	MaxPushExecute = 3
+	// MaxPhoneAnswer bounds PushResponse.Phone.
+	MaxPhoneAnswer = 200
+)
+
+// PushRequest is the body of POST /v1/actions/push. With Page, the agent
+// stores the page (served at the device HTTP message path), then pushes an
+// Execute that points the phone at it, after a Play: item when Beep is set.
+// With Clear it drops the stored page and pushes the clearing URI. With
+// Execute it pushes exactly those URIs and nothing else (the bench's
+// tool); Execute cannot be combined with Page, Beep or Clear.
+type PushRequest struct {
+	// Device is the target's ID (DeviceObservations.Device).
+	Device string `json:"device"`
+
+	// PageVersion names the page's content: it goes in the URL's query so
+	// a phone does not show a cached older page, and in the observations.
+	PageVersion string `json:"pageVersion,omitempty"`
+
+	// Page is the CiscoIPPhone XML document, at most MaxPushPage bytes.
+	Page string `json:"page,omitempty"`
+
+	// Beep adds the chime ahead of the page.
+	Beep bool `json:"beep,omitempty"`
+
+	// Clear returns the phone to its idle display and drops the page.
+	Clear bool `json:"clear,omitempty"`
+
+	// Execute is raw URIs to push: at most MaxPushExecute, each starting
+	// Init:, Key:, SoftKey: or Play:.
+	Execute []string `json:"execute,omitempty"`
+}
+
+// PushResponse is the body the agent answers a push with: always 200 once
+// the request decoded and named a device (a refusal or a phone's error is
+// Sent false with the reason); undecodable bodies get 400 and an Error.
+type PushResponse struct {
+	// Sent is true when the phone accepted the Execute (status 0).
+	Sent bool `json:"sent"`
+
+	// Error is why it was not sent or not accepted.
+	Error string `json:"error,omitempty"`
+
+	// Phone is the phone's answer, at most MaxPhoneAnswer bytes: "status N"
+	// for a CiscoIPPhoneResponse, "error N" for a CiscoIPPhoneError.
+	Phone string `json:"phone,omitempty"`
 }
 
 // FirmwareUploadResponse is the body the agent answers a firmware upload

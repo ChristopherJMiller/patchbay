@@ -54,7 +54,7 @@ pbx-config ConfigMap encoding), `internal/drivers` (Driver and the optional
 SettingsChecker, Device and the DeviceID format, Memory and its DeepCopy,
 UserText, RegistrationGrace, Observations, DecideSettings, Decision, Profile with
 EndpointOptions, FirmwareLoad), `internal/agent/api` (the control API's
-JSON), and the agent's internal seams: `internal/agent/sensor` (fetch
+JSON, including the push action's `PushRequest`/`PushResponse`), and the agent's internal seams: `internal/agent/push` (the pusher and its page store), `internal/agent/sensor` (fetch
 events, the file server's socket format, the scrape and firmware sensors),
 `internal/agent/provision` (one-time token grants), `internal/agent/layout`
 (mounts, uids, file modes, version directories), `internal/agent/ami/ami.go`

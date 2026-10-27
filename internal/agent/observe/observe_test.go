@@ -19,6 +19,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/intake/intaketest"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/metrics"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/observe"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/push"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sensor"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/drivers"
@@ -58,6 +59,7 @@ type fixture struct {
 	status apply.Status
 	now    time.Time
 	fw     api.FirmwareStore
+	pages  push.Pages
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -82,6 +84,7 @@ func newFixture(t *testing.T) *fixture {
 		},
 		Status:   func() apply.Status { return f.status },
 		Firmware: fwFunc(func() api.FirmwareStore { return f.fw }),
+		Pages:    &f.pages,
 		Metrics:  f.m,
 		Now:      func() time.Time { return f.now },
 		Log:      logr.Discard(),
@@ -643,5 +646,41 @@ func TestMACFilesAreTheDriversNames(t *testing.T) {
 	}
 	if want := []string{cisco79x5.ConfigFileName(deskMAC), cisco79x5.ConfigFileName(deskMAC) + ".sgn"}; !slices.Equal(got, want) {
 		t.Errorf("desk's fetches %v, want %v: the store does not know the driver's file names", got, want)
+	}
+}
+
+func TestTargetPrefersLiveContact(t *testing.T) {
+	f := newFixture(t)
+	if a, ok := f.store.Target(desk); ok {
+		t.Errorf("a device nothing was seen of has a target: %v", a)
+	}
+	f.store.RecordFetch(f.tftp("SEP"+deskMAC+".cnf.xml", "192.168.20.101", time.Second))
+	if a, ok := f.store.Target(desk); !ok || a.String() != "192.168.20.101" {
+		t.Errorf("without a contact: %v %v, want the fetch's source .101", a, ok)
+	}
+	f.ami.SetUp(true, "")
+	f.ami.SetContacts(ami.Contact{Endpoint: desk, Address: "192.168.20.100", ExpiresAt: t0.Add(time.Hour)})
+	f.store.Poll(context.Background())
+	if a, ok := f.store.Target(desk); !ok || a.String() != "192.168.20.100" {
+		t.Errorf("with a contact: %v %v, want the contact's .100", a, ok)
+	}
+	// An address that cannot be a phone's is refused.
+	f.ami.SetContacts(ami.Contact{Endpoint: desk, Address: "127.0.0.1", ExpiresAt: t0.Add(time.Hour)})
+	f.store.Poll(context.Background())
+	if a, ok := f.store.Target(desk); ok {
+		t.Errorf("a loopback contact is a target: %v", a)
+	}
+}
+
+func TestObservationsCarryPage(t *testing.T) {
+	f := newFixture(t)
+	f.pages.Set(desk, "abc", []byte("<CiscoIPPhoneText/>"))
+	d := f.device(desk)
+	if d == nil || d.Page != "abc" {
+		t.Fatalf("the desk's observations %+v, want Page abc", d)
+	}
+	f.pages.Clear(desk)
+	if d := f.device(desk); d != nil && d.Page != "" {
+		t.Errorf("a cleared page is still reported: %+v", d)
 	}
 }

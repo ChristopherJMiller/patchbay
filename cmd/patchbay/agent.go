@@ -28,6 +28,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/agent/metrics"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/observe"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/provision"
+	"github.com/ChristopherJMiller/patchbay/internal/agent/push"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/scrape"
 	"github.com/ChristopherJMiller/patchbay/internal/agent/sounds"
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
@@ -213,9 +214,10 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
 	}
+	var pages push.Pages // shared: the pusher stores, device HTTP serves, observations report
 	store := observe.New(observe.Config{
 		AMI: conn, Applied: applier.Applied, Index: applier.Index, Status: applier.Status,
-		Firmware: disk, Metrics: m, Log: log.WithName("observe"),
+		Firmware: disk, Pages: &pages, Metrics: m, Log: log.WithName("observe"),
 	})
 	in, err := intake.New(intake.Config{
 		Client: cs, Namespace: o.namespace, ConfigMap: o.bundleConfigMap, Secret: o.secrets,
@@ -227,7 +229,15 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 	// After the store: New re-records each persisted spend's served fetch.
 	dh, err := devicehttp.New(devicehttp.Config{
 		LiveDir: o.liveDir, Grants: applier, Settled: provision.SourceFunc(applier.SettledGrants),
-		Recorder: store, StateDir: o.stateDir, Credentials: applier.PushCredentials, Log: log.WithName("devicehttp"),
+		Recorder: store, StateDir: o.stateDir, Credentials: applier.PushCredentials, Pages: &pages,
+		Log: log.WithName("devicehttp"),
+	})
+	if err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
+	pusher, err := push.New(push.Config{
+		Credentials: applier.PushCredentials, Target: store.Target, DeviceHTTPURL: "http://" + o.deviceHTTPListen,
+		Pages: &pages, Log: log.WithName("push"),
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
@@ -239,6 +249,7 @@ func runAgent(ctx context.Context, o agentOptions, tokens func() []string, cs ku
 			return errors.Join(applier.Ready(), sounds.Check(o.soundsDir))
 		},
 		Observations: store.Document,
+		Push:         pusher,
 		Actions:      actions.New(actions.Config{AMI: conn, Applied: applier.Applied, Log: log.WithName("actions")}),
 		Firmware:     firmware.NewUploadHandler(disk, log.WithName("firmware")),
 		Metrics:      m.Handler(),

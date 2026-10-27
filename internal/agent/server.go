@@ -71,6 +71,12 @@ type Options struct {
 	// /v1/actions/{resync,restart}. Nil answers 501.
 	Actions Actions
 
+	// Push handles POST /v1/actions/push: it stores a phone's message page
+	// and pushes it (internal/agent/push). The server has already decoded
+	// the request and checked that Device is set; every refusal is Sent
+	// false with the reason. Nil answers 501.
+	Push Pusher
+
 	// Firmware handles PUT /v1/firmware/{load}/{name} once the request is
 	// authenticated (the firmware store's upload handler, which reads the
 	// path values "load" and "name" and answers with an
@@ -99,6 +105,11 @@ type Actions interface {
 	Resync(ctx context.Context, req api.ActionRequest) api.ActionResponse
 	// Restart sends action=reset (reboot).
 	Restart(ctx context.Context, req api.ActionRequest) api.ActionResponse
+}
+
+// Pusher pushes a message page, a clear or raw Execute URIs to a phone.
+type Pusher interface {
+	Push(ctx context.Context, req api.PushRequest) api.PushResponse
 }
 
 // maxActionBody is the largest action request body the server reads.
@@ -134,6 +145,7 @@ func NewHandler(opts Options) (http.Handler, error) {
 	mux.Handle("GET "+api.PathObservations, s.auth(http.HandlerFunc(s.observations)))
 	mux.Handle("POST "+api.PathActionResync, s.auth(s.action(func(a Actions) actionFunc { return a.Resync })))
 	mux.Handle("POST "+api.PathActionRestart, s.auth(s.action(func(a Actions) actionFunc { return a.Restart })))
+	mux.Handle("POST "+api.PathActionPush, s.auth(http.HandlerFunc(s.push)))
 	mux.Handle("PUT "+api.PathFirmware+"/{load}/{name}", s.auth(http.HandlerFunc(s.firmware)))
 	return mux, nil
 }
@@ -214,6 +226,28 @@ func (s *server) action(pick func(Actions) actionFunc) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, pick(s.opts.Actions)(r.Context(), req))
 	})
+}
+
+// push decodes a PushRequest (at most api.MaxPushBody bytes, no unknown
+// fields, Device set: else 400) and answers 200 with what the pusher
+// returns.
+func (s *server) push(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Push == nil {
+		writeJSON(w, http.StatusNotImplemented, api.Error{Error: r.URL.Path + " is not implemented yet"})
+		return
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, api.MaxPushBody))
+	dec.DisallowUnknownFields()
+	var req api.PushRequest
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Error{Error: "decoding the push request: " + err.Error()})
+		return
+	}
+	if req.Device == "" {
+		writeJSON(w, http.StatusBadRequest, api.Error{Error: "the push request names no device"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.opts.Push.Push(r.Context(), req))
 }
 
 func (s *server) firmware(w http.ResponseWriter, r *http.Request) {

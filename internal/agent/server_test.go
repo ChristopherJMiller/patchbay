@@ -330,3 +330,51 @@ func (sentActions) Resync(context.Context, api.ActionRequest) api.ActionResponse
 func (sentActions) Restart(context.Context, api.ActionRequest) api.ActionResponse {
 	return api.ActionResponse{Sent: true}
 }
+
+type fakePusher struct {
+	got  []api.PushRequest
+	resp api.PushResponse
+}
+
+func (f *fakePusher) Push(_ context.Context, req api.PushRequest) api.PushResponse {
+	f.got = append(f.got, req)
+	return f.resp
+}
+
+func TestPushRoute(t *testing.T) {
+	fp := &fakePusher{resp: api.PushResponse{Sent: true, Phone: "status 0"}}
+	ts := newSeamServer(t, Options{Push: fp})
+
+	code, body := doBody(t, ts, http.MethodPost, api.PathActionPush, token, `{"device":"phone-desk","pageVersion":"v","page":"<x/>","beep":true,"clear":false,"execute":["Key:Services"]}`)
+	var resp api.PushResponse
+	if err := json.Unmarshal(body, &resp); err != nil || code != http.StatusOK || resp != fp.resp {
+		t.Fatalf("push = %d %s (%v), want 200 with the pusher's answer", code, body, err)
+	}
+	if len(fp.got) != 1 || fp.got[0].Device != "phone-desk" || fp.got[0].Page != "<x/>" || !fp.got[0].Beep || fp.got[0].Execute[0] != "Key:Services" {
+		t.Errorf("the pusher saw %+v", fp.got)
+	}
+	for name, bad := range map[string]string{
+		"not JSON":      `device=phone-desk`,
+		"unknown field": `{"device":"phone-desk","force":true}`,
+		"no device":     `{"page":"<x/>"}`,
+		"too large":     `{"device":"phone-desk","page":"` + strings.Repeat("a", api.MaxPushBody) + `"}`,
+	} {
+		if code, body := doBody(t, ts, http.MethodPost, api.PathActionPush, token, bad); code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s, want 400", name, code, body)
+		}
+	}
+	if code, _ := doBody(t, ts, http.MethodPost, api.PathActionPush, "", `{"device":"phone-desk"}`); code != http.StatusUnauthorized {
+		t.Errorf("push without a token: %d, want 401", code)
+	}
+	if code, _ := doBody(t, ts, http.MethodPost, api.PathActionPush, "wrong", `{"device":"phone-desk"}`); code != http.StatusUnauthorized {
+		t.Errorf("push with a wrong token: %d, want 401", code)
+	}
+	if len(fp.got) != 1 {
+		t.Errorf("a refused request reached the pusher: %+v", fp.got)
+	}
+
+	none := newSeamServer(t, Options{})
+	if code, body := doBody(t, none, http.MethodPost, api.PathActionPush, token, `{"device":"phone-desk"}`); code != http.StatusNotImplemented {
+		t.Errorf("push without a pusher = %d %s, want 501", code, body)
+	}
+}
