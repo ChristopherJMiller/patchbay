@@ -118,7 +118,7 @@ func TestCheckSettingsPushSecret(t *testing.T) {
 }
 
 func TestGeneratePushPassword(t *testing.T) {
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		v, err := install.GeneratePushPassword(nil)
 		if err != nil || len(v) != 16 || strings.Trim(v, drivers.Alphanumeric) != "" {
 			t.Fatalf("draw %d = %q, %v; want 16 alphanumerics", i, v, err)
