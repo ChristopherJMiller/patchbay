@@ -46,6 +46,8 @@ func TestNewNames(t *testing.T) {
 		AgentService:     "patchbay-agent",
 		StreamsConfigMap: "patchbay-streams",
 		StreamBridge:     "patchbay-streams",
+		HouseConfigMap:   "patchbay-house",
+		MessagesService:  "patchbay-messages",
 	}
 	if names != want {
 		t.Fatalf("NewNames = %+v, want %+v", names, want)
@@ -66,6 +68,19 @@ func TestNewNames(t *testing.T) {
 		if err := install.NewNames(bad).Validate(); err == nil {
 			t.Errorf("NewNames(%q).Validate() = nil, want an error", bad)
 		}
+	}
+	if install.HouseKey != "house.json" {
+		t.Errorf("HouseKey = %q", install.HouseKey)
+	}
+	broken := names
+	broken.MessagesService = "1messages"
+	if err := broken.Validate(); err == nil {
+		t.Error("a Messages Service name that is not a DNS-1035 label validated")
+	}
+	broken = names
+	broken.HouseConfigMap = "House_"
+	if err := broken.Validate(); err == nil {
+		t.Error("a bad house ConfigMap name validated")
 	}
 	if err := install.NewNames(strings.Repeat("a", install.MaxFullnameLength)).Validate(); err != nil {
 		t.Errorf("a %d-character fullname: %v", install.MaxFullnameLength, err)

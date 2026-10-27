@@ -84,6 +84,15 @@ type Names struct {
 	// Not <fullname>-stream-bridge: with a 50-character fullname that
 	// Service name would be 64 characters, over the DNS label limit.
 	StreamBridge string
+
+	// HouseConfigMap is <fullname>-house (phone messages): house.json
+	// (HouseKey), the messages API's House, the quiet and away state Home
+	// Assistant PUTs. Written by the messages endpoint, read by the Message
+	// reconciler.
+	HouseConfigMap string
+	// MessagesService is <fullname>-messages, the Service in front of the
+	// controller's messages API (messages/api.DefaultPort). A DNS-1035 label.
+	MessagesService string
 }
 
 // Keys of the install's Secrets and ConfigMaps.
@@ -100,6 +109,8 @@ const (
 	// StreamsKey holds streams.json in StreamsConfigMap, and is the file
 	// name the bridge mounts it as (streams.FileName).
 	StreamsKey = streams.FileName
+	// HouseKey holds the House as JSON in HouseConfigMap.
+	HouseKey = "house.json"
 )
 
 // NewNames derives every name from the chart's fullname. Validate checks
@@ -116,6 +127,8 @@ func NewNames(fullname string) Names {
 		AgentService:     fullname + "-agent",
 		StreamsConfigMap: fullname + "-streams",
 		StreamBridge:     fullname + "-streams",
+		HouseConfigMap:   fullname + "-house",
+		MessagesService:  fullname + "-messages",
 	}
 }
 
@@ -132,13 +145,13 @@ func (n Names) Validate() error {
 	}
 	for what, name := range map[string]string{
 		"configMap": n.ConfigMap, "projectedSecret": n.ProjectedSecret, "agentTokenSecret": n.AgentTokenSecret,
-		"amiSecret": n.AMISecret, "pushSecret": n.PushSecret, "settings": n.Settings, "streamsConfigMap": n.StreamsConfigMap,
+		"amiSecret": n.AMISecret, "pushSecret": n.PushSecret, "settings": n.Settings, "streamsConfigMap": n.StreamsConfigMap, "houseConfigMap": n.HouseConfigMap,
 	} {
 		for _, p := range validation.IsDNS1123Subdomain(name) {
 			errs = append(errs, fmt.Errorf("install: %s name %q: %s", what, name, p))
 		}
 	}
-	for what, name := range map[string]string{"agent": n.AgentService, "stream bridge": n.StreamBridge} {
+	for what, name := range map[string]string{"agent": n.AgentService, "stream bridge": n.StreamBridge, "messages": n.MessagesService} {
 		for _, p := range validation.IsDNS1035Label(name) {
 			errs = append(errs, fmt.Errorf("install: %s Service name %q: %s", what, name, p))
 		}

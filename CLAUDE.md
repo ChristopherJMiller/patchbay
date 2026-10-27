@@ -77,7 +77,7 @@ B added (docs/plans/release-b.md §4, and §13's review fixes): `internal/stream
 flags, defaults, timings and bounds, `CallLimitSlack` among them, the
 `Source`/`Decoder` seam, `FFmpegArgs`), `internal/streambridge/audiosocket/frame.go` (AudioSocket's
 kinds and frame), `internal/streambridge/api` (the bridge's control API
-JSON), the stream settings and `Bundle.Streams` in `internal/compile`
+JSON), `internal/controller/messages/api` (the phone messages endpoint's JSON, limits and `House`, with install's house ConfigMap, messages Service and Message Event reasons), the stream settings and `Bundle.Streams` in `internal/compile`
 (`streams_contract_test.go`), the push credential (`Settings.PushSecret`, `Bundle.Push`, `Index.Push`,
 `PushUsername`, install's `PushSecret`/`PushRef`, `Applier.PushCredentials`), and install's streams ConfigMap, names and
 Event reasons. Change them deliberately: the

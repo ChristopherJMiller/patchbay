@@ -87,6 +87,29 @@ const (
 	// reason TunerBusy). Once per refusal (its At). Note: the bridge's
 	// message, which names what held the pool.
 	EventReasonCallRefused = "CallRefused"
+
+	// Phone messages. They regard the Message (a device-less object), so each
+	// is its own series per Message and resourceVersion; a note that says
+	// something new about one Message follows a status write.
+
+	// EventReasonMessageShown (Normal), on a Message: pushed to its phone.
+	EventReasonMessageShown = "MessageShown"
+	// EventReasonMessageHeld (Normal), on a Message: not shown yet. Note: the
+	// reason (InCall, QuietHours, Away).
+	EventReasonMessageHeld = "MessageHeld"
+	// EventReasonMessageExpired (Normal), on a Message: expiresAt passed.
+	EventReasonMessageExpired = "MessageExpired"
+	// EventReasonMessageWithdrawn (Normal), on a Message: spec.withdrawn was set.
+	EventReasonMessageWithdrawn = "MessageWithdrawn"
+	// EventReasonMessageReplaced (Normal), on a Message: a newer Message with
+	// the same key took over.
+	EventReasonMessageReplaced = "MessageReplaced"
+	// EventReasonMessageFailed (Warning), on a Message: it can never be
+	// shown. Note: the reason (PhoneMissing, PushUnsupported).
+	EventReasonMessageFailed = "MessageFailed"
+	// EventReasonPushFailed (Warning), on a Message: a push did not go out;
+	// it is retried. Note: the agent's error.
+	EventReasonPushFailed = "PushFailed"
 )
 
 // Event actions (events.k8s.io requires one: what the controller did or
@@ -101,6 +124,13 @@ const (
 	// EventActionPlay is the action of a Stream's SourceFailed and
 	// CallRefused Events: a call tried to play it.
 	EventActionPlay = "Play"
+
+	// Message actions.
+	EventActionPush     = "Push"
+	EventActionHold     = "Hold"
+	EventActionExpire   = "Expire"
+	EventActionWithdraw = "Withdraw"
+	EventActionReplace  = "Replace"
 )
 
 // UnknownPhoneMessage is the note of an UnknownPhone Event, in design §5's
