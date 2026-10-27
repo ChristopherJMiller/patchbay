@@ -76,6 +76,18 @@ ConfigMap the controller compiles streams.json into are all
 {{- printf "%s-controller" (include "patchbay.fullname" .) -}}
 {{- end -}}
 
+{{/*
+The messages endpoint's token Secret, <name>/<key>, as the controller's
+--messages-token-secret takes it (controller.ParseMessagesToken). Both are
+required with messages.enabled: the Secret is the operator's, never minted.
+*/}}
+{{- define "patchbay.messagesTokenSecret" -}}
+{{- $s := .Values.messages.tokenSecret -}}
+{{- $name := required "messages.tokenSecret.name is required with messages.enabled: the Secret holding the messages endpoint's bearer token, which you create" $s.name -}}
+{{- $key := required "messages.tokenSecret.key is required with messages.enabled: the token's key in that Secret (default token)" $s.key -}}
+{{- printf "%s/%s" $name $key -}}
+{{- end -}}
+
 {{- define "patchbay.agentServiceAccountName" -}}
 {{- printf "%s-agent" (include "patchbay.fullname" .) -}}
 {{- end -}}

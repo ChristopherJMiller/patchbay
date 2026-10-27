@@ -25,6 +25,7 @@ import (
 
 	"github.com/ChristopherJMiller/patchbay/internal/compile"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
+	messagesapi "github.com/ChristopherJMiller/patchbay/internal/controller/messages/api"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/settings"
 	"github.com/ChristopherJMiller/patchbay/internal/streambridge"
 	bridgeapi "github.com/ChristopherJMiller/patchbay/internal/streambridge/api"
@@ -365,7 +366,8 @@ func TestChartStreamBridgeDisabled(t *testing.T) {
 
 // TestChartControllerStreams: the controller polls the bridge at
 // install.StreamBridgeURL on the control port, and may update
-// <fullname>-streams beside pbx-config, and no other ConfigMap.
+// <fullname>-streams beside pbx-config (and the messages endpoint's
+// <fullname>-house), and no other ConfigMap.
 func TestChartControllerStreams(t *testing.T) {
 	m := render(t)
 	wantFlags(t, controllerContainer(t, m), map[string]string{
@@ -386,7 +388,7 @@ func TestChartControllerStreams(t *testing.T) {
 			updates = append(updates, r.ResourceNames)
 		}
 	}
-	if want := [][]string{{names.ConfigMap, names.StreamsConfigMap}}; !reflect.DeepEqual(updates, want) {
+	if want := [][]string{{names.ConfigMap, names.StreamsConfigMap, names.HouseConfigMap}}; !reflect.DeepEqual(updates, want) {
 		t.Errorf("the controller may update ConfigMaps %v, want exactly %v", updates, want)
 	}
 }
@@ -525,16 +527,7 @@ func podMonitor(t *testing.T, m manifest) podMonitorSpec {
 func TestChartNotesStreams(t *testing.T) {
 	notes := func(sets ...string) string {
 		t.Helper()
-		args := append([]string{"--set", "pbx.nodeName=top", "--set", "pbx.address=192.0.2.10"}, flatSets(sets)...)
-		stdout, stderr, err := helm(t, append([]string{"install", "--dry-run=client", release, chartDir, "--namespace", "telephony"}, args...)...)
-		if err != nil {
-			t.Fatalf("helm install --dry-run: %v\n%s", err, stderr)
-		}
-		_, n, ok := strings.Cut(stdout, "\nNOTES:\n")
-		if !ok {
-			t.Fatalf("no NOTES in\n%s", stdout)
-		}
-		return n
+		return installNotes(t, sets...)
 	}
 	on := notes()
 	for _, want := range []string{
@@ -552,6 +545,22 @@ func TestChartNotesStreams(t *testing.T) {
 		!strings.Contains(off, names.StreamsConfigMap) {
 		t.Errorf("NOTES with the bridge off:\n%s", off)
 	}
+}
+
+// installNotes is the NOTES `helm install --dry-run` prints for the chart
+// with a node and an address, plus sets.
+func installNotes(t *testing.T, sets ...string) string {
+	t.Helper()
+	args := append([]string{"--set", "pbx.nodeName=top", "--set", "pbx.address=192.0.2.10"}, flatSets(sets)...)
+	stdout, stderr, err := helm(t, append([]string{"install", "--dry-run=client", release, chartDir, "--namespace", "telephony"}, args...)...)
+	if err != nil {
+		t.Fatalf("helm install --dry-run: %v\n%s", err, stderr)
+	}
+	_, n, ok := strings.Cut(stdout, "\nNOTES:\n")
+	if !ok {
+		t.Fatalf("no NOTES in\n%s", stdout)
+	}
+	return n
 }
 
 func flatSets(sets []string) []string {
@@ -600,8 +609,10 @@ func helm(t *testing.T, args ...string) (stdout, stderr string, err error) {
 
 // TestChartE2EValues: the e2e suite's values (test/e2e/values.yaml, with
 // the node the harness adds at run time) render settings the controller
-// accepts, the stream bridge from the e2e image, never pulled, and the
-// fake tuner as the only pool.
+// accepts, the stream bridge from the e2e image, never pulled, the fake
+// tuner as the only pool, and the messages endpoint on its default port
+// with the token Secret the harness creates (test/e2e's
+// messagesTokenSecret).
 func TestChartE2EValues(t *testing.T) {
 	m := renderFile(t, filepath.Join("..", "e2e", "values.yaml"), "pbx.nodeName=patchbay-e2e-control-plane", "pbx.address=172.18.0.2")
 	s, err := settings.Parse([]byte(settingsJSON(t, m)))
@@ -615,5 +626,12 @@ func TestChartE2EValues(t *testing.T) {
 	c := bridgeContainer(t, &bridge(t, m).Spec.Template.Spec)
 	if c.Image != bridgeRepository+":e2e" || c.ImagePullPolicy != corev1.PullNever {
 		t.Errorf("the e2e bridge runs %s (%s), want %s:e2e, never pulled", c.Image, c.ImagePullPolicy, bridgeRepository)
+	}
+	wantFlags(t, controllerContainer(t, m), map[string]string{
+		"messages-bind-address": ":" + strconv.Itoa(messagesapi.DefaultPort),
+		"messages-token-secret": "patchbay-messages-token/token",
+	})
+	if _, ok := m.docs["Service/"+names.MessagesService]; !ok {
+		t.Errorf("the e2e install has no Service %s", names.MessagesService)
 	}
 }

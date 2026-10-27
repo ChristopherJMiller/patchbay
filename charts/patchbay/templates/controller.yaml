@@ -21,17 +21,27 @@ metadata:
     app.kubernetes.io/component: controller
 rules:
   # Least privilege (docs/plans/release-a.md §7.2 lists who writes what).
-  # It never deletes anything: owned Secrets go with their resource
-  # (ownerReference GC), and nothing may remove Helm's release Secrets.
+  # It deletes nothing but finished Messages (below): owned Secrets go with
+  # their resource (ownerReference GC), and nothing may remove Helm's
+  # release Secrets.
   #
   # Its resources: read only. It never edits their spec or metadata (a
   # request annotation is acted on once, recorded in status).
   - apiGroups: [patchbay.chrismiller.xyz]
     resources: [phones, softphones, people, streams]
     verbs: [get, list, watch]
+  # Messages, the one exception: the messages endpoint creates them (one
+  # per phone) and sets spec.withdrawn; the Message reconciler watches them
+  # and deletes each finished one a day after it finished
+  # (messages.RetainFinished), its only delete. Granted whether or not the
+  # endpoint is on: the reconciler always runs, and a Message from
+  # `patchbay phone message` is delivered either way.
+  - apiGroups: [patchbay.chrismiller.xyz]
+    resources: [messages]
+    verbs: [get, list, watch, create, update, delete]
   # Their status: it is the only writer (Status().Update).
   - apiGroups: [patchbay.chrismiller.xyz]
-    resources: [phones/status, softphones/status, people/status, streams/status]
+    resources: [phones/status, softphones/status, people/status, streams/status, messages/status]
     verbs: [update]
   # The device Secrets it creates are owned by their Phone or Softphone with
   # blockOwnerDeletion, which the API server allows only to whoever may
@@ -40,22 +50,23 @@ rules:
     resources: [phones/finalizers, softphones/finalizers]
     verbs: [update]
   # Its cache lists and watches every ConfigMap of the namespace (pbx-config,
-  # <fullname>-streams, and the settings an Event may regard); it creates
-  # pbx-config and <fullname>-streams (streams.json, which the bundle
-  # reconciler writes first, with or without a stream bridge), and updates
-  # only those two.
+  # <fullname>-streams, <fullname>-house, and the settings an Event may
+  # regard); it creates pbx-config, <fullname>-streams (streams.json, which
+  # the bundle reconciler writes first, with or without a stream bridge) and
+  # <fullname>-house (house.json, which the messages endpoint writes on the
+  # first PUT /v1/house), and updates only those three.
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list, watch, create]
   - apiGroups: [""]
     resources: [configmaps]
-    resourceNames: [{{ $fullname }}-pbx-config, {{ include "patchbay.streamsName" . }}]
+    resourceNames: [{{ $fullname }}-pbx-config, {{ include "patchbay.streamsName" . }}, {{ $fullname }}-house]
     verbs: [update]
   # Secrets: it creates and completes the device Secrets
   # (patchbay-<device ID>, one name per resource, so no resourceNames),
   # <fullname>-ami, <fullname>-push, <fullname>-agent-token and <fullname>-pbx-secrets; its
-  # cache watches them all, and a softphone's token rotation updates one in
-  # place.
+  # cache watches them all (the messages endpoint reads its token Secret
+  # through it), and a softphone's token rotation updates one in place.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, list, watch, create, update]
@@ -146,6 +157,13 @@ spec:
             # every 5 s, which decide each Stream's status.
             - --stream-bridge-url=http://{{ include "patchbay.streamsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.streamBridge.ports.control }}
             {{- end }}
+            {{- if .Values.messages.enabled }}
+            # The messages endpoint (internal/controller/messages), behind
+            # the Service <fullname>-messages; the bearer token is read from
+            # this Secret through the API on every request, never mounted.
+            - --messages-bind-address=:{{ .Values.messages.port }}
+            - --messages-token-secret={{ include "patchbay.messagesTokenSecret" . }}
+            {{- end }}
             - --leader-elect={{ .Values.controller.leaderElect }}
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
@@ -162,6 +180,12 @@ spec:
             - name: probes
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.messages.enabled }}
+            # Not metrics or control: the PodMonitor scrapes those names.
+            - name: messages
+              containerPort: {{ .Values.messages.port }}
+              protocol: TCP
+            {{- end }}
           startupProbe:
             httpGet:
               path: /healthz

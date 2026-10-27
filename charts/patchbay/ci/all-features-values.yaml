@@ -36,6 +36,14 @@ firmware:
     keep: false
 podMonitor:
   enabled: true
+# The messages endpoint on a port of its own, its token in a Secret the
+# operator creates.
+messages:
+  enabled: true
+  port: 9541
+  tokenSecret:
+    name: patchbay-messages-token
+    key: token
 # A house default display with every field, the window on weekdays.
 phoneDefaults:
   display:

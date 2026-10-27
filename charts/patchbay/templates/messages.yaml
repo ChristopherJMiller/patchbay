@@ -1,0 +1,27 @@
+{{- if .Values.messages.enabled -}}
+# The messages endpoint (phone messages; docs/operations.md, "Messages"):
+# the controller's small HTTP server that Home Assistant POSTs phone
+# messages to and PUTs the house state (quiet, away) to, behind a bearer
+# token in the Secret messages.tokenSecret names (internal/controller/messages;
+# wire contract internal/controller/messages/api). Every controller replica
+# serves it, not only the leader. ClusterIP only: nothing new is reachable
+# from the LAN. The name is install.Names.MessagesService; test/chart keeps
+# the two in step.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "patchbay.fullname" . }}-messages
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "patchbay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "patchbay.selectorLabels" (dict "ctx" . "component" "controller") | nindent 4 }}
+  ports:
+    - name: messages
+      port: {{ .Values.messages.port }}
+      targetPort: messages
+      protocol: TCP
+{{- end }}

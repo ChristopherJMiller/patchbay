@@ -264,19 +264,25 @@ func TestChartCLIFindsTheAgent(t *testing.T) {
 // TestChartControllerRole: least privilege. The controller reads its
 // resources and writes only their status (and their finalizers, for
 // blockOwnerDeletion); creates ConfigMaps and Secrets and updates them,
-// pbx-config and <fullname>-streams by name; emits Events; holds the
-// install's own Lease by name; never deletes or patches a resource it
-// manages.
+// pbx-config, <fullname>-streams and <fullname>-house by name; emits
+// Events; holds the install's own Lease by name; never patches a resource
+// it manages. Messages are the one exception: the messages endpoint
+// creates them and sets spec.withdrawn, and the Message reconciler deletes
+// each finished one a day after it finished (messages.RetainFinished).
+// That is the controller's only delete: on messages, and nothing else.
 func TestChartControllerRole(t *testing.T) {
 	role := get[rbacv1.Role](t, render(t), "Role", release+"-controller")
 	group := []string{"patchbay.chrismiller.xyz"}
 	core := []string{""}
+	n := install.NewNames(release)
+	messages := rbacv1.PolicyRule{APIGroups: group, Resources: []string{"messages"}, Verbs: []string{"get", "list", "watch", "create", "update", "delete"}}
 	want := []rbacv1.PolicyRule{
 		{APIGroups: group, Resources: []string{"phones", "softphones", "people", "streams"}, Verbs: []string{"get", "list", "watch"}},
-		{APIGroups: group, Resources: []string{"phones/status", "softphones/status", "people/status", "streams/status"}, Verbs: []string{"update"}},
+		messages,
+		{APIGroups: group, Resources: []string{"phones/status", "softphones/status", "people/status", "streams/status", "messages/status"}, Verbs: []string{"update"}},
 		{APIGroups: group, Resources: []string{"phones/finalizers", "softphones/finalizers"}, Verbs: []string{"update"}},
 		{APIGroups: core, Resources: []string{"configmaps"}, Verbs: []string{"get", "list", "watch", "create"}},
-		{APIGroups: core, Resources: []string{"configmaps"}, ResourceNames: []string{install.NewNames(release).ConfigMap, install.NewNames(release).StreamsConfigMap}, Verbs: []string{"update"}},
+		{APIGroups: core, Resources: []string{"configmaps"}, ResourceNames: []string{n.ConfigMap, n.StreamsConfigMap, n.HouseConfigMap}, Verbs: []string{"update"}},
 		{APIGroups: core, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "update"}},
 		{APIGroups: []string{"events.k8s.io"}, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},
 		{APIGroups: core, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},
@@ -287,8 +293,16 @@ func TestChartControllerRole(t *testing.T) {
 		t.Errorf("the controller's Role grants\n  %+v\nwant\n  %+v", role.Rules, want)
 	}
 	for _, r := range role.Rules {
-		if slices.Contains(r.Verbs, "delete") || slices.Contains(r.Verbs, "deletecollection") || slices.Contains(r.Verbs, "*") {
-			t.Errorf("the controller may delete: %+v", r)
+		if slices.Contains(r.Verbs, "*") || slices.Contains(r.Resources, "*") || slices.Contains(r.APIGroups, "*") {
+			t.Errorf("the controller's Role has a wildcard: %+v", r)
+		}
+		if slices.Contains(r.Verbs, "deletecollection") {
+			t.Errorf("the controller may delete collections: %+v", r)
+		}
+		// The documented exception, exactly: delete on messages (the
+		// controller's own records, finished a day), on nothing else.
+		if slices.Contains(r.Verbs, "delete") && fmt.Sprint(r) != fmt.Sprint(messages) {
+			t.Errorf("the controller may delete: %+v (it may delete only Messages)", r)
 		}
 	}
 }

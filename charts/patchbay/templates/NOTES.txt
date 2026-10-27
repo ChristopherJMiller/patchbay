@@ -34,13 +34,26 @@ The stream bridge is off (streamBridge.enabled=false): every Stream's number
 plays "not available".
 {{- end }}
 
+Put a text on a desk phone (held while the phone is in a call, and in quiet
+hours or while nobody is home unless it is urgent):
+  patchbay phone message <phone> "Dinner!" -n {{ .Release.Namespace }}
+  patchbay messages -n {{ .Release.Namespace }}
+{{- if .Values.messages.enabled }}
+{{- $url := printf "http://%s-messages.%s.svc:%v" (include "patchbay.fullname" .) .Release.Namespace .Values.messages.port }}
+The messages endpoint, for Home Assistant, takes `Authorization: Bearer
+<token>` with the token in Secret {{ .Values.messages.tokenSecret.name }}, key {{ .Values.messages.tokenSecret.key }}. Create it:
+until it exists every request is answered 503.
+  POST {{ $url }}/v1/messages   a message
+  PUT  {{ $url }}/v1/house      the house state (quiet, away)
+{{- end }}
+
 The controller's own install objects are not Helm's: `helm uninstall` leaves
 them. Once the controller is gone, remove them by name:
-  kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config {{ include "patchbay.streamsName" . }}
+  kubectl -n {{ .Release.Namespace }} delete configmap {{ include "patchbay.fullname" . }}-pbx-config {{ include "patchbay.streamsName" . }} {{ include "patchbay.fullname" . }}-house --ignore-not-found
   kubectl -n {{ .Release.Namespace }} delete secret {{ include "patchbay.fullname" . }}-pbx-secrets {{ include "patchbay.fullname" . }}-ami {{ include "patchbay.fullname" . }}-push {{ include "patchbay.agentTokenSecretName" . }}
 Not by label: each device's Secret (patchbay-<id>: its SIP password, a
 softphone's provisioning token) carries the same labels, and goes with its
-Phone or Softphone. The CRDs, and so the Phones and Streams, survive
+Phone or Softphone. The CRDs, and so the Phones, Streams and Messages, survive
 uninstall; delete the device Secrets too and every phone needs
 re-provisioning after a reinstall (a 7945 a power-cycle, a softphone
 `qr --reissue`).

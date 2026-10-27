@@ -15,6 +15,14 @@ timezone: America/Los_Angeles
 controller:
   logLevel: debug
 
+# The messages endpoint (TestDeskLoop's "messages"): the harness creates
+# the token Secret before the install (messagesTokenSecret in
+# harness_test.go; test/chart's TestChartE2EValues keeps the name).
+messages:
+  enabled: true
+  tokenSecret:
+    name: patchbay-messages-token
+
 pbx:
   asterisk:
     image:

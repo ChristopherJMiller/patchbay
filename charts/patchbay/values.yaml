@@ -196,6 +196,30 @@ streams:
   #     max: 1                   # of its 2 tuners: the DVR keeps one
   tunerPools: []
 
+# Phone messages (docs/operations.md, "Messages"): text on a desk phone's
+# screen, from `Message` resources the controller decides and pushes.
+# `patchbay phone message` creates them with your kubeconfig either way;
+# this is the controller's messages endpoint, for callers inside the
+# cluster without Kubernetes credentials (Home Assistant): it creates
+# Messages from POST /v1/messages, withdraws them by key, and keeps the
+# house state (quiet, away) Home Assistant PUTs to /v1/house in the
+# <fullname>-house ConfigMap. Every controller replica serves it, on the
+# Service <fullname>-messages: ClusterIP only, nothing new on the LAN.
+#
+# Every request needs `Authorization: Bearer <token>`, the token in a
+# Secret you create (the controller never mints it: the caller must hold
+# the same value): tokenSecret.name, key tokenSecret.key. The controller
+# reads it on every request, so a rotation needs no restart; until it
+# exists the endpoint answers 503.
+messages:
+  enabled: false
+  # The endpoint's port, on the controller pods and the Service.
+  port: 9441
+  tokenSecret:
+    # Required with enabled.
+    name: ""
+    key: token
+
 controller:
   # One replica decides at a time (leader election); a second only speeds
   # up failover.
