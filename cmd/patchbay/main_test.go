@@ -62,6 +62,9 @@ func TestClientCommandsLoadOnlyTheGivenKubeconfig(t *testing.T) {
 		{"softphone", "qr", "chris-laptop"},
 		{"softphone", "qr", "chris-laptop", "--reissue", "-n", "telephony"},
 		{"phone", "resync", "desk", "--instance", "patchbay"},
+		{"phone", "test-push", "desk", "--text", "hi", "--beep"},
+		{"phone", "test-push", "desk", "--clear"},
+		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--execute", "Play:Chime.raw"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			_, err := run(t, context.Background(), args...)
@@ -75,6 +78,10 @@ func TestClientCommandsLoadOnlyTheGivenKubeconfig(t *testing.T) {
 func TestClientCommandsCheckArgs(t *testing.T) {
 	for _, args := range [][]string{
 		{"phone", "resync"},
+		{"phone", "test-push"},
+		{"phone", "test-push", "a", "b"},
+		{"phone", "test-push", "desk", "--clear", "--text", "x"},
+		{"phone", "test-push", "desk", "--execute", "Key:Messages", "--beep"},
 		{"softphone", "qr"},
 		{"firmware", "load"},
 		{"status", "extra"},

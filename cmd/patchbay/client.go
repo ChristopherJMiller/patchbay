@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+
 	"github.com/spf13/cobra"
 
 	"github.com/ChristopherJMiller/patchbay/internal/cli"
@@ -149,5 +151,35 @@ decides.`,
 		return cli.PhoneResync(cmd.Context(), e, args[0])
 	}
 	cmd.AddCommand(resync)
+
+	var push cli.TestPush
+	testPush := &cobra.Command{
+		Use:   "test-push <name>",
+		Short: "Push a test message page to a phone, through the agent",
+		Long: `A diagnostic for "do pushes work?": ask the agent directly (through a
+port-forward to the PBX pod, as firmware load does) to push to a Cisco
+phone, outside the controller. By default it pushes a page of one message,
+with its time in the install's timezone. --clear returns the phone to idle.
+--execute pushes raw Init:, Key:, SoftKey: or Play: URIs (at most 3) and
+nothing else; it cannot be combined with --text, --beep or --clear.`,
+		Args: cobra.ExactArgs(1),
+	}
+	tf := clientFlags(testPush)
+	testPush.Flags().StringVar(&push.Text, "text", cli.DefaultPushText, "the message to show")
+	testPush.Flags().BoolVar(&push.Beep, "beep", false, "chime ahead of the page")
+	testPush.Flags().BoolVar(&push.Clear, "clear", false, "return the phone to idle and drop the page")
+	testPush.Flags().StringArrayVar(&push.Execute, "execute", nil, "a raw URI to push (repeatable)")
+	testPush.MarkFlagsMutuallyExclusive("clear", "text")
+	testPush.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(push.Execute) > 0 && (cmd.Flags().Changed("text") || push.Beep || push.Clear) {
+			return errors.New("--execute cannot be combined with --text, --beep or --clear")
+		}
+		e, err := env(cmd, g, tf)
+		if err != nil {
+			return err
+		}
+		return cli.PhoneTestPush(cmd.Context(), e, args[0], push)
+	}
+	cmd.AddCommand(testPush)
 	return cmd
 }

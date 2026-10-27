@@ -97,6 +97,11 @@ departs from it, the departure is recorded here (and in the code's docs).
   share one version, set from the `v*` tag at package time, and
   chart-releaser-action releases a chart only when `charts/` changed
   (docs/releasing.md).
+- **`phone test-push` is the second CLI to agent call**, after `firmware load`:
+  a diagnostic that sends one push (a page of one message, a clear, or raw
+  `--execute` URIs) straight to the agent, outside the controller's
+  decisions. It reads the install's timezone from the `<fullname>-settings`
+  ConfigMap to render the page's time, falling back to UTC with a note.
 - **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.

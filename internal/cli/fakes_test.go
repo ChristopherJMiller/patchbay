@@ -228,6 +228,8 @@ type fakeAgent struct {
 	puts         []string          // "<load>/<name>", in request order
 	answer       map[string]int    // "<load>/<name>" -> forced status
 	unauthorized int
+	pushes       []agentapi.PushRequest // POST /v1/actions/push, in request order
+	pushAnswer   agentapi.PushResponse  // what a push is answered with
 }
 
 func newFakeAgent(t *testing.T, reg *drivers.Registry) *fakeAgent {
@@ -247,6 +249,14 @@ func (a *fakeAgent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.observations)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, agentapi.PathFirmware+"/"):
 		a.upload(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == agentapi.PathActionPush:
+		var req agentapi.PushRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, agentapi.Error{Error: err.Error()})
+			return
+		}
+		a.pushes = append(a.pushes, req)
+		writeJSON(w, http.StatusOK, a.pushAnswer)
 	default:
 		writeJSON(w, http.StatusNotFound, agentapi.Error{Error: "no such endpoint"})
 	}
@@ -311,6 +321,12 @@ func (a *fakeAgent) putsSoFar() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.puts...)
+}
+
+func (a *fakeAgent) pushesSoFar() []agentapi.PushRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]agentapi.PushRequest(nil), a.pushes...)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
