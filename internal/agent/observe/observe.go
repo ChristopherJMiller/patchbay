@@ -181,8 +181,9 @@ func (s *Store) syncIndex(version string, idx compile.Index, ok bool) {
 	for id, mac := range s.indexMACs {
 		d, still := idx.Devices[id]
 		if !still {
-			// A phone swapped in by editing spec.mac keeps it: it registers
-			// under its own Call-ID, and its screen holds no page either.
+			// A device whose MAC changed keeps its last Call-ID: the phone
+			// swapped in registers under its own, which takes back the page
+			// the old phone held (the new one's screen holds none).
 			delete(s.callIDs, id)
 		}
 		if !still || d.MAC != mac {
