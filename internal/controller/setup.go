@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -17,6 +18,7 @@ import (
 	"github.com/ChristopherJMiller/patchbay/internal/controller/devices"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/discovery"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/install"
+	"github.com/ChristopherJMiller/patchbay/internal/controller/messages"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/metrics"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/numbers"
 	"github.com/ChristopherJMiller/patchbay/internal/controller/poller"
@@ -41,6 +43,8 @@ var (
 	_ agentview.SnapshotFunc         = (*discovery.Reporter)(nil).Report
 	_ streamstate.Source             = (*bridgeclient.Client)(nil)
 	_ manager.LeaderElectionRunnable = (*streamstate.Poller)(nil)
+	_ manager.LeaderElectionRunnable = (*messages.Server)(nil)
+	_ manager.Runnable               = (*messages.Server)(nil)
 )
 
 // Setup wires the controller into mgr (built by NewManager with the same
@@ -178,6 +182,23 @@ func Setup(mgr ctrl.Manager, opts Options, s compile.Settings, reg *drivers.Regi
 		Recorder: recorder, Metrics: m, Log: log.WithName("streams"),
 	}); err != nil {
 		return fmt.Errorf("controller: the Stream reconciler: %w", err)
+	}
+	if opts.MessagesAddr != "" {
+		name, key, err := ParseMessagesToken(opts.MessagesToken)
+		if err != nil {
+			return fmt.Errorf("controller: --messages-token-secret: %w", err)
+		}
+		srv, err := messages.NewServer(messages.ServerConfig{
+			Client: c, Namespace: ns, Names: names,
+			TokenSecret: types.NamespacedName{Namespace: ns, Name: name}, TokenKey: key,
+			Addr: opts.MessagesAddr, Log: log.WithName("messages"),
+		})
+		if err != nil {
+			return fmt.Errorf("controller: %w", err)
+		}
+		if err := mgr.Add(srv); err != nil {
+			return fmt.Errorf("controller: adding the messages endpoint: %w", err)
+		}
 	}
 	return nil
 }

@@ -12,9 +12,12 @@ package controller
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -69,6 +72,14 @@ type Options struct {
 	// the settings name a stream bridge (compile.Settings.StreamBridge);
 	// without one there is no bridge to poll and it is ignored.
 	StreamBridgeURL string
+
+	// MessagesAddr is the messages endpoint's bind address. "" (the default)
+	// does not start it.
+	MessagesAddr string
+
+	// MessagesToken is the Secret holding the endpoint's bearer token, as
+	// "<name>/<key>" (ParseMessagesToken). Required with MessagesAddr.
+	MessagesToken string
 
 	// Registerer takes the controller's own metrics. Nil is
 	// controller-runtime's metrics.Registry, which the manager serves on
@@ -135,4 +146,20 @@ func NewManager(cfg *rest.Config, opts Options) (ctrl.Manager, error) {
 		return nil, err
 	}
 	return mgr, nil
+}
+
+// ParseMessagesToken splits Options.MessagesToken, "<name>/<key>": a Secret
+// name (a DNS-1123 subdomain) and a data key.
+func ParseMessagesToken(s string) (name, key string, err error) {
+	name, key, ok := strings.Cut(s, "/")
+	if !ok || name == "" || key == "" || strings.Contains(key, "/") {
+		return "", "", errors.New("must be <secret-name>/<key>")
+	}
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return "", "", fmt.Errorf("secret name %q: %s", name, errs[0])
+	}
+	if errs := validation.IsConfigMapKey(key); len(errs) > 0 {
+		return "", "", fmt.Errorf("key %q: %s", key, errs[0])
+	}
+	return name, key, nil
 }

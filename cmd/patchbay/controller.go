@@ -52,6 +52,10 @@ replica decides at a time when --leader-elect is set.`,
 		`Prometheus metrics address; "0" disables`)
 	f.StringVar(&opts.ProbeAddr, "health-probe-bind-address", ":8081",
 		`/healthz and /readyz address; "0" disables`)
+	f.StringVar(&opts.MessagesAddr, "messages-bind-address", "",
+		`the messages endpoint's address (Home Assistant posts phone messages and the house state there); "" does not start it`)
+	f.StringVar(&opts.MessagesToken, "messages-token-secret", "",
+		"the Secret holding the messages endpoint's bearer token, <name>/<key>; required with --messages-bind-address")
 	f.BoolVar(&opts.LeaderElection, "leader-elect", false,
 		"hold a Lease before deciding, so only one replica acts")
 	zapOpts := bindZapFlags(cmd)
@@ -68,6 +72,11 @@ replica decides at a time when --leader-elect is set.`,
 			errs = append(errs, errors.New("--fullname is required"))
 		} else if err := install.NewNames(opts.Fullname).Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("--fullname: %w", err))
+		}
+		if opts.MessagesAddr != "" {
+			if _, _, err := controller.ParseMessagesToken(opts.MessagesToken); err != nil {
+				errs = append(errs, fmt.Errorf("--messages-token-secret: %w", err))
+			}
 		}
 		if err := errors.Join(errs...); err != nil {
 			return fmt.Errorf("controller: %w", err)

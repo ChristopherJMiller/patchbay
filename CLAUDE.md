@@ -102,6 +102,15 @@ departs from it, the departure is recorded here (and in the code's docs).
   `--execute` URIs) straight to the agent, outside the controller's
   decisions. It reads the install's timezone from the `<fullname>-settings`
   ConfigMap to render the page's time, falling back to UTC with a note.
+- **The messages endpoint** (not in the design): a small HTTP server inside
+  the controller process (`--messages-bind-address`, off when empty; port
+  9441 by default in the chart) that Home Assistant POSTs phone messages to
+  and PUTs the house state (quiet, away) to, behind a bearer token read from
+  a Secret on every request (`--messages-token-secret=<name>/<key>`, so
+  rotation needs no restart). It creates `Message` resources, one per
+  phone, and records the house state in the `<fullname>-house` ConfigMap;
+  it decides and delivers nothing, the Message reconciler does. Every
+  replica serves, not only the leader (`internal/controller/messages`).
 - **Per-device config versions.** `compile.Bundle.Devices[id].Version`, so
   ConfigStale (§8.3) compares each phone with its own compiled version, not
   one install-wide version.
