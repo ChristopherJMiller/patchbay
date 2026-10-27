@@ -137,7 +137,8 @@ func (d *decider) screen(name string) {
 	uids := make([]types.UID, len(lines))
 	for i, l := range lines {
 		shown[i] = drivers.MessageLine{
-			Sent: l.m.CreationTimestamp.Time, Title: l.m.Spec.Title, Text: l.m.Spec.Text, Urgent: l.m.Spec.Urgent,
+			Sent: l.m.CreationTimestamp.Time, Expires: l.m.Spec.ExpiresAt.Time,
+			Title: l.m.Spec.Title, Text: l.m.Spec.Text, Urgent: l.m.Spec.Urgent,
 		}
 		uids[i] = l.m.UID
 	}

@@ -778,9 +778,15 @@ type SettingsChecker interface {
 
 // MessageLine is one message on a phone's message page.
 type MessageLine struct {
-	Sent  time.Time
-	Title string
-	Text  string
+	Sent time.Time
+	// Expires is when the message stops being current (a Message's
+	// spec.expiresAt); with Sent, its lifetime, which may decide how its
+	// time is shown (the 79x5 adds the weekday past 12 h). It never
+	// depends on now, so a page renders the same all its life. Zero: no
+	// expiry known (a test push), shown as a short-lived one.
+	Expires time.Time
+	Title   string
+	Text    string
 	// Urgent marks the line URGENT on the page.
 	Urgent bool
 }

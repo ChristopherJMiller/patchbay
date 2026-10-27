@@ -16,6 +16,11 @@ import (
 // value before XML escaping, as UTF-8.
 const maxMessageText = 4000
 
+// weekdayPast is the lifetime past which a message's time carries its
+// weekday ("Mon 09:00"): one that lives up to 24 h can still be on the
+// screen the next day, when "09:00" alone would read as today's.
+const weekdayPast = 12 * time.Hour
+
 var _ drivers.MessageRenderer = (*Driver)(nil)
 
 type textPage struct {
@@ -35,7 +40,10 @@ type textSoftKey struct {
 // RenderMessages renders the page the phone opens when a message is pushed:
 // a CiscoIPPhoneText whose Text is one line per message, newest first
 // (lines is already in that order), "15:04  Title: text" in loc, with
-// URGENT before the title of an urgent one. Title and text are free text a
+// URGENT before the title of an urgent one, and the weekday before the time
+// of one that lives (Expires less Sent) over weekdayPast ("Mon 15:04"): the
+// line depends only on the message, never on now, so a page is not pushed
+// again when a day turns. Title and text are free text a
 // person typed, so they go through drivers.UserText, then screenText: what
 // is left of a title is no title when empty, and an empty text reads
 // noText. When the lines do not fit in maxMessageText bytes, the oldest are
@@ -51,7 +59,11 @@ func (d *Driver) RenderMessages(model string, lines []drivers.MessageLine, loc *
 	text := make([]string, len(lines))
 	for i, l := range lines {
 		var b strings.Builder
-		b.WriteString(l.Sent.In(loc).Format("15:04"))
+		layout := "15:04"
+		if l.Expires.Sub(l.Sent) > weekdayPast {
+			layout = "Mon 15:04"
+		}
+		b.WriteString(l.Sent.In(loc).Format(layout))
 		b.WriteString("  ")
 		if l.Urgent {
 			b.WriteString("URGENT ")

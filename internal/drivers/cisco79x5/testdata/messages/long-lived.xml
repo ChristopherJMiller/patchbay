@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneText>
+  <Title>patchbay</Title>
+  <Prompt>3 messages</Prompt>
+  <Text>Mon 09:00  Boiler: Service due&#xA;08:30  Twelve hours exactly&#xA;08:00  No expiry known</Text>
+  <SoftKeyItem>
+    <Name>Exit</Name>
+    <URL>SoftKey:Exit</URL>
+    <Position>1</Position>
+  </SoftKeyItem>
+</CiscoIPPhoneText>

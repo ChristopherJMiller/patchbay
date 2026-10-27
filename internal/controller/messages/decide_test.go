@@ -130,7 +130,10 @@ func pageOf(t *testing.T, msgs ...v1alpha1.Message) (string, []byte) {
 	t.Helper()
 	lines := make([]drivers.MessageLine, len(msgs))
 	for i, m := range msgs {
-		lines[i] = drivers.MessageLine{Sent: m.CreationTimestamp.Time, Title: m.Spec.Title, Text: m.Spec.Text, Urgent: m.Spec.Urgent}
+		lines[i] = drivers.MessageLine{
+			Sent: m.CreationTimestamp.Time, Expires: m.Spec.ExpiresAt.Time,
+			Title: m.Spec.Title, Text: m.Spec.Text, Urgent: m.Spec.Urgent,
+		}
 	}
 	page, err := cisco79x5.New().RenderMessages(model, lines, time.UTC)
 	if err != nil {
@@ -711,6 +714,24 @@ func TestDecideResendsAfterAgentRestart(t *testing.T) {
 	// Once the shell has pushed it, nothing more.
 	in.Phones["desk"] = view("desk", func(p *messages.PhoneView) { p.PushedPage = v.Pushes[0].PageVersion })
 	checkVerdict(t, in, messages.Decide(in), nil, nil, nil, nil)
+}
+
+// TestDecideLongLivedPageAcrossMidnight: a message living over 12 h shows
+// its weekday on the page ("Mon 19:00"), from the message alone, so the
+// page the phone holds is still the one Decide wants after midnight, and
+// nothing is pushed again.
+func TestDecideLongLivedPageAcrossMidnight(t *testing.T) {
+	sent := at0.Add(-time.Hour) // Monday 19:00 UTC
+	m := message("m", "desk", sent, shown(sent), expires(sent.Add(20*time.Hour)))
+	held, page := pageOf(t, m)
+	if !strings.Contains(string(page), "Mon 19:00  T m: text of m") {
+		t.Fatalf("the page holds no weekday:\n%s", page)
+	}
+	for _, now := range []time.Time{at0, at0.Add(5 * time.Hour)} { // Monday 20:00, Tuesday 01:00
+		in := input([]v1alpha1.Message{m}, view("desk", func(p *messages.PhoneView) { p.HeldPage = held }))
+		in.Now = now
+		checkVerdict(t, in, messages.Decide(in), nil, nil, nil, nil)
+	}
 }
 
 // TestDecideOwedClearOutlivesRetention (ruling R16a): the last Message on

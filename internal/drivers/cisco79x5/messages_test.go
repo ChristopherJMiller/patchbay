@@ -37,6 +37,13 @@ func TestRenderMessages(t *testing.T) {
 		{"typographic", []drivers.MessageLine{{Sent: at(17, 15), Text: "Mom’s “pie” – ready…"}}},
 		{"latin1", []drivers.MessageLine{{Sent: at(8, 0), Title: "Café", Text: "café au lait"}}},
 		{"all-emoji", []drivers.MessageLine{{Sent: at(20, 0), Title: "🎉", Text: "🎉🎊"}}},
+		// A message living over 12 h shows its weekday (2026-10-26 is a
+		// Monday); 12 h exactly, or no expiry known, the time alone.
+		{"long-lived", []drivers.MessageLine{
+			{Sent: at(9, 0), Expires: at(9, 0).Add(24 * time.Hour), Title: "Boiler", Text: "Service due"},
+			{Sent: at(8, 30), Expires: at(8, 30).Add(12 * time.Hour), Text: "Twelve hours exactly"},
+			{Sent: at(8, 0), Text: "No expiry known"},
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := cisco79x5.New().RenderMessages("cisco-7945", c.lines, la)
@@ -93,6 +100,38 @@ func TestRenderMessagesScreenText(t *testing.T) {
 			if r > 0xFF {
 				t.Errorf("%q/%q renders %q, past Latin-1", c.title, c.text, r)
 			}
+		}
+	}
+}
+
+// TestRenderMessagesWeekday: the weekday is the message's own (in loc),
+// decided by its lifetime alone, so a page renders the same whatever the
+// day it is rendered on.
+func TestRenderMessagesWeekday(t *testing.T) {
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sent := time.Date(2026, 10, 26, 3, 0, 0, 0, time.UTC) // Sunday 20:00 in Los Angeles
+	for _, c := range []struct {
+		life time.Duration
+		want string
+	}{
+		{time.Hour, "20:00  x"},
+		{12 * time.Hour, "20:00  x"},
+		{12*time.Hour + time.Second, "Sun 20:00  x"},
+		{24 * time.Hour, "Sun 20:00  x"},
+		{-time.Hour, "20:00  x"},
+	} {
+		got, err := cisco79x5.New().RenderMessages("cisco-7945", []drivers.MessageLine{{Sent: sent, Expires: sent.Add(c.life), Text: "x"}}, la)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page struct {
+			Text string `xml:"Text"`
+		}
+		if err := xml.Unmarshal(got, &page); err != nil || page.Text != c.want {
+			t.Errorf("lifetime %s: %q (%v), want %q", c.life, page.Text, err, c.want)
 		}
 	}
 }

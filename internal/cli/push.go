@@ -76,7 +76,10 @@ func PhoneTestPush(ctx context.Context, env *Env, name string, opts TestPush) er
 		if text == "" {
 			text = DefaultPushText
 		}
-		page, err := renderer.RenderMessages(model, []drivers.MessageLine{{Sent: env.Clock.Now(), Text: text}}, installZone(ctx, env))
+		// A test page is no Message and has no expiry (Expires zero): its
+		// time shows as a short-lived message's.
+		line := drivers.MessageLine{Sent: env.Clock.Now(), Text: text}
+		page, err := renderer.RenderMessages(model, []drivers.MessageLine{line}, installZone(ctx, env))
 		if err != nil {
 			return fmt.Errorf("phone %s: rendering the page: %w", name, err)
 		}

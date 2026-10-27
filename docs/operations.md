@@ -208,7 +208,9 @@ told anything is neither quiet nor away, and messages are delivered.
 
 Every current message, newest first, each with the time it was sent and
 `URGENT` before an urgent one's title ("18:02  URGENT Leak: Water heater
-leak"), under the title `patchbay` and a count. A page with a message the
+leak"), under the title `patchbay` and a count. A message that lives over
+12 hours (`--expires`) has the weekday before its time ("Mon 09:00"),
+since it can still be up the next day. A page with a message the
 phone has not shown before plays the chime first; a page that only drops
 one (expired, withdrawn) or is sent again does not. When none is left the
 screen is cleared, back to the idle screen. Exit closes the page on the
