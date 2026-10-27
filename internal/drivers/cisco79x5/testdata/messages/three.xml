@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CiscoIPPhoneText>
+  <Title>patchbay</Title>
+  <Prompt>3 messages</Prompt>
+  <Text>18:30  Dinner: Ready when you are&#xA;12:00  No title here&#xA;07:45  Alarm: Garage open</Text>
+  <SoftKeyItem>
+    <Name>Exit</Name>
+    <URL>SoftKey:Exit</URL>
+    <Position>1</Position>
+  </SoftKeyItem>
+</CiscoIPPhoneText>

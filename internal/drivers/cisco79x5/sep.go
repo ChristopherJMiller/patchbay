@@ -38,6 +38,7 @@ type sepDevice struct {
 	DeviceSecurityMode      int                  `xml:"deviceSecurityMode"`
 	ServicesURL             string               `xml:"servicesURL"`
 	DirectoryURL            string               `xml:"directoryURL"`
+	AuthenticationURL       string               `xml:"authenticationURL"`
 	ProxyServerURL          string               `xml:"proxyServerURL"`
 	PhoneServices           sepPhoneServices     `xml:"phoneServices"`
 	TransportLayerProtocol  int                  `xml:"transportLayerProtocol"`

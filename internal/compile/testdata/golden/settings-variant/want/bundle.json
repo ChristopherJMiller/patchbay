@@ -1,12 +1,12 @@
 {
-  "version": "546c56c80edae3e9c95c9761bd4aa889af9c0a91a12ebf9954aa07da42084fea",
+  "version": "15b7d0e52a97a87561e5ef4d1088aac70ebf3e761b9d167031f3e189ba79e4b1",
   "devices": {
     "phone-desk": {
       "kind": "Phone",
       "name": "desk",
       "number": "400",
       "mac": "D0C78915E8C8",
-      "version": "afa79a2a5af3009a7a5aed4024bd33884b4cc1b45bbd93212a5c56b4453a075a",
+      "version": "5b28592ba50b117808032606b4736b7f66d97ff82fb894d35c516f2b0a358749",
       "configFile": "tftp/SEPD0C78915E8C8.cnf.xml",
       "files": [
         "tftp/SEPD0C78915E8C8.cnf.xml",

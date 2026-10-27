@@ -126,6 +126,8 @@ func checkRender(dev drivers.Device, ctx drivers.RenderContext) error {
 		return fmt.Errorf("cisco79x5: directory URL is %d characters, over %d", len(ctx.DirectoryURL), maxURL)
 	case len(ctx.ServicesURL) > maxURL:
 		return fmt.Errorf("cisco79x5: services URL is %d characters, over %d", len(ctx.ServicesURL), maxURL)
+	case len(ctx.AuthenticationURL) > maxURL:
+		return fmt.Errorf("cisco79x5: authentication URL is %d characters, over %d", len(ctx.AuthenticationURL), maxURL)
 	case ctx.Signalling != drivers.SignallingPJSIP:
 		return fmt.Errorf("cisco79x5: signalling backend %q is not implemented", ctx.Signalling)
 	}
@@ -326,9 +328,10 @@ func sep(dev drivers.Device, ctx drivers.RenderContext, p drivers.Profile, load,
 		// the Services button opens servicesURL's, and the Directories
 		// menu adds directoryURL's items after the phoneServices below
 		// (provisioning 2 uses both).
-		ServicesURL:    ctx.ServicesURL,
-		DirectoryURL:   ctx.DirectoryURL,
-		ProxyServerURL: "",
+		ServicesURL:       ctx.ServicesURL,
+		DirectoryURL:      ctx.DirectoryURL,
+		AuthenticationURL: ctx.AuthenticationURL,
+		ProxyServerURL:    "",
 		PhoneServices: sepPhoneServices{
 			UseHTTPS:     false,
 			Provisioning: 2,
@@ -340,10 +343,9 @@ func sep(dev drivers.Device, ctx drivers.RenderContext, p drivers.Profile, load,
 			},
 		},
 		TransportLayerProtocol: transportLayerProtocol(p.Endpoint.Transport),
-		// The sample's 1 turned off: personalization takes pushed XML on
-		// /CGI/Execute, which nothing authenticates until release C sets an
-		// authenticationURL.
-		PhonePersonalization: 0,
+		// Pushed XML on /CGI/Execute is authenticated by the agent
+		// (authenticationURL).
+		PhonePersonalization: 1,
 		AutoCallPickupEnable: true,
 		DNDCallAlert:         1,
 		DNDReminderTimer:     5,

@@ -478,6 +478,7 @@ func Compile(reg *drivers.Registry, in Inputs, s Settings) (Bundle, error) {
 		return Bundle{}, err
 	}
 	maps.Copy(b.Files, httpFiles)
+	b.Files[ChimeFile] = chime() // in every bundle, whether or not a phone is in it
 
 	if b.Version, err = b.VersionWith(in.Secrets); err != nil {
 		return Bundle{}, err
@@ -513,16 +514,17 @@ func (s Settings) CheckDrivers(reg *drivers.Registry) error {
 func renderContext(s Settings) drivers.RenderContext {
 	base := deviceHTTPBase(s)
 	return drivers.RenderContext{
-		PBXAddress:    s.PBXAddress,
-		SIPPort:       s.SIPPort,
-		DeviceHTTPURL: base,
-		DirectoryURL:  base + deviceHTTPPath(DirectoryFile),
-		ServicesURL:   base + deviceHTTPPath(ServicesFile),
-		ContactsURL:   base + deviceHTTPPath(ContactsFile),
-		NTPServer:     s.NTPServer,
-		Timezone:      s.Timezone,
-		Signalling:    s.Signalling,
-		DialPatterns:  s.NumberPlan.DialPatterns(),
+		PBXAddress:        s.PBXAddress,
+		SIPPort:           s.SIPPort,
+		DeviceHTTPURL:     base,
+		DirectoryURL:      base + deviceHTTPPath(DirectoryFile),
+		AuthenticationURL: base + AuthenticatePath,
+		ServicesURL:       base + deviceHTTPPath(ServicesFile),
+		ContactsURL:       base + deviceHTTPPath(ContactsFile),
+		NTPServer:         s.NTPServer,
+		Timezone:          s.Timezone,
+		Signalling:        s.Signalling,
+		DialPatterns:      s.NumberPlan.DialPatterns(),
 		// A copy, so no driver can change the settings (drivers only read
 		// it: DisplayWithDefaults copies).
 		DisplayDefaults: s.PhoneDefaults.Display.DeepCopy(),

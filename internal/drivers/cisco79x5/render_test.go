@@ -75,11 +75,11 @@ func goldenCases() []renderCase {
 //   - vpnGroup: no VPN (softphones away from home are out of scope).
 //   - messagesNumber, messagesURL and the Voicemail phoneService: no
 //     voicemail in release A.
-//   - softKeyFile, informationURL, idleURL, idleTimeout,
-//     authenticationURL: soft keys, help, the idle screen and pushed XML
-//     are release C; until then the phone keeps its built-in soft keys.
-//     servicesURL is written: the compiled Services menu
-//     (compile.ServicesFile), pulled forward from release C.
+//   - softKeyFile, informationURL, idleURL, idleTimeout: soft keys, help
+//     and the idle screen are release C; until then the phone keeps its
+//     built-in soft keys. authenticationURL is written (the agent answers
+//     it, for pushed messages). servicesURL is written too: the compiled
+//     Services menu (compile.ServicesFile), pulled forward from release C.
 //   - blfAudibleAlertSettingOfIdleStation/BusyStation: BLF is unsupported
 //     on stock PJSIP (design §8.5); no BLF key is rendered.
 //   - recordingTone, recordingToneLocalVolume, recordingToneRemoteVolume,
@@ -120,8 +120,8 @@ func goldenCases() []renderCase {
 // RegistrationExpiry; sample 3600); settingsAccess 2 (restricted; bench,
 // plan §8); sshAccess 1 and pcPort 1 (disabled, design §4);
 // peerFirmwareSharing 0 (every firmware fetch must reach the fetch log);
-// recordingOption disable (no dead Record soft key); phonePersonalization
-// 0 (nothing authenticates /CGI/Execute until release C);
+// recordingOption disable (no dead Record soft key); phonePersonalization 1
+// (the agent authenticates pushed /CGI/Execute via authenticationURL);
 // advertiseG722Codec 1 (enabled; the sample's 2 is "device default").
 // Placeholders get the house's values (time zone, NTP, the PBX, the line,
 // English_United_States / United_States; the locale versions are empty, as
@@ -172,6 +172,9 @@ func TestRenderErrors(t *testing.T) {
 		{name: "256-character directory URL", ctx: func(c *drivers.RenderContext) {
 			c.DirectoryURL = "http://192.168.0.240:8088/" + strings.Repeat("d", 256-26)
 		}},
+		{name: "256-character authentication URL", ctx: func(c *drivers.RenderContext) {
+			c.AuthenticationURL = "http://192.168.0.240:8088/" + strings.Repeat("a", 256-26)
+		}},
 		{name: "256-character services URL", ctx: func(c *drivers.RenderContext) {
 			c.ServicesURL = "http://192.168.0.240:8088/" + strings.Repeat("s", 256-26)
 		}},
@@ -207,6 +210,7 @@ func TestRenderErrors(t *testing.T) {
 	ctx := houseCtx()
 	ctx.DirectoryURL = "http://192.168.0.240:8088/" + strings.Repeat("d", 255-26)
 	ctx.ServicesURL = "http://192.168.0.240:8088/" + strings.Repeat("s", 255-26)
+	ctx.AuthenticationURL = "http://192.168.0.240:8088/" + strings.Repeat("a", 255-26)
 	ctx.PBXAddress = strings.Repeat("p", 50)
 	if _, err := d.Render(desk(), ctx); err != nil {
 		t.Errorf("255-character URLs and a 50-character address: %v", err)
@@ -240,16 +244,18 @@ type sepFields struct {
 		AuthPassword string `xml:"authPassword"`
 		Contact      string `xml:"contact"`
 	} `xml:"sipProfile>sipLines>line"`
-	LoadInformation string `xml:"loadInformation"`
-	PCPort          string `xml:"vendorConfig>pcPort"`
-	WebAccess       string `xml:"vendorConfig>webAccess"`
-	SSHAccess       string `xml:"vendorConfig>sshAccess"`
-	SettingsAccess  string `xml:"vendorConfig>settingsAccess"`
-	VersionStamp    string `xml:"versionStamp"`
-	Transport       string `xml:"transportLayerProtocol"`
-	G722            string `xml:"advertiseG722Codec"`
-	ServicesURL     string `xml:"servicesURL"`
-	DirectoryURL    string `xml:"directoryURL"`
+	LoadInformation   string `xml:"loadInformation"`
+	PCPort            string `xml:"vendorConfig>pcPort"`
+	WebAccess         string `xml:"vendorConfig>webAccess"`
+	SSHAccess         string `xml:"vendorConfig>sshAccess"`
+	SettingsAccess    string `xml:"vendorConfig>settingsAccess"`
+	VersionStamp      string `xml:"versionStamp"`
+	Transport         string `xml:"transportLayerProtocol"`
+	G722              string `xml:"advertiseG722Codec"`
+	ServicesURL       string `xml:"servicesURL"`
+	DirectoryURL      string `xml:"directoryURL"`
+	AuthenticationURL string `xml:"authenticationURL"`
+	Personalization   string `xml:"phonePersonalization"`
 }
 
 var versionStampElement = regexp.MustCompile(`<versionStamp>[^<]*</versionStamp>`)
@@ -341,6 +347,8 @@ func TestRenderProperties(t *testing.T) {
 				"advertiseG722Codec":     {f.G722, "1"},
 				"servicesURL":            {f.ServicesURL, c.ctx.ServicesURL},
 				"directoryURL":           {f.DirectoryURL, c.ctx.DirectoryURL},
+				"authenticationURL":      {f.AuthenticationURL, c.ctx.AuthenticationURL},
+				"phonePersonalization":   {f.Personalization, "1"},
 			}
 			for name, gw := range want {
 				if gw[0] != gw[1] {

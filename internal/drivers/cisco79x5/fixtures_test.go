@@ -74,16 +74,17 @@ var (
 
 func houseCtx() drivers.RenderContext {
 	return drivers.RenderContext{
-		PBXAddress:    pbx,
-		SIPPort:       5060,
-		DeviceHTTPURL: "http://192.168.0.240:8088",
-		DirectoryURL:  "http://192.168.0.240:8088/directory.xml",
-		ServicesURL:   "http://192.168.0.240:8088/services.xml",
-		NTPServer:     "192.168.20.1",
-		Timezone:      "America/Los_Angeles",
-		Signalling:    drivers.SignallingPJSIP,
-		DialPatterns:  housePatterns,
-		SIPPassword:   deskSecret,
+		PBXAddress:        pbx,
+		SIPPort:           5060,
+		DeviceHTTPURL:     "http://192.168.0.240:8088",
+		DirectoryURL:      "http://192.168.0.240:8088/directory.xml",
+		AuthenticationURL: "http://192.168.0.240:8088/authenticate",
+		ServicesURL:       "http://192.168.0.240:8088/services.xml",
+		NTPServer:         "192.168.20.1",
+		Timezone:          "America/Los_Angeles",
+		Signalling:        drivers.SignallingPJSIP,
+		DialPatterns:      housePatterns,
+		SIPPassword:       deskSecret,
 	}
 }
 

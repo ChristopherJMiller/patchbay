@@ -178,7 +178,7 @@
     <powerNegotiation>0</powerNegotiation>
     <eapAuthentication>1</eapAuthentication>
   </vendorConfig>
-  <versionStamp>f921eec4954e1b80267155cbb4fcba28</versionStamp>
+  <versionStamp>5811629a3d5859373d03ac2fe25e9c1d</versionStamp>
   <userLocale>
     <name>English_United_States</name>
     <uid>1</uid>
@@ -194,6 +194,7 @@
   <deviceSecurityMode>1</deviceSecurityMode>
   <servicesURL>http://192.168.0.240:8088/services.xml</servicesURL>
   <directoryURL>http://192.168.0.240:8088/directory.xml</directoryURL>
+  <authenticationURL>http://192.168.0.240:8088/authenticate</authenticationURL>
   <proxyServerURL></proxyServerURL>
   <phoneServices useHTTPS="false">
     <provisioning>2</provisioning>
@@ -217,7 +218,7 @@
     </phoneService>
   </phoneServices>
   <transportLayerProtocol>1</transportLayerProtocol>
-  <phonePersonalization>0</phonePersonalization>
+  <phonePersonalization>1</phonePersonalization>
   <autoCallPickupEnable>true</autoCallPickupEnable>
   <dndCallAlert>1</dndCallAlert>
   <dndReminderTimer>5</dndReminderTimer>

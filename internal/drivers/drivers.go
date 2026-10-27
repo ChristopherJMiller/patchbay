@@ -345,6 +345,11 @@ type RenderContext struct {
 	// (http://192.168.0.240:8088/directory.xml): the 79x5's directoryURL.
 	DirectoryURL string
 
+	// AuthenticationURL is the URL a phone asks whether the credentials of a
+	// pushed /CGI/Execute are good (http://192.168.0.240:8088/authenticate):
+	// the 79x5's authenticationURL. The agent answers it.
+	AuthenticationURL string
+
 	// ServicesURL is the URL of the compiled Services menu
 	// (http://192.168.0.240:8088/services.xml): the 79x5's servicesURL.
 	ServicesURL string
@@ -769,6 +774,24 @@ var ErrUnknownModel = errors.New("drivers: no driver for model")
 // password.
 type SettingsChecker interface {
 	CheckSettings(ctx RenderContext) error
+}
+
+// MessageLine is one message on a phone's message page.
+type MessageLine struct {
+	Sent  time.Time
+	Title string
+	Text  string
+	// Urgent marks the line URGENT on the page.
+	Urgent bool
+}
+
+// MessageRenderer is an optional Driver interface (like SettingsChecker): a
+// driver that can show text messages renders the page its phones open when
+// the agent pushes them (the 79x5's CiscoIPPhoneText, served at
+// compile.MessagesPathPrefix + device + ".xml"). lines are newest first;
+// times are shown in loc. Pure.
+type MessageRenderer interface {
+	RenderMessages(model string, lines []MessageLine, loc *time.Location) ([]byte, error)
 }
 
 // ErrInvalidSpec is what Render's error wraps when the device's spec breaks
