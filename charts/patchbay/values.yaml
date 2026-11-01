@@ -287,7 +287,7 @@ pbx:
       tag: 22.11.0_debian-trixie
       # Multi-arch index digest (amd64, arm64). Bump tag and digest together:
       #   docker buildx imagetools inspect andrius/asterisk:<tag>
-      digest: sha256:d6333b8b331563c5887b98b12da9371ef48317e657d17d81770fe085f335041d
+      digest: sha256:7ef51d47e9e670309b55cc287bbee64df75832b690e019cc7125c491c34f67b2
       pullPolicy: IfNotPresent
     # 1000 is the image's asterisk user. Asterisk runs as it directly; the
     # image's root entrypoint (chown, then privilege drop) is bypassed.
