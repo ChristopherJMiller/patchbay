@@ -3,7 +3,7 @@ module github.com/ChristopherJMiller/patchbay
 go 1.26.0
 
 require (
-	github.com/emiago/sipgo v1.7.1
+	github.com/emiago/sipgo v1.7.2
 	github.com/go-logr/logr v1.4.4
 	github.com/icholy/digest v1.2.0
 	github.com/pin/tftp/v3 v3.2.0
