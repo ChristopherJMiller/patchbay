@@ -17,7 +17,7 @@
 #   docker buildx imagetools inspect gcr.io/distroless/static-debian13:nonroot
 # The Go minor here must match the flake's go_1_26.
 
-FROM --platform=$BUILDPLATFORM golang:1.26.10-trixie@sha256:a050dcceee6eb9bf110151662dfac7662f3bec40927c7dee48731e3d92083d42 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-trixie@sha256:fd9a91f0ece5664556f4851d06dce5e5b505a71166dffd385a03ba9d200b6983 AS build
 
 WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-trimpath
