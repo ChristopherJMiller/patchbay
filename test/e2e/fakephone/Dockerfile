@@ -7,7 +7,7 @@
 # (`make e2e-images` does this.) The frontend and the bases are the same
 # digest-pinned images as the main Dockerfile; bump them together.
 
-FROM --platform=$BUILDPLATFORM golang:1.26.11-trixie@sha256:cff05dd6b81c901f2e8249eb6f91c69a60451d0f12c26bfef08e476a85b32d4d AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.11-trixie@sha256:f9e99477a80ccd7adfb69780510b22c7249ce9169885f18aa762cd886e75e018 AS build
 
 WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-trimpath
